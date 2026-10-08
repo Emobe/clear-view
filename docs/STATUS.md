@@ -21,6 +21,7 @@ Current roadmap:
 - 0.5 Fix the build and clippy warnings listed in STATUS (branch step/0.5-fix-warnings, PR #12)
 - 0.6 Stop tracking clear-view.zip in git and add it to .gitignore (done by you on master, commit 085858e)
 - 0.7 Update CLAUDE.md (branch step/0.7-claude-md, PR #13)
+- 0.8 Delete the merged branches (2026-10-09: every local branch merged into master deleted with `git branch -d`; GitHub branches left as they are)
 
 ## Works (a command proved it, or you verified it)
 
@@ -94,7 +95,7 @@ Git (collected by command)
 - Branch: master at 89cc84c, equal to origin/master and to feat/tts-stage4. Nothing unpushed.
 - Uncommitted: `M CLAUDE.md`, `M clear-view.zip` (binary, tracked, 67456 → 68831 bytes), untracked `.claude/commands/` and `docs/`.
 - `git branch --no-merged master` is empty: every local branch is merged. There are no unmerged dead-end branches.
-- Merged branches that add nothing and are candidates for you to delete (nothing was deleted):
+- Merged branches that add nothing and are candidates for you to delete. All deleted locally by 0.8:
 
 | Branch | Last commit |
 |---|---|
