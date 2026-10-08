@@ -6,18 +6,25 @@ Audited 2026-10-08 on Windows, master at 89cc84c plus uncommitted docs changes. 
 
 Roadmap items you have approved after testing. Added only when you say "I approve".
 
-- 1.1 Move old plans and the unused shader to docs/archive/ (merged in PR #1)
-- 2.1 Move pure view math into cv-core::geometry with unit tests (PR #4)
-- 2.2 Settings persistence, JSON in the user config dir (PR #5)
+The roadmap was rewritten on 2026-10-08. These three come from the previous roadmap and are not the same items as 1.1, 2.1 and 2.2 in docs/ROADMAP.md now.
+
+- old 1.1 Move old plans and the unused shader to docs/archive/ (merged in PR #1)
+- old 2.1 Move pure view math into cv-core::geometry with unit tests (PR #4)
+- old 2.2 Settings persistence, JSON in the user config dir (PR #5)
+
+Current roadmap:
+
+- 0.1 Update docs/STATUS.md for this roadmap (branch step/0.1-status-for-roadmap)
 
 ## Works (a command proved it, or you verified it)
 
-- Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (1.1).
-- Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
-- Verified by you by hand while approving 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
+- Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (old 1.1).
+- Docs for the new roadmap (0.1, approved by you 2026-10-08): the Done list labels the previous roadmap's items "old 1.1, old 2.1, old 2.2"; speech-only items are gone from "Needs your run"; tts-plan.md is at docs/later/tts-plan.md with a parked note.
+- Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
+- Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
-- `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by 2.1.
+- `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by old 2.1.
 - `cargo test --workspace`: passes, 33 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 6 (`settings::tests`). cv-capture, cv-render and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
@@ -37,7 +44,7 @@ Magnifier (read from code, file paths given)
 - AppBar details on each of the four edges, and unregister on toggle-off (appbar.rs, lib.rs:324). Docking in general is seen working; which edges you tried is not recorded.
 - egui panel controls not yet verified: display mode and panel size beyond what docking showed, interpolation: crates/app/src/app.rs. Zoom, follow speed and colour filter are seen working.
 
-Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
+Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
 
 | Stage | Code | Verify list | Result |
 |---|---|---|---|
@@ -52,8 +59,8 @@ Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
 - Zoom in/out hotkeys: hotkey.rs registers only Ctrl+Alt+Shift+Z (`HOTKEY_ID = 1`). A failed registration only prints to stdout; the settings window does not show it.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
-- AppState fields from tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
-- tts-plan.md architecture stubs: no `AccessibilityBackend`, `AppContext`, `describe_element`, `TtsVerbosity`, `TtsGranularity` or `HotkeyBinding` anywhere in crates/. Hover speaks the element name directly (lib.rs:253-262).
+- AppState fields from docs/later/tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
+- docs/later/tts-plan.md architecture stubs: no `AccessibilityBackend`, `AppContext`, `describe_element`, `TtsVerbosity`, `TtsGranularity` or `HotkeyBinding` anywhere in crates/. Hover speaks the element name directly (lib.rs:253-262).
 - Docked-mode support for a non-primary monitor (Finding 10).
 
 ## Findings
@@ -62,13 +69,13 @@ Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been
 2. **The repaint thread's stated cause is wrong.** crates/app/src/app.rs:10-16 says the write lock from `update()` "is never released". The guard `s` (app.rs:33) is declared inside the `CentralPanel::show` closure and drops when the closure returns, so it cannot be held across idle. The TTS thread has no other dependency on eframe, so the real cause of speech stopping when the panel is unfocused is unproven. app.rs:136 also still calls `request_repaint_after(100 ms)` alongside the thread, which is redundant. Test: remove the thread, focus another window, see whether hover still speaks.
 3. **`update()` takes `state.write()` every frame** (app.rs:33), at least 10 times a second because of the repaint thread. Prefer snapshot, edit a local copy, write back on change.
 4. **Capture allocates a full frame per captured frame.** `read_staging` does `vec![0u8; w*h*4]` and a row copy each time (cv-capture/src/lib.rs:188-213): about 14.7 MB at 1440p, 33 MB at 4K. Performance is unmeasured.
-5. **Platform code is not isolated.** crates/cv-render/src/lib.rs mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform write caching. The pure crop, zoom, lerp and cursor-mapping math moved to cv-core::geometry in 2.1. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut.
-6. **`shaders/magnify.hlsl` was referenced by nothing** (no match in .rs, .toml or .wgsl). Resolved by ROADMAP 1.1: moved to docs/archive/magnify.hlsl.
+5. **Platform code is not isolated.** crates/cv-render/src/lib.rs mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform write caching. The pure crop, zoom, lerp and cursor-mapping math moved to cv-core::geometry in old 2.1. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut.
+6. **`shaders/magnify.hlsl` was referenced by nothing** (no match in .rs, .toml or .wgsl). Resolved by old 1.1: moved to docs/archive/magnify.hlsl.
 7. **Old dependencies.** Cargo.toml pins wgpu 22 and egui/eframe 0.29. The upgrade touches the same code as the platform split, so it needs a decision in an ADR.
-8. **Docs.** ROADMAP 1.1 moved PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (merged). tts-plan.md deliberately has no stage checkboxes; completion is recorded in the Done list above. Two CLAUDE.md claims do not match the code: it lists `ABM_ACTIVATE`, but appbar.rs sends ABM_NEW, QUERYPOS, SETPOS, WINDOWPOSCHANGED and REMOVE only; and it says the AppBar is released "on app exit" (see 9).
+8. **Docs.** Old 1.1 moved PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (merged). tts-plan.md now lives in docs/later/ (roadmap 0.1) and deliberately has no stage checkboxes; completion is recorded in the Done list above. Two CLAUDE.md claims do not match the code: it lists `ABM_ACTIVATE`, but appbar.rs sends ABM_NEW, QUERYPOS, SETPOS, WINDOWPOSCHANGED and REMOVE only; and it says the AppBar is released "on app exit" (see 9).
 9. **No exit cleanup path.** `appbar::unregister`, `MagShowSystemCursor(true)` and `update_clip_cursor(false)` run only after `GetMessageW` returns (cv-render/src/lib.rs:176-194). Nothing posts `WM_QUIT` or `WM_CLOSE` or destroys the overlay window (grep for `WM_CLOSE|WM_QUIT|PostThreadMessage|DestroyWindow|impl Drop` in crates/: no hits), and the render thread is detached (app/src/main.rs:63). When eframe returns, main returns (main.rs:94-97) and the process ends. Whether the work area, system cursor and cursor clip are restored on exit therefore depends on Windows, not on this code.
 10. **Docked mode on a second monitor looks unsupported.** `appbar::panel_rect` builds rects from origin (0,0) using the active monitor's width and height (appbar.rs:36-43) and ignores `monitor_left`/`monitor_top`. `update_clip_cursor` uses `SPI_GETWORKAREA`, which is the primary monitor's work area (lib.rs:567-578). While docked, a monitor switch updates `screen_w`/`screen_h` and the capture target but does not move the window (lib.rs:452-463). Fullscreen follow across monitors is implemented, and you saw it work.
-11. **Docking needs to change.** You tested docked mode while approving 2.1: it works, but you want it changed. Details to come from you; nothing is planned or on the roadmap yet. Finding 10 is related.
+11. **Docking needs to change.** You tested docked mode while approving old 2.1: it works, but you want it changed. Details to come from you; nothing is planned or on the roadmap yet. Finding 10 is related.
 
 Git (collected by command)
 - Branch: master at 89cc84c, equal to origin/master and to feat/tts-stage4. Nothing unpushed.
@@ -95,20 +102,13 @@ Git (collected by command)
 
 Mark each: works, broken, or not tested.
 
-- [ ] Stage 1: "clear-view ready" is heard on launch; closing the settings window leaves no stuck process
-- [x] Ctrl+Alt+Shift+Z toggles on and off (confirmed in fullscreen and docked while approving 2.1; each docked edge not itemised)
+- [x] Ctrl+Alt+Shift+Z toggles on and off (confirmed in fullscreen and docked while approving old 2.1; each docked edge not itemised)
 - [ ] Docked: work area shrinks on enable, is restored on disable, and is restored on exit (Finding 9; also after killing the process)
 - [ ] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9)
-- [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving 2.1)
-- [ ] Magnifier starts off after a relaunch that restores saved settings (2.2; implied by `enabled` not being saved, not watched)
+- [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving old 2.1)
+- [ ] Magnifier starts off after a relaunch that restores saved settings (old 2.2; implied by `enabled` not being saved, not watched)
 - [ ] Bilinear vs bicubic
 - [ ] Cursor circle lines up with the real pointer at 100%, 125%, 150% scaling (confirmed on your current display scaling only)
-- [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving 2.1)
+- [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving old 2.1)
 - [ ] Second monitor, docked: where the panel lands and where the cursor can go (Finding 10)
 - [ ] Idle CPU and GPU use with the magnifier on, at native resolution
-- [ ] Stage 2 and 3: hover echo in Notepad, File Explorer, Chrome, Edge, Settings; TTS toggle off is silent; volume and rate sliders change the voice
-- [ ] Hover keeps speaking with the settings window unfocused (Finding 2), then again with the repaint thread removed
-- [ ] Stage 4: stdout shows `mode → TextFocus` when a Notepad text area is focused and `mode → Idle` when focus moves to the taskbar
-- [ ] Hover in Chrome and Edge after clicking into the page body and into the address bar: is it silenced (Finding 1)
-- [ ] Click the settings panel while Notepad's text area was focused: does hover come back (Finding 1)
-- [ ] Start the app with Notepad already focused: is hover silenced from the start (Finding 1)
