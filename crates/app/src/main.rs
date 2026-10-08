@@ -2,7 +2,7 @@ mod app;
 mod hotkey;
 mod settings;
 
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}};
+use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU32, Ordering}};
 
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -68,10 +68,17 @@ fn main() -> eframe::Result {
     }
 
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled, shows/hides overlay
+    // The panel does not poll, so the thread wakes it after a toggle.
+    let repaint: app::RepaintSlot = Arc::new(OnceLock::new());
     {
         let state = shared.clone();
+        let repaint = repaint.clone();
         std::thread::spawn(move || {
-            hotkey::hotkey_loop(state);
+            hotkey::hotkey_loop(state, move || {
+                if let Some(ctx) = repaint.get() {
+                    ctx.request_repaint();
+                }
+            });
         });
     }
 
@@ -96,7 +103,7 @@ fn main() -> eframe::Result {
                 .with_always_on_top(),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui)))),
+        Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint)))),
     );
 
     #[cfg(feature = "tts")]
