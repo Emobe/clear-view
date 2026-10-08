@@ -170,7 +170,8 @@ pub fn run_overlay(
         });
     });
 
-    unsafe { MagInitialize() };
+    // Cursor hiding is best-effort: a failed Mag* call leaves nothing to act on.
+    let _ = unsafe { MagInitialize() };
 
     unsafe { SetTimer(Some(hwnd), 1, 16, None) };
 
@@ -184,14 +185,14 @@ pub fn run_overlay(
 
     // Clean up appbar on exit.
     WIN_DATA.with(|d| {
-        if let Some(w) = d.borrow().as_ref() {
-            if w.appbar_active {
-                appbar::unregister(hwnd);
-            }
+        if let Some(w) = d.borrow().as_ref()
+            && w.appbar_active
+        {
+            appbar::unregister(hwnd);
         }
     });
-    unsafe { MagShowSystemCursor(true) };
-    unsafe { MagUninitialize() };
+    let _ = unsafe { MagShowSystemCursor(true) };
+    let _ = unsafe { MagUninitialize() };
     update_clip_cursor(false);
 }
 
@@ -389,7 +390,7 @@ fn on_timer(hwnd: HWND) {
 
         // ── Cursor visibility via Magnification API ───────────────────────
         let show_cursor = !(snap.enabled && snap.mode == DisplayMode::Fullscreen);
-        unsafe { MagShowSystemCursor(show_cursor) };
+        let _ = unsafe { MagShowSystemCursor(show_cursor) };
 
         // ── Write back tracking state + resize wgpu surface ──────────────
         WIN_DATA.with(|d| {
@@ -423,8 +424,7 @@ fn on_timer(hwnd: HWND) {
         let mut b = d.borrow_mut();
         let w = b.as_mut().unwrap();
 
-        let target = geometry::output_at(&w.outputs, cursor.x, cursor.y);
-        let Some(target) = target else { return None };
+        let target = geometry::output_at(&w.outputs, cursor.x, cursor.y)?;
         if target.idx == w.active_output_idx {
             return None;
         }
@@ -498,7 +498,7 @@ fn on_timer(hwnd: HWND) {
             let new_frame = w
                 .last_frame
                 .as_ref()
-                .map_or(true, |last| !Arc::ptr_eq(last, frame));
+                .is_none_or(|last| !Arc::ptr_eq(last, frame));
             if new_frame {
                 w.wgpu.upload_frame(&frame.data, frame.width, frame.height);
                 w.last_frame = Some(Arc::clone(frame));

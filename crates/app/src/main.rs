@@ -35,10 +35,10 @@ fn main() -> eframe::Result {
             loop {
                 // Switch output if the render thread requested a different monitor.
                 let wanted = desired_output.load(Ordering::Relaxed);
-                if wanted != capturer.output_idx {
-                    if let Err(e) = capturer.switch_output(wanted) {
-                        eprintln!("[capture] switch_output({wanted}) failed: {e}");
-                    }
+                if wanted != capturer.output_idx
+                    && let Err(e) = capturer.switch_output(wanted)
+                {
+                    eprintln!("[capture] switch_output({wanted}) failed: {e}");
                 }
 
                 match capturer.next_frame(100) {
