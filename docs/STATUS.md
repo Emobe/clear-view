@@ -12,7 +12,7 @@ Roadmap items you have approved after testing. Added only when you say "I approv
 ## Works (a command proved it, or you verified it)
 
 - Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (1.1).
-- Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
+- Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
 - `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by 2.1.
@@ -33,7 +33,7 @@ Magnifier (read from code, file paths given)
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (lib.rs:391)
 - `ClipCursor` to the work area every tick while docked (lib.rs:472)
 - AppBar details on each of the four edges, and unregister on toggle-off (appbar.rs, lib.rs:324). Docking in general is seen working; which edges you tried is not recorded.
-- egui panel controls: zoom, follow speed, display mode, panel size, colour filter, interpolation: crates/app/src/app.rs
+- egui panel controls not yet verified: display mode and panel size beyond what docking showed, interpolation: crates/app/src/app.rs. Zoom, follow speed and colour filter are seen working.
 
 Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
 
@@ -98,7 +98,8 @@ Mark each: works, broken, or not tested.
 - [x] Ctrl+Alt+Shift+Z toggles on and off (confirmed in fullscreen and docked while approving 2.1; each docked edge not itemised)
 - [ ] Docked: work area shrinks on enable, is restored on disable, and is restored on exit (Finding 9; also after killing the process)
 - [ ] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9)
-- [ ] Zoom slider and bilinear vs bicubic (follow speed and all four colour filters confirmed working; the rest not yet)
+- [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving 2.1)
+- [ ] Bilinear vs bicubic
 - [ ] Cursor circle lines up with the real pointer at 100%, 125%, 150% scaling (confirmed on your current display scaling only)
 - [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving 2.1)
 - [ ] Second monitor, docked: where the panel lands and where the cursor can go (Finding 10)
