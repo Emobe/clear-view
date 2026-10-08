@@ -4,7 +4,7 @@ The handoff between sessions. Written by /audit, /step and /adr. Read by /next. 
 
 State: ready
 Item: 0.1 Update docs/STATUS.md for this roadmap
-Branch: none
+Branch: step/tts-mode-toggles (0.1 committed here; awaiting your test and approval)
 Notes:
 - The roadmap was rewritten on 2026-10-08 from docs/PRODUCT.md. Work in roadmap order from 0.1. ADR 0004 (2.1) is not due until Phase 2.
 - The "Existing ADRs" section of docs/ROADMAP.md says which ADRs stand and which later items supersede them.

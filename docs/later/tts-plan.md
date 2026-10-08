@@ -1,3 +1,5 @@
+> Parked until after v1: no speech work happens before the magnifier ships (docs/PRODUCT.md).
+
 # clear-view TTS Plan
 
 Screen reader / TTS feature plan for clear-view.
