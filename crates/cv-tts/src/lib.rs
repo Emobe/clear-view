@@ -59,10 +59,10 @@ impl IUIAutomationFocusChangedEventHandler_Impl for FocusHandler_Impl {
         };
 
         // Filter events from our own process (egui panel) to avoid noise.
-        if let Ok(pid) = unsafe { el.CurrentProcessId() } {
-            if pid == self.own_pid {
-                return Ok(());
-            }
+        if let Ok(pid) = unsafe { el.CurrentProcessId() }
+            && pid == self.own_pid
+        {
+            return Ok(());
         }
 
         // IUIAutomationTextPattern presence == text-bearing element.

@@ -55,16 +55,11 @@ pub enum Edge {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum DisplayMode {
+    #[default]
     Fullscreen,
     Docked(Edge),
-}
-
-impl Default for DisplayMode {
-    fn default() -> Self {
-        Self::Fullscreen
-    }
 }
 
 /// Persisted to settings.json except `enabled`, which always starts false.

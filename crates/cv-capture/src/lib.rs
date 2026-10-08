@@ -11,7 +11,7 @@ use windows::{
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
             IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_WAIT_TIMEOUT,
-            DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTPUT_DESC,
+            DXGI_OUTDUPL_FRAME_INFO,
         },
     },
 };
@@ -105,17 +105,17 @@ pub fn enumerate_outputs() -> Vec<OutputInfo> {
                 Ok(o)  => o,
                 Err(_) => break,
             };
-            if let Ok(desc) = output.GetDesc() {
-                if desc.AttachedToDesktop.as_bool() {
-                    let r = desc.DesktopCoordinates;
-                    result.push(OutputInfo {
-                        idx,
-                        left:   r.left,
-                        top:    r.top,
-                        width:  (r.right  - r.left) as u32,
-                        height: (r.bottom - r.top)  as u32,
-                    });
-                }
+            if let Ok(desc) = output.GetDesc()
+                && desc.AttachedToDesktop.as_bool()
+            {
+                let r = desc.DesktopCoordinates;
+                result.push(OutputInfo {
+                    idx,
+                    left:   r.left,
+                    top:    r.top,
+                    width:  (r.right  - r.left) as u32,
+                    height: (r.bottom - r.top)  as u32,
+                });
             }
             idx += 1;
         }
