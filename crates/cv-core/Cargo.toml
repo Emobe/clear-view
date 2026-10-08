@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 parking_lot = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

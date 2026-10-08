@@ -8,16 +8,18 @@ Roadmap items you have approved after testing. Added only when you say "I approv
 
 - 1.1 Move old plans and the unused shader to docs/archive/ (merged in PR #1)
 - 2.1 Move pure view math into cv-core::geometry with unit tests (PR #4)
+- 2.2 Settings persistence, JSON in the user config dir (PR #5)
 
 ## Works (a command proved it, or you verified it)
 
 - Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (1.1).
 - Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
+- Verified by you by hand while approving 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
 - `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by 2.1.
-- `cargo test --workspace`: passes, 17 tests, all in cv-core (`geometry::tests`). The other crates have none.
-- The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2928 lines of Rust in total.
+- `cargo test --workspace`: passes, 33 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 6 (`settings::tests`). cv-capture, cv-render and cv-tts have none.
+- The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
 ## Broken
 
@@ -46,8 +48,7 @@ Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been
 
 ## Missing
 
-- Tests: only cv-core::geometry (17). None in cv-capture, cv-render, cv-tts or app.
-- Settings persistence: `AppState::default()` on every launch (cv-core/src/lib.rs:88). No serde, no config dir code anywhere in crates/.
+- Tests: only cv-core (geometry and state) and app (settings). None in cv-capture, cv-render or cv-tts.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
 - Zoom in/out hotkeys: hotkey.rs registers only Ctrl+Alt+Shift+Z (`HOTKEY_ID = 1`). A failed registration only prints to stdout; the settings window does not show it.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
@@ -99,6 +100,7 @@ Mark each: works, broken, or not tested.
 - [ ] Docked: work area shrinks on enable, is restored on disable, and is restored on exit (Finding 9; also after killing the process)
 - [ ] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9)
 - [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving 2.1)
+- [ ] Magnifier starts off after a relaunch that restores saved settings (2.2; implied by `enabled` not being saved, not watched)
 - [ ] Bilinear vs bicubic
 - [ ] Cursor circle lines up with the real pointer at 100%, 125%, 150% scaling (confirmed on your current display scaling only)
 - [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving 2.1)

@@ -1,5 +1,6 @@
 mod app;
 mod hotkey;
+mod settings;
 
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}};
 
@@ -12,7 +13,8 @@ fn main() -> eframe::Result {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    let shared = cv_core::new_shared();
+    // Load before any thread starts so the TTS thread's initial volume and rate come from the file.
+    let shared = cv_core::shared_from(settings::load());
     let frame_state: cv_core::FrameState = Arc::new(Mutex::new(None));
 
     // Enumerate monitors once at startup.
@@ -77,6 +79,10 @@ fn main() -> eframe::Result {
     let tts_shutdown = Arc::new(AtomicBool::new(false));
     let tts_handle = cv_tts::spawn_tts_thread(tts_shutdown.clone(), shared.clone());
 
+    // Settings saver thread: writes settings.json when AppState changes
+    let settings_shutdown = Arc::new(AtomicBool::new(false));
+    let settings_handle = settings::spawn_saver(shared.clone(), settings_shutdown.clone());
+
     // egui settings panel on main thread
     let state_for_egui = shared.clone();
     let result = eframe::run_native(
@@ -93,6 +99,10 @@ fn main() -> eframe::Result {
 
     tts_shutdown.store(true, Ordering::Relaxed);
     tts_handle.join().ok();
+
+    // The saver does a final write after it sees the flag, so the last change is not lost.
+    settings_shutdown.store(true, Ordering::Relaxed);
+    settings_handle.join().ok();
 
     result
 }
