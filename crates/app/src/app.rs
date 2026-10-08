@@ -121,6 +121,28 @@ impl eframe::App for ClearViewApp {
                 egui::Checkbox::new(&mut s.tts_hover_enabled, "Hover echo"),
             );
 
+            // Stages 5 to 8 have no code yet; these flags are saved but nothing reads them.
+            ui.add_enabled(
+                s.tts_enabled,
+                egui::Checkbox::new(&mut s.tts_selection_enabled, "Selection reading"),
+            )
+            .on_hover_text("Not active yet: reader stage 5");
+            ui.add_enabled(
+                s.tts_enabled,
+                egui::Checkbox::new(&mut s.tts_caret_enabled, "Caret following"),
+            )
+            .on_hover_text("Not active yet: reader stage 6");
+            ui.add_enabled(
+                s.tts_enabled,
+                egui::Checkbox::new(&mut s.tts_typing_enabled, "Typing echo"),
+            )
+            .on_hover_text("Not active yet: reader stage 7");
+            ui.add_enabled(
+                s.tts_enabled,
+                egui::Checkbox::new(&mut s.tts_appreader_enabled, "AppReader"),
+            )
+            .on_hover_text("Not active yet: reader stage 8");
+
             ui.add_space(4.0);
 
             ui.add_enabled(

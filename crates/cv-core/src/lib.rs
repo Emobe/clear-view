@@ -88,6 +88,14 @@ pub struct AppState {
     pub tts_enabled: bool,
     /// Speak the name of the element under the cursor.
     pub tts_hover_enabled: bool,
+    /// Speak selected text. Read by reader stage 5; no code uses it yet.
+    pub tts_selection_enabled: bool,
+    /// Speak the word or character at the caret. Read by reader stage 6; no code uses it yet.
+    pub tts_caret_enabled: bool,
+    /// Echo typed words or characters. Read by reader stage 7; no code uses it yet.
+    pub tts_typing_enabled: bool,
+    /// Continuous reading (AppReader). Read by reader stage 8; no code uses it yet.
+    pub tts_appreader_enabled: bool,
     /// SAPI volume 0–100.
     pub tts_volume: u32,
     /// SAPI rate -10 to 10.
@@ -106,6 +114,10 @@ impl Default for AppState {
             color_filter: ColorFilter::None,
             tts_enabled: false,
             tts_hover_enabled: true,
+            tts_selection_enabled: true,
+            tts_caret_enabled: true,
+            tts_typing_enabled: true,
+            tts_appreader_enabled: true,
             tts_volume: 80,
             tts_rate: 0,
         }
@@ -166,6 +178,10 @@ mod tests {
             color_filter: ColorFilter::GreyscaleInverted,
             tts_enabled: true,
             tts_hover_enabled: false,
+            tts_selection_enabled: false,
+            tts_caret_enabled: false,
+            tts_typing_enabled: false,
+            tts_appreader_enabled: false,
             tts_volume: 55,
             tts_rate: -3,
         }
@@ -205,6 +221,16 @@ mod tests {
         assert_eq!(s.zoom, 3.0);
         assert_eq!(s.tts_rate, 2);
         assert_eq!(s.panel_size, AppState::default().panel_size);
+    }
+
+    #[test]
+    fn file_without_mode_toggles_loads_them_enabled() {
+        let s: AppState = serde_json::from_str(r#"{"tts_hover_enabled": false}"#).unwrap();
+        assert!(!s.tts_hover_enabled);
+        assert!(s.tts_selection_enabled);
+        assert!(s.tts_caret_enabled);
+        assert!(s.tts_typing_enabled);
+        assert!(s.tts_appreader_enabled);
     }
 
     #[test]
