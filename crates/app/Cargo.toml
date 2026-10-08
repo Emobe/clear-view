@@ -7,9 +7,13 @@ edition = "2024"
 cv-core = { path = "../cv-core" }
 cv-capture = { path = "../cv-capture" }
 cv-render = { path = "../cv-render" }
-cv-tts = { path = "../cv-tts" }
+cv-tts = { path = "../cv-tts", optional = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 windows = { workspace = true }
+
+[features]
+# Speech is parked until after v1. Off by default.
+tts = ["dep:cv-tts"]
