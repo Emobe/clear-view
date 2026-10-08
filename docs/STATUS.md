@@ -14,7 +14,7 @@ The roadmap was rewritten on 2026-10-08. These three come from the previous road
 
 Current roadmap:
 
-- 0.1 Update docs/STATUS.md for this roadmap (branch step/tts-mode-toggles)
+- 0.1 Update docs/STATUS.md for this roadmap (branch step/0.1-status-for-roadmap)
 
 ## Works (a command proved it, or you verified it)
 
