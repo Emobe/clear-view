@@ -12,7 +12,7 @@ Roadmap items you have approved after testing. Added only when you say "I approv
 ## Works (a command proved it, or you verified it)
 
 - Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (1.1).
-- Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
+- Verified by you by hand while approving 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
 - `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by 2.1.
@@ -29,7 +29,7 @@ Code is present and builds; you have not verified the behaviour. Anything you di
 
 Magnifier (read from code, file paths given)
 - DXGI capture details: `DXGI_ERROR_WAIT_TIMEOUT` retry and reconnect on error (crates/cv-capture/src/lib.rs). Capture itself and output switching are seen working.
-- Colour filters (4), bilinear vs Catmull-Rom bicubic, frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-render/src/lib.rs, gfx.rs, shader.wgsl
+- Bilinear vs Catmull-Rom bicubic, frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-render/src/lib.rs, gfx.rs, shader.wgsl. The four colour filters are seen working.
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (lib.rs:391)
 - `ClipCursor` to the work area every tick while docked (lib.rs:472)
 - AppBar details on each of the four edges, and unregister on toggle-off (appbar.rs, lib.rs:324). Docking in general is seen working; which edges you tried is not recorded.
@@ -98,7 +98,7 @@ Mark each: works, broken, or not tested.
 - [x] Ctrl+Alt+Shift+Z toggles on and off (confirmed in fullscreen and docked while approving 2.1; each docked edge not itemised)
 - [ ] Docked: work area shrinks on enable, is restored on disable, and is restored on exit (Finding 9; also after killing the process)
 - [ ] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9)
-- [ ] Zoom and follow speed sliders, bilinear vs bicubic, all four colour filters (follow confirmed working; the rest not yet)
+- [ ] Zoom slider and bilinear vs bicubic (follow speed and all four colour filters confirmed working; the rest not yet)
 - [ ] Cursor circle lines up with the real pointer at 100%, 125%, 150% scaling (confirmed on your current display scaling only)
 - [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving 2.1)
 - [ ] Second monitor, docked: where the panel lands and where the cursor can go (Finding 10)
