@@ -1,0 +1,141 @@
+From cb1549fba797b02ab4d097ee42122eeca8fefa07 Mon Sep 17 00:00:00 2001
+From: Anthony Shuker <anthony.r.shuker@gmail.com>
+Date: Thu, 8 Oct 2026 15:21:16 +0100
+Subject: [PATCH 1/2] Add per-mode TTS toggles to AppState and the settings
+ panel (2.3)
+
+Four new persisted flags (selection, caret, typing, AppReader), default
+true, with greyed-out checkboxes when TTS is off. Reader stages 5 to 8
+have no code yet, so nothing reads them; tooltips say so.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ crates/app/src/app.rs     | 22 ++++++++++++++++++++++
+ crates/cv-core/src/lib.rs | 26 ++++++++++++++++++++++++++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/crates/app/src/app.rs b/crates/app/src/app.rs
+index dbc8908..e7b8f44 100644
+--- a/crates/app/src/app.rs
++++ b/crates/app/src/app.rs
+@@ -121,6 +121,28 @@ impl eframe::App for ClearViewApp {
+                 egui::Checkbox::new(&mut s.tts_hover_enabled, "Hover echo"),
+             );
+ 
++            // Stages 5 to 8 have no code yet; these flags are saved but nothing reads them.
++            ui.add_enabled(
++                s.tts_enabled,
++                egui::Checkbox::new(&mut s.tts_selection_enabled, "Selection reading"),
++            )
++            .on_hover_text("Not active yet: reader stage 5");
++            ui.add_enabled(
++                s.tts_enabled,
++                egui::Checkbox::new(&mut s.tts_caret_enabled, "Caret following"),
++            )
++            .on_hover_text("Not active yet: reader stage 6");
++            ui.add_enabled(
++                s.tts_enabled,
++                egui::Checkbox::new(&mut s.tts_typing_enabled, "Typing echo"),
++            )
++            .on_hover_text("Not active yet: reader stage 7");
++            ui.add_enabled(
++                s.tts_enabled,
++                egui::Checkbox::new(&mut s.tts_appreader_enabled, "AppReader"),
++            )
++            .on_hover_text("Not active yet: reader stage 8");
++
+             ui.add_space(4.0);
+ 
+             ui.add_enabled(
+diff --git a/crates/cv-core/src/lib.rs b/crates/cv-core/src/lib.rs
+index cdbdad4..79278c7 100644
+--- a/crates/cv-core/src/lib.rs
++++ b/crates/cv-core/src/lib.rs
+@@ -88,6 +88,14 @@ pub struct AppState {
+     pub tts_enabled: bool,
+     /// Speak the name of the element under the cursor.
+     pub tts_hover_enabled: bool,
++    /// Speak selected text. Read by reader stage 5; no code uses it yet.
++    pub tts_selection_enabled: bool,
++    /// Speak the word or character at the caret. Read by reader stage 6; no code uses it yet.
++    pub tts_caret_enabled: bool,
++    /// Echo typed words or characters. Read by reader stage 7; no code uses it yet.
++    pub tts_typing_enabled: bool,
++    /// Continuous reading (AppReader). Read by reader stage 8; no code uses it yet.
++    pub tts_appreader_enabled: bool,
+     /// SAPI volume 0–100.
+     pub tts_volume: u32,
+     /// SAPI rate -10 to 10.
+@@ -106,6 +114,10 @@ impl Default for AppState {
+             color_filter: ColorFilter::None,
+             tts_enabled: false,
+             tts_hover_enabled: true,
++            tts_selection_enabled: true,
++            tts_caret_enabled: true,
++            tts_typing_enabled: true,
++            tts_appreader_enabled: true,
+             tts_volume: 80,
+             tts_rate: 0,
+         }
+@@ -166,6 +178,10 @@ mod tests {
+             color_filter: ColorFilter::GreyscaleInverted,
+             tts_enabled: true,
+             tts_hover_enabled: false,
++            tts_selection_enabled: false,
++            tts_caret_enabled: false,
++            tts_typing_enabled: false,
++            tts_appreader_enabled: false,
+             tts_volume: 55,
+             tts_rate: -3,
+         }
+@@ -207,6 +223,16 @@ mod tests {
+         assert_eq!(s.panel_size, AppState::default().panel_size);
+     }
+ 
++    #[test]
++    fn file_without_mode_toggles_loads_them_enabled() {
++        let s: AppState = serde_json::from_str(r#"{"tts_hover_enabled": false}"#).unwrap();
++        assert!(!s.tts_hover_enabled);
++        assert!(s.tts_selection_enabled);
++        assert!(s.tts_caret_enabled);
++        assert!(s.tts_typing_enabled);
++        assert!(s.tts_appreader_enabled);
++    }
++
+     #[test]
+     fn garbage_is_an_error() {
+         assert!(serde_json::from_str::<AppState>("not json").is_err());
+-- 
+2.45.1.windows.1
+
+
+From 5de36f2eab0082a29f441c0391906761f45f2f96 Mon Sep 17 00:00:00 2001
+From: Anthony Shuker <anthony.r.shuker@gmail.com>
+Date: Thu, 8 Oct 2026 15:43:36 +0100
+Subject: [PATCH 2/2] Make the settings window taller so the new TTS checkboxes
+ fit
+
+The window is fixed size (not resizable), so the four mode checkboxes
+added in 2.3 were clipped below the visible area.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ crates/app/src/main.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/app/src/main.rs b/crates/app/src/main.rs
+index 2da824f..3982e78 100644
+--- a/crates/app/src/main.rs
++++ b/crates/app/src/main.rs
+@@ -89,7 +89,7 @@ fn main() -> eframe::Result {
+         "clear-view settings",
+         eframe::NativeOptions {
+             viewport: egui::ViewportBuilder::default()
+-                .with_inner_size([320.0, 340.0])
++                .with_inner_size([320.0, 460.0])
+                 .with_resizable(false)
+                 .with_always_on_top(),
+             ..Default::default()
+-- 
+2.45.1.windows.1
+
