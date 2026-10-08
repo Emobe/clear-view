@@ -12,9 +12,14 @@ The roadmap was rewritten on 2026-10-08. These three come from the previous road
 - old 2.1 Move pure view math into cv-core::geometry with unit tests (PR #4)
 - old 2.2 Settings persistence, JSON in the user config dir (PR #5)
 
+Current roadmap:
+
+- 0.1 Update docs/STATUS.md for this roadmap (branch step/tts-mode-toggles)
+
 ## Works (a command proved it, or you verified it)
 
 - Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (old 1.1).
+- Docs for the new roadmap (0.1, approved by you 2026-10-08): the Done list labels the previous roadmap's items "old 1.1, old 2.1, old 2.2"; speech-only items are gone from "Needs your run"; tts-plan.md is at docs/later/tts-plan.md with a parked note.
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
