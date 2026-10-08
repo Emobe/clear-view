@@ -17,6 +17,7 @@ Current roadmap:
 - 0.1 Update docs/STATUS.md for this roadmap (branch step/0.1-status-for-roadmap)
 - 0.2 Put cv-tts behind an off-by-default `tts` feature (branch step/0.2-tts-feature, PR #8)
 - 0.3 Remove the 100 ms repaint thread (branch step/0.3-remove-repaint-thread, PR #10)
+- 0.4 Panel draws from a snapshot and writes back only changed fields (branch step/0.4-panel-snapshot, PR #11)
 
 ## Works (a command proved it, or you verified it)
 
@@ -24,13 +25,14 @@ Current roadmap:
 - Docs for the new roadmap (0.1, approved by you 2026-10-08): the Done list labels the previous roadmap's items "old 1.1, old 2.1, old 2.2"; speech-only items are gone from "Needs your run"; tts-plan.md is at docs/later/tts-plan.md with a parked note.
 - cv-tts behind the `tts` feature (0.2, approved by you 2026-10-08): the step's Verify list was no "clear-view ready" on launch and the magnifier unchanged. Plain `cargo build` and `cargo run` skip cv-tts; `--workspace` still builds it.
 - Panel no longer polls (0.3, approved by you 2026-10-08): the repaint thread and `request_repaint_after` are gone; the hotkey thread wakes the panel after a toggle. You ran the step's Verify list (hotkey with the panel unfocused, panel controls, settings saving, idle CPU) and reported that it works; individual items were not itemised.
+- Panel no longer holds the write lock per frame (0.4, approved by you 2026-10-08): `update()` clones `AppState` under a read lock, draws against the copy, and writes back only the fields the panel changed, under one short write lock. You ran the step's Verify list and reported that it works; individual items were not itemised. 4 unit tests cover `apply_changes` (app now has 10 tests).
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
 - `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by old 2.1.
-- `cargo test --workspace`: passes, 33 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 6 (`settings::tests`). cv-capture, cv-render and cv-tts have none.
+- `cargo test --workspace`: passes, 37 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`). cv-capture, cv-render and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
 ## Broken
@@ -60,7 +62,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 
 ## Missing
 
-- Tests: only cv-core (geometry and state) and app (settings). None in cv-capture, cv-render or cv-tts.
+- Tests: only cv-core (geometry and state) and app (settings, panel merge). None in cv-capture, cv-render or cv-tts.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
 - Zoom in/out hotkeys: hotkey.rs registers only Ctrl+Alt+Shift+Z (`HOTKEY_ID = 1`). A failed registration only prints to stdout; the settings window does not show it.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
@@ -72,7 +74,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 
 1. **Text focus silences hover again.** `TtsMode::TextFocus` is set when the focused element exposes `IUIAutomationTextPattern` (cv-tts/src/lib.rs:69-72) and hover is skipped in that mode (lib.rs:216). Commit 141750c removed the same predicate (`GetFocusedElement` + TextPattern check) because it "silenced hover any time a real app had focus, which is nearly always". Stage 4 brought it back event-driven; the predicate is unchanged, so the risk is unchanged. Two more facts from the code: focus events from our own process are dropped (lib.rs:62-66), so clicking the settings panel while in `TextFocus` leaves the mode at `TextFocus`; and mode starts `Idle` with no initial focus query (lib.rs:161), so an already-focused text box is not seen until focus moves. Nothing else speaks in `TextFocus` until Stage 5 to 7.
 2. **The repaint thread's stated cause was wrong. Resolved by 0.3.** The old comment said the write lock from `update()` "is never released"; the guard drops when the `CentralPanel::show` closure returns. It also said `request_repaint_after` inside `update()` is dropped as stale. In eframe 0.29.1 the pass-number check runs when the `RequestRepaint` event arrives, not when the delay ends, so it is accepted. The thread and the polling are removed. The real cause of speech stopping with the panel unfocused (if there was one) is still unproven; speech is parked.
-3. **`update()` takes `state.write()` every frame** (app.rs:33). Since 0.3 the panel repaints only on input or a hotkey toggle, not 10 times a second, but each repaint still takes the write lock. Prefer snapshot, edit a local copy, write back on change (0.4).
+3. **`update()` took `state.write()` every frame. Resolved by 0.4.** The panel now snapshots under a read lock, edits a local copy and writes back only changed fields (app.rs `apply_changes`). Side effect from egui 0.29.1: `Slider` re-applies `step_by` rounding every frame, so an off-grid value from a hand-edited settings file is snapped and saved once.
 4. **Capture allocates a full frame per captured frame.** `read_staging` does `vec![0u8; w*h*4]` and a row copy each time (cv-capture/src/lib.rs:188-213): about 14.7 MB at 1440p, 33 MB at 4K. Performance is unmeasured.
 5. **Platform code is not isolated.** crates/cv-render/src/lib.rs mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform write caching. The pure crop, zoom, lerp and cursor-mapping math moved to cv-core::geometry in old 2.1. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut.
 6. **`shaders/magnify.hlsl` was referenced by nothing** (no match in .rs, .toml or .wgsl). Resolved by old 1.1: moved to docs/archive/magnify.hlsl.
