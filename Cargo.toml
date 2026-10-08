@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/cv-core", "crates/cv-capture", "crates/cv-render", "crates/app", "crates/cv-tts"]
+# Plain `cargo build` and `cargo run` skip cv-tts (speech is parked until after v1).
+# `--workspace` and `--features tts` still build it.
+default-members = ["crates/cv-core", "crates/cv-capture", "crates/cv-render", "crates/app"]
 resolver = "2"
 
 [workspace.dependencies]

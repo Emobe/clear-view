@@ -75,8 +75,10 @@ fn main() -> eframe::Result {
         });
     }
 
-    // TTS thread: SAPI speech, MTA COM init
+    // TTS thread: SAPI speech, MTA COM init. Only with `--features tts`.
+    #[cfg(feature = "tts")]
     let tts_shutdown = Arc::new(AtomicBool::new(false));
+    #[cfg(feature = "tts")]
     let tts_handle = cv_tts::spawn_tts_thread(tts_shutdown.clone(), shared.clone());
 
     // Settings saver thread: writes settings.json when AppState changes
@@ -97,8 +99,11 @@ fn main() -> eframe::Result {
         Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui)))),
     );
 
-    tts_shutdown.store(true, Ordering::Relaxed);
-    tts_handle.join().ok();
+    #[cfg(feature = "tts")]
+    {
+        tts_shutdown.store(true, Ordering::Relaxed);
+        tts_handle.join().ok();
+    }
 
     // The saver does a final write after it sees the flag, so the last change is not lost.
     settings_shutdown.store(true, Ordering::Relaxed);
