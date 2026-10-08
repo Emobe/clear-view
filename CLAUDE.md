@@ -26,6 +26,7 @@ It uses DXGI Desktop Duplication for capture, wgpu for rendering, egui for the s
 - docs/adr/: decisions and why
 - tts-plan.md: reader stages, architecture and dead ends
 - docs/NEXT.md: the baton between sessions
+- Roadmap items are numbered (1.1, 3.1). Commands take the number: `/step 1.1`, `/adr 3.1`.
 - Commands in .claude/commands: `/next` (says what to run and with which model), `/audit`, `/step <item>`, `/adr <decision>`
 
 ## Model guide

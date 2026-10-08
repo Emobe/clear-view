@@ -13,6 +13,6 @@ Do not change any source file. The only files you write are docs/STATUS.md and d
 4. For each stage in tts-plan.md, compare the code with the stage's Verify list.
 5. Rewrite docs/STATUS.md with these sections: Works (only what a command proved), Broken, Not tested, Missing, Findings, Needs your run. Facts only, with file paths.
 
-6. Rewrite docs/NEXT.md with State: ready and the first roadmap item that STATUS.md shows is not done. Tell me to /clear and run /next.
+6. Rewrite docs/NEXT.md with State: ready and Item set to the number and title of the first roadmap item that STATUS.md shows is not done. Tell me to /clear and run /next.
 
 Then stop and wait for me.
