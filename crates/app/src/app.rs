@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use cv_core::{ColorFilter, DisplayMode, Edge, Interpolation, SharedState};
+use cv_core::{AppState, ColorFilter, DisplayMode, Edge, Interpolation, SharedState};
 use eframe::egui;
 
 /// Filled with the egui context once the window exists. Threads that change state the panel
@@ -26,7 +26,10 @@ impl eframe::App for ClearViewApp {
             ui.heading("clear-view");
             ui.separator();
 
-            let mut s = self.state.write();
+            // Draw against a local copy so no lock is held while egui runs. Only fields the
+            // panel changed are written back, so a hotkey toggle of `enabled` is never overwritten.
+            let mut s = self.state.read().clone();
+            let before = s.clone();
 
             // Enable / disable toggle
             ui.horizontal(|ui| {
@@ -130,6 +133,84 @@ impl eframe::App for ClearViewApp {
                     egui::Slider::new(&mut s.tts_rate, -10..=10).text("Rate"),
                 );
             }
+
+            if s != before {
+                apply_changes(&mut self.state.write(), &before, &s);
+            }
         });
+    }
+}
+
+/// Copies into `live` every field where `after` differs from `before`; other fields keep
+/// whatever other threads wrote since `before` was taken.
+fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
+    macro_rules! merge {
+        ($($field:ident),+ $(,)?) => {
+            $(if after.$field != before.$field { live.$field = after.$field; })+
+        };
+    }
+    merge!(
+        enabled,
+        zoom,
+        smooth_speed,
+        interpolation,
+        display_mode,
+        panel_size,
+        color_filter,
+        tts_enabled,
+        tts_hover_enabled,
+        tts_volume,
+        tts_rate,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_field_is_copied() {
+        let before = AppState::default();
+        let after = AppState { zoom: 5.0, ..before.clone() };
+        let mut live = before.clone();
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, after);
+    }
+
+    #[test]
+    fn unchanged_fields_keep_the_live_value() {
+        // The hotkey flipped `enabled` after the panel took its snapshot.
+        let before = AppState::default();
+        let after = AppState { zoom: 5.0, ..before.clone() };
+        let mut live = AppState { enabled: true, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert!(live.enabled);
+        assert_eq!(live.zoom, 5.0);
+    }
+
+    #[test]
+    fn several_fields_at_once() {
+        let before = AppState::default();
+        let after = AppState {
+            enabled: true,
+            display_mode: DisplayMode::Docked(Edge::Left),
+            panel_size: 20,
+            color_filter: ColorFilter::Inverted,
+            interpolation: Interpolation::Bicubic,
+            tts_rate: 3,
+            ..before.clone()
+        };
+        let mut live = before.clone();
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, after);
+    }
+
+    #[test]
+    fn no_change_leaves_live_alone() {
+        let before = AppState::default();
+        let mut live = AppState { zoom: 7.0, enabled: true, ..before.clone() };
+        let expected = live.clone();
+        apply_changes(&mut live, &before, &before.clone());
+        assert_eq!(live, expected);
     }
 }
