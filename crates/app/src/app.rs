@@ -1,25 +1,21 @@
+use std::sync::{Arc, OnceLock};
+
 use cv_core::{ColorFilter, DisplayMode, Edge, Interpolation, SharedState};
 use eframe::egui;
+
+/// Filled with the egui context once the window exists. Threads that change state the panel
+/// shows (the hotkey thread flips `enabled`) call `request_repaint()` on it afterwards.
+pub type RepaintSlot = Arc<OnceLock<egui::Context>>;
 
 pub struct ClearViewApp {
     state: SharedState,
 }
 
 impl ClearViewApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, state: SharedState) -> Self {
-        // Keep the event loop ticking at ~10 Hz even when the settings window is unfocused.
-        // Without this, eframe idles into ControlFlow::Wait — the write lock acquired in
-        // update() is never released and state.read() in the TTS thread blocks indefinitely.
-        // request_repaint_after() inside update() is unreliable for this because it captures
-        // cumulative_pass_nr at call time; if the window was focused and many frames rendered
-        // before the 100ms fires, the pass_nr check marks it stale and drops the repaint.
-        // Calling request_repaint() from a background thread always uses the current pass_nr.
-        let ctx = cc.egui_ctx.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            ctx.request_repaint();
-        });
-
+    pub fn new(cc: &eframe::CreationContext<'_>, state: SharedState, repaint: RepaintSlot) -> Self {
+        // egui only repaints on input or an explicit request, so the panel does not poll.
+        // Anything that changes displayed state from another thread must wake it via `repaint`.
+        let _ = repaint.set(cc.egui_ctx.clone());
         Self { state }
     }
 }
@@ -135,7 +131,5 @@ impl eframe::App for ClearViewApp {
                 );
             }
         });
-
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
