@@ -2,7 +2,15 @@
 
 Audited 2026-10-08 on Windows, master at 89cc84c plus uncommitted docs changes. Replaces the static draft. "Works" holds only what a command proved. Nothing was run as an app, so every runtime behaviour is under "Not tested" or "Needs your run".
 
+## Done
+
+Roadmap items you have approved after testing. Added only when you say "I approve".
+
+- 1.1 Move old plans and the unused shader to docs/archive/ (merged in PR #1)
+
 ## Works (a command proved it)
+
+- Old plans archived: PLAN.md, PHASE2PLAN.md, handoff.md and magnify.hlsl are in docs/archive/; magnify.hlsl had no references in .rs, .toml or .wgsl. Approved by you (1.1). The hand check listed for it was `cargo run` starts and Win+= toggles.
 
 - `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
 - `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import.
@@ -44,7 +52,6 @@ Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
 - AppState fields from tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
 - tts-plan.md architecture stubs: no `AccessibilityBackend`, `AppContext`, `describe_element`, `TtsVerbosity`, `TtsGranularity` or `HotkeyBinding` anywhere in crates/. Hover speaks the element name directly (lib.rs:253-262).
-- Stage checkboxes in tts-plan.md: none (grep for `[ ]` and `[x]` finds nothing). CLAUDE.md requires them. ROADMAP 1.2.
 - Docked-mode support for a non-primary monitor (Finding 10).
 
 ## Findings
@@ -56,7 +63,7 @@ Reader stages (tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been
 5. **Platform code is not isolated.** crates/cv-render/src/lib.rs (601 lines) mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform and crop math. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut.
 6. **`shaders/magnify.hlsl` was referenced by nothing** (no match in .rs, .toml or .wgsl). Resolved by ROADMAP 1.1: moved to docs/archive/magnify.hlsl.
 7. **Old dependencies.** Cargo.toml pins wgpu 22 and egui/eframe 0.29. The upgrade touches the same code as the platform split, so it needs a decision in an ADR.
-8. **Docs.** ROADMAP 1.1 moved PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (on branch step/archive-old-docs until merged). Still open: tts-plan.md has no stage checkboxes (ROADMAP 1.2). Two CLAUDE.md claims do not match the code: it lists `ABM_ACTIVATE`, but appbar.rs sends ABM_NEW, QUERYPOS, SETPOS, WINDOWPOSCHANGED and REMOVE only; and it says the AppBar is released "on app exit" (see 9).
+8. **Docs.** ROADMAP 1.1 moved PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (merged). tts-plan.md deliberately has no stage checkboxes; completion is recorded in the Done list above. Two CLAUDE.md claims do not match the code: it lists `ABM_ACTIVATE`, but appbar.rs sends ABM_NEW, QUERYPOS, SETPOS, WINDOWPOSCHANGED and REMOVE only; and it says the AppBar is released "on app exit" (see 9).
 9. **No exit cleanup path.** `appbar::unregister`, `MagShowSystemCursor(true)` and `update_clip_cursor(false)` run only after `GetMessageW` returns (cv-render/src/lib.rs:176-194). Nothing posts `WM_QUIT` or `WM_CLOSE` or destroys the overlay window (grep for `WM_CLOSE|WM_QUIT|PostThreadMessage|DestroyWindow|impl Drop` in crates/: no hits), and the render thread is detached (app/src/main.rs:63). When eframe returns, main returns (main.rs:94-97) and the process ends. Whether the work area, system cursor and cursor clip are restored on exit therefore depends on Windows, not on this code.
 10. **Docked mode on a second monitor looks unsupported.** `appbar::panel_rect` builds rects from origin (0,0) using the active monitor's width and height (appbar.rs:36-43) and ignores `monitor_left`/`monitor_top`. `update_clip_cursor` uses `SPI_GETWORKAREA`, which is the primary monitor's work area (lib.rs:567-578). While docked, a monitor switch updates `screen_w`/`screen_h` and the capture target but does not move the window (lib.rs:452-463). Fullscreen follow across monitors is implemented.
 
