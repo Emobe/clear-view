@@ -12,7 +12,7 @@ It uses DXGI Desktop Duplication for capture, wgpu for rendering, egui for the s
 
 - You are already in the project root. Do not cd anywhere.
 - Never merge branches to master. Create branches, commit to them, then stop and wait for explicit instruction.
-- After finishing a `/step` or `/adr`, push the branch and open a PR with the `gh` CLI. Do not use `git push` (the remote is SSH and does not work here). Never merge a PR; stop once it is open and give me the URL.
+- After finishing a `/step` or `/adr`, push the branch and open a PR with the `gh` CLI. The `origin` remote is SSH and does not work here, so push over HTTPS with the `gh` credential helper: `git -c credential.helper= -c credential.helper='!gh auth git-credential' push -u https://github.com/Emobe/clear-view.git <branch>`. Then `gh pr create`. Never merge a PR; stop once it is open and give me the URL.
 - Plan before code on anything non-trivial and wait for approval.
 - Do the task given. Do not start the next stage or item on your own.
 - When debugging, find the root cause by reading the code. Do not paper over it.
