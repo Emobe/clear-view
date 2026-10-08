@@ -18,6 +18,7 @@ Current roadmap:
 - 0.2 Put cv-tts behind an off-by-default `tts` feature (branch step/0.2-tts-feature, PR #8)
 - 0.3 Remove the 100 ms repaint thread (branch step/0.3-remove-repaint-thread, PR #10)
 - 0.4 Panel draws from a snapshot and writes back only changed fields (branch step/0.4-panel-snapshot, PR #11)
+- 0.5 Fix the build and clippy warnings listed in STATUS (branch step/0.5-fix-warnings, PR #12)
 
 ## Works (a command proved it, or you verified it)
 
@@ -26,12 +27,13 @@ Current roadmap:
 - cv-tts behind the `tts` feature (0.2, approved by you 2026-10-08): the step's Verify list was no "clear-view ready" on launch and the magnifier unchanged. Plain `cargo build` and `cargo run` skip cv-tts; `--workspace` still builds it.
 - Panel no longer polls (0.3, approved by you 2026-10-08): the repaint thread and `request_repaint_after` are gone; the hotkey thread wakes the panel after a toggle. You ran the step's Verify list (hotkey with the panel unfocused, panel controls, settings saving, idle CPU) and reported that it works; individual items were not itemised.
 - Panel no longer holds the write lock per frame (0.4, approved by you 2026-10-08): `update()` clones `AppState` under a read lock, draws against the copy, and writes back only the fields the panel changed, under one short write lock. You ran the step's Verify list and reported that it works; individual items were not itemised. 4 unit tests cover `apply_changes` (app now has 10 tests).
+- Build and clippy warnings cleared (0.5, approved by you 2026-10-09): `cargo build`, `cargo clippy --workspace --all-targets` and `cargo clippy --workspace --all-targets --features app/tts` report 0 warnings and `cargo test --workspace` passes. You ran the step's Verify list (hotkey on and off, docked work area, second monitor, restart with saved settings, closing the window while magnifying) and reported that it works; individual items were not itemised. The four `MagInitialize`, `MagUninitialize` and `MagShowSystemCursor` results are ignored with `let _ =` on purpose: cursor hiding is best-effort.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
-- `cargo build`: passes. 5 warnings: 4 unused `BOOL` results in crates/cv-render/src/lib.rs (the Mag* calls), 1 unused import `DXGI_OUTPUT_DESC` in crates/cv-capture/src/lib.rs:14.
-- `cargo clippy --workspace`: passes, no errors. 12 warnings: cv-render 7, cv-capture 2, cv-tts 1, cv-core 1, app 1. By kind: 4 unused `BOOL`, 4 collapsible `if`, 1 simplifiable `map_or`, 1 `let...else` that could be `?`, 1 derivable `impl`, 1 unused import. Unchanged by old 2.1.
+- `cargo build`: passes, 0 warnings (0.5).
+- `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
 - `cargo test --workspace`: passes, 37 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`). cv-capture, cv-render and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
