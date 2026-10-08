@@ -3,34 +3,36 @@ mod gfx;
 
 use std::{
     cell::RefCell,
+    ffi::c_void,
     mem::size_of,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
     },
-    time::Instant,
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        System::LibraryLoader::GetModuleHandleW,
+        System::{Console::SetConsoleCtrlHandler, LibraryLoader::GetModuleHandleW},
         UI::{
             Magnification::{MagInitialize, MagShowSystemCursor, MagUninitialize},
             WindowsAndMessaging::{
-                ClipCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-                GetMessageW, HTTRANSPARENT, IDC_ARROW, LWA_ALPHA, LoadCursorW, MSG,
-                PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SW_HIDE, SW_SHOW,
-                SWP_NOACTIVATE, SWP_NOZORDER, SetLayeredWindowAttributes,
-                SetTimer, SetWindowDisplayAffinity, SetWindowPos,
-                ShowWindow, SystemParametersInfoW, TranslateMessage, WDA_EXCLUDEFROMCAPTURE,
-                WM_DESTROY, WM_NCHITTEST, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
-                WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
-                SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+                GetCursorPos, GetMessageW, HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA,
+                LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+                RegisterWindowMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+                SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+                ShowWindow, SystemParametersInfoW, TranslateMessage, UnregisterClassW,
+                WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_NCHITTEST, WM_TIMER,
+                WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
+                WS_EX_TRANSPARENT, WS_POPUP, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
             },
         },
     },
-    core::w,
+    core::{BOOL, PCWSTR, w},
 };
 
 use cv_core::{
@@ -77,8 +79,121 @@ thread_local! {
     static WIN_DATA: RefCell<Option<WindowData>> = const { RefCell::new(None) };
 }
 
+const CLASS_NAME: PCWSTR = w!("clear_view_overlay");
+
+/// The overlay window, as an integer so other threads can post `WM_CLOSE` to it. 0 = none.
+/// There is one overlay per process.
+static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+/// Set when `teardown` has finished, so the console handler knows it may return.
+static TEARDOWN_DONE: AtomicBool = AtomicBool::new(false);
+
+/// How long to wait for the render thread to restore the machine before giving up.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+
+/// Handle to the render thread started by [`spawn_overlay`].
+pub struct OverlayHandle {
+    thread: JoinHandle<()>,
+}
+
+impl OverlayHandle {
+    /// Asks the render thread to restore the machine and exit, then waits for it.
+    /// If the thread does not finish in time, restores the cursor and clip from the calling
+    /// thread (both are system-wide). The AppBar can only be removed by the render thread.
+    pub fn shutdown(self) {
+        request_close();
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        while !self.thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if self.thread.is_finished() {
+            let _ = self.thread.join();
+        } else {
+            eprintln!("[render] thread did not stop in time; restoring cursor and clip only");
+            let _ = unsafe { MagShowSystemCursor(true) };
+            update_clip_cursor(false);
+        }
+    }
+}
+
+/// Starts the render thread: it creates the overlay window and runs its message loop.
+/// It also installs a console handler so Ctrl+C and closing the console window restore the
+/// machine before the process ends.
+pub fn spawn_overlay(
+    frame_state: FrameState,
+    app_state: SharedState,
+    outputs: Vec<OutputInfo>,
+    desired_output: Arc<AtomicU32>,
+) -> OverlayHandle {
+    // Best-effort: with no console attached there is nothing to hook.
+    let _ = unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), true) };
+    let thread = std::thread::spawn(move || {
+        run_overlay(frame_state, app_state, outputs, desired_output);
+    });
+    OverlayHandle { thread }
+}
+
+/// Posts `WM_CLOSE` to the overlay window. Returns false if there is no window (yet, or any more).
+fn request_close() -> bool {
+    let raw = OVERLAY_HWND.load(Ordering::SeqCst);
+    if raw == 0 {
+        return false;
+    }
+    let hwnd = HWND(raw as *mut c_void);
+    unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok()
+}
+
+/// Runs on a thread the system creates for the event. Waits for the render thread to restore
+/// the machine, then returns FALSE so the default handler ends the process.
+unsafe extern "system" fn console_ctrl_handler(_event: u32) -> BOOL {
+    if request_close() {
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        while !TEARDOWN_DONE.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    BOOL(0)
+}
+
+/// Restores everything the overlay changed: the AppBar work area, the system cursor and the
+/// cursor clip, then destroys the window. Runs from `TeardownGuard`, so it also runs when the
+/// render thread panics. It does not rely on `WIN_DATA` being in a usable state.
+fn teardown(hwnd: HWND) {
+    OVERLAY_HWND.store(0, Ordering::SeqCst);
+    unsafe {
+        let _ = KillTimer(Some(hwnd), 1);
+    }
+    // Drop the wgpu surface before the window it draws to goes away.
+    let data = WIN_DATA.with(|d| d.try_borrow_mut().ok().and_then(|mut b| b.take()));
+    // With no data (early panic, or a borrow in flight) assume the AppBar may be registered;
+    // ABM_REMOVE always succeeds.
+    let appbar_active = data.as_ref().is_none_or(|w| w.appbar_active);
+    drop(data);
+    if appbar_active {
+        appbar::unregister(hwnd);
+    }
+    // Cursor hiding and the clip are best-effort: a failed call leaves nothing more to do.
+    let _ = unsafe { MagShowSystemCursor(true) };
+    let _ = unsafe { MagUninitialize() };
+    update_clip_cursor(false);
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+        if let Ok(hinstance) = GetModuleHandleW(None) {
+            let _ = UnregisterClassW(CLASS_NAME, Some(hinstance.into()));
+        }
+    }
+    TEARDOWN_DONE.store(true, Ordering::SeqCst);
+}
+
+struct TeardownGuard(HWND);
+
+impl Drop for TeardownGuard {
+    fn drop(&mut self) {
+        teardown(self.0);
+    }
+}
+
 /// Creates the overlay window and blocks on its message loop.
-pub fn run_overlay(
+fn run_overlay(
     frame_state: FrameState,
     app_state: SharedState,
     outputs: Vec<OutputInfo>,
@@ -97,13 +212,11 @@ pub fn run_overlay(
 
     let hwnd = unsafe {
         let hinstance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
-        let class_name = w!("clear_view_overlay");
-
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(wnd_proc),
             hInstance: hinstance,
-            lpszClassName: class_name,
+            lpszClassName: CLASS_NAME,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             ..Default::default()
         };
@@ -111,7 +224,7 @@ pub fn run_overlay(
 
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
-            class_name,
+            CLASS_NAME,
             w!("clear-view"),
             WS_POPUP, // starts hidden
             primary.left,
@@ -129,6 +242,9 @@ pub fn run_overlay(
         SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA).ok();
         hwnd
     };
+    OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+    // From here on, any exit from this function (including a panic) restores the machine.
+    let _guard = TeardownGuard(hwnd);
 
     let callback_msg = unsafe { RegisterWindowMessageW(w!("ClearViewAppBar")) };
 
@@ -183,17 +299,7 @@ pub fn run_overlay(
         }
     }
 
-    // Clean up appbar on exit.
-    WIN_DATA.with(|d| {
-        if let Some(w) = d.borrow().as_ref()
-            && w.appbar_active
-        {
-            appbar::unregister(hwnd);
-        }
-    });
-    let _ = unsafe { MagShowSystemCursor(true) };
-    let _ = unsafe { MagUninitialize() };
-    update_clip_cursor(false);
+    // `_guard` runs `teardown` as the function returns.
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -212,6 +318,12 @@ unsafe extern "system" fn wnd_proc(
     }
 
     match msg {
+        // Close is a request from another thread. The window is destroyed in `teardown`,
+        // after the message loop ends, so nothing is torn down while a tick is running.
+        WM_CLOSE => unsafe {
+            PostQuitMessage(0);
+            LRESULT(0)
+        },
         WM_DESTROY => unsafe {
             PostQuitMessage(0);
             LRESULT(0)

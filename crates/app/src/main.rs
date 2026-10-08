@@ -8,6 +8,24 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 
+/// Stops the render thread when dropped, so a panic in `main` still restores the work area,
+/// system cursor and cursor clip.
+struct OverlayGuard(Option<cv_render::OverlayHandle>);
+
+impl OverlayGuard {
+    fn shutdown(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.shutdown();
+        }
+    }
+}
+
+impl Drop for OverlayGuard {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 fn main() -> eframe::Result {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -57,15 +75,15 @@ fn main() -> eframe::Result {
         });
     }
 
-    // Renderer thread: overlay window, reads frame_state + app state
-    {
-        let frame_state    = frame_state.clone();
-        let app_state      = shared.clone();
-        let desired_output = desired_output.clone();
-        std::thread::spawn(move || {
-            cv_render::run_overlay(frame_state, app_state, outputs, desired_output);
-        });
-    }
+    // Renderer thread: overlay window, reads frame_state + app state.
+    // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the
+    // console are handled inside cv-render.
+    let mut overlay = OverlayGuard(Some(cv_render::spawn_overlay(
+        frame_state.clone(),
+        shared.clone(),
+        outputs,
+        desired_output.clone(),
+    )));
 
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled, shows/hides overlay
     // The panel does not poll, so the thread wakes it after a toggle.
@@ -105,6 +123,9 @@ fn main() -> eframe::Result {
         },
         Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint)))),
     );
+
+    // Before the other threads stop, so the work area, cursor and clip are back first.
+    overlay.shutdown();
 
     #[cfg(feature = "tts")]
     {
