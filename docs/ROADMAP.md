@@ -13,7 +13,6 @@ Numbered items. Commands take the number: `/step 1.1`, `/adr 3.1`. Status lives 
 ## Phase 1: Make the docs true
 
 1.1 Move PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (confirm magnify.hlsl is unused first).
-1.2 Add a checkbox to each stage heading in tts-plan.md and tick them from STATUS.md.
 
 ## Phase 2: Foundation
 

@@ -26,9 +26,8 @@ Phase B, only after I approve:
 2. Implement the target and nothing else.
 3. Run the gate.
 4. Commit on the branch.
-5. Update docs/STATUS.md and tick the stage in tts-plan.md.
-6. Write docs/NEXT.md (Item as the roadmap number plus its title) with State: step-in-review, the branch, and what I need to test by hand.
-7. Report what changed and tell me to test, merge, then run /next.
+5. Completion is recorded only after I say "I approve" following my own testing. Then add the item number to the "Done" list in docs/STATUS.md, move what I verified into "Works", and update docs/NEXT.md for the next item. Do none of that before I say it.
+6. Report what changed and tell me to test, say "I approve", merge, then run /next.
 
 If during Phase B you find the work needs an ADR after all, stop. Commit any partial work to the branch with the message "WIP: blocked on ADR", then go to "Blocked on an ADR".
 
