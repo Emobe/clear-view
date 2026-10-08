@@ -67,7 +67,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **Main thread**: eframe (egui settings panel), always on top. app.rs also spawns a 100 ms repaint thread; see docs/STATUS.md finding 2.
 - **Capture thread**: DXGI Desktop Duplication to D3D11 staging texture to CPU BGRA8, stored in `Arc<Mutex<Option<Arc<Frame>>>>`. Switches monitor when the render thread changes `desired_output`.
 - **Render thread**: overlay window and wgpu pipeline. Uploads the frame when it changed, blits through the shader, lerps the cursor for smooth follow, handles docking and monitor changes.
-- **Hotkey thread**: `RegisterHotKey` (Win+=) toggles `AppState.enabled`.
+- **Hotkey thread**: `RegisterHotKey` (Ctrl+Alt+Shift+Z; no Win-key combos, the shell owns them) toggles `AppState.enabled`.
 - **TTS thread**: owns all COM, UIA and SAPI state (MTA). See tts-plan.md and ADR 0003.
 
 ## Key design decisions
@@ -79,7 +79,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **Interpolation**: bilinear or bicubic (Catmull-Rom) in the shader. Colour filters (none, inverted, greyscale, greyscale+inverted) are shader-level.
 - **Cursor**: system cursor hidden in fullscreen; a software circle is drawn in the shader at the cursor position in output pixel space. Cursor and frame coordinates must be in the same space before any layout math.
 - **Docked panel**: SHAppBarMessage (ABM_NEW, ABM_SETPOS, ABM_ACTIVATE, ABM_REMOVE) on any of four edges. Work area shifts to fit. AppBar released on toggle off or app exit. Panel size is a percentage of the screen dimension.
-- **Display modes**: fullscreen or docked (top, bottom, left, right). Switching is immediate. Win+= toggles on and off in all modes and restores the work area when hidden.
+- **Display modes**: fullscreen or docked (top, bottom, left, right). Switching is immediate. Ctrl+Alt+Shift+Z toggles on and off in all modes and restores the work area when hidden.
 - **windows crate**: version 0.62. `D3D11CreateDevice` software param is `HMODULE::default()`, not `None`.
 - **Rust 2024 edition**: needs explicit `unsafe {}` blocks inside `unsafe fn` bodies.
 
@@ -100,4 +100,4 @@ Threads sharing `Arc<RwLock<AppState>>`:
 
 ## Windows crate
 
-Use the `windows` crate (not `winapi` or `windows-sys`). Add new features to the `windows` dependency in the workspace `Cargo.toml`. `RegisterHotKey`, `MOD_WIN` and `VK_OEM_PLUS` are in `Win32::UI::Input::KeyboardAndMouse`, not `WindowsAndMessaging`.
+Use the `windows` crate (not `winapi` or `windows-sys`). Add new features to the `windows` dependency in the workspace `Cargo.toml`. `RegisterHotKey`, `MOD_CONTROL`, `MOD_ALT`, `MOD_SHIFT` and `VK_Z` are in `Win32::UI::Input::KeyboardAndMouse`, not `WindowsAndMessaging`.

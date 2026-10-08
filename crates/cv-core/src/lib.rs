@@ -1,3 +1,5 @@
+pub mod geometry;
+
 use parking_lot::RwLock;
 use std::sync::{Arc, Mutex};
 

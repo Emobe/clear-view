@@ -65,7 +65,7 @@ fn main() -> eframe::Result {
         });
     }
 
-    // Hotkey thread: Win+= toggles enabled, shows/hides overlay
+    // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled, shows/hides overlay
     {
         let state = shared.clone();
         std::thread::spawn(move || {

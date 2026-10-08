@@ -36,6 +36,7 @@ use windows::{
 use cv_core::{
     ColorFilter, DisplayMode, Edge, Frame, FrameState, Interpolation, OutputInfo, SharedState,
 };
+use cv_core::geometry::{self, panel_pct_to_px, window_dims};
 use gfx::WgpuState;
 
 struct WindowData {
@@ -422,12 +423,7 @@ fn on_timer(hwnd: HWND) {
         let mut b = d.borrow_mut();
         let w = b.as_mut().unwrap();
 
-        let target = w.outputs.iter().find(|o| {
-            cursor.x >= o.left
-                && cursor.x < o.left + o.width as i32
-                && cursor.y >= o.top
-                && cursor.y < o.top + o.height as i32
-        });
+        let target = geometry::output_at(&w.outputs, cursor.x, cursor.y);
         let Some(target) = target else { return None };
         if target.idx == w.active_output_idx {
             return None;
@@ -480,13 +476,13 @@ fn on_timer(hwnd: HWND) {
         let now = Instant::now();
         let dt = now.duration_since(w.last_tick).as_secs_f32();
         w.last_tick = now;
-        let alpha = 1.0_f32 - (1.0 - snap.smooth_speed).powf(dt * 60.0);
-        w.smooth_x += (cursor.x as f32 - w.smooth_x) * alpha;
-        w.smooth_y += (cursor.y as f32 - w.smooth_y) * alpha;
+        let alpha = geometry::smooth_alpha(snap.smooth_speed, dt);
+        w.smooth_x = geometry::lerp_toward(w.smooth_x, cursor.x as f32, alpha);
+        w.smooth_y = geometry::lerp_toward(w.smooth_y, cursor.y as f32, alpha);
 
         // Convert smoothed cursor to monitor-local coordinates (DXGI frame origin = 0,0).
-        let cx = w.smooth_x - w.monitor_left as f32;
-        let cy = w.smooth_y - w.monitor_top as f32;
+        let cx = geometry::to_monitor_local(w.smooth_x, w.monitor_left);
+        let cy = geometry::to_monitor_local(w.smooth_y, w.monitor_top);
 
         let cur_sw = w.screen_w;
         let cur_sh = w.screen_h;
@@ -494,11 +490,8 @@ fn on_timer(hwnd: HWND) {
 
         let fw = w.wgpu.tex_w as f32;
         let fh = w.wgpu.tex_h as f32;
-        let src_w = (win_w as f32 / snap.zoom).min(fw);
-        let src_h = (win_h as f32 / snap.zoom).min(fh);
-        let src_x = (cx - src_w * 0.5).clamp(0.0, fw - src_w);
-        let src_y = (cy - src_h * 0.5).clamp(0.0, fh - src_h);
-        let crop = [src_x / fw, src_y / fh, src_w / fw, src_h / fh];
+        let crop_rect = geometry::compute_crop(cx, cy, win_w, win_h, snap.zoom, fw, fh);
+        let crop = crop_rect.normalized();
 
         // Upload frame only when the capture thread has produced a new Arc<Frame>.
         if let Some(frame) = &snap.frame {
@@ -513,8 +506,7 @@ fn on_timer(hwnd: HWND) {
         }
 
         // Cursor position in output window pixel space, accounting for zoom/crop.
-        let cursor_x = ((cx - src_x) / src_w * win_w as f32).clamp(0.0, win_w as f32 - 1.0) as u32;
-        let cursor_y = ((cy - src_y) / src_h * win_h as f32).clamp(0.0, win_h as f32 - 1.0) as u32;
+        let (cursor_x, cursor_y) = geometry::cursor_in_output(cx, cy, &crop_rect, win_w, win_h);
 
         // Write uniforms only when crop, settings, or cursor have changed.
         let color_mode = snap.color_filter.as_u32();
@@ -543,19 +535,6 @@ fn on_timer(hwnd: HWND) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Convert a panel_size percentage (1–100) to pixels along the given screen dimension.
-fn panel_pct_to_px(pct: u32, dim: i32) -> i32 {
-    (dim * pct as i32 / 100).max(1)
-}
-
-fn window_dims(mode: DisplayMode, panel_pct: u32, sw: i32, sh: i32) -> (u32, u32) {
-    match mode {
-        DisplayMode::Fullscreen                          => (sw as u32, sh as u32),
-        DisplayMode::Docked(Edge::Top | Edge::Bottom)   => (sw as u32, panel_pct_to_px(panel_pct, sh) as u32),
-        DisplayMode::Docked(Edge::Left | Edge::Right)   => (panel_pct_to_px(panel_pct, sw) as u32, sh as u32),
-    }
-}
 
 fn rect_dims(r: RECT) -> (u32, u32) {
     (
