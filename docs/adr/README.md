@@ -37,3 +37,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0002 wgpu renderer and AppBar docking (Accepted)
 - 0003 Single TTS thread with UIA and SAPI (Accepted)
 - 0004 Platform abstraction for Windows, X11 and Wayland (Proposed)
+- 0005 Hotkey scheme (Proposed)
