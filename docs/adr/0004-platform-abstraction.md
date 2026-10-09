@@ -1,6 +1,6 @@
 # 0004: Platform seams and core boundaries
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-09 (rewritten in place for v1 scope by roadmap 2.1; the 2026-10-08 brief covered Windows, X11, Wayland and the reader)
 
 ## Context

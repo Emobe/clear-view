@@ -36,6 +36,6 @@ What gets easier, what gets harder, what to revisit and when.
 - 0001 CPU readback for capture (Accepted)
 - 0002 wgpu renderer and AppBar docking (Accepted)
 - 0003 Single TTS thread with UIA and SAPI (Accepted)
-- 0004 Platform seams and core boundaries (Proposed; rewritten in place for v1 by roadmap 2.1)
+- 0004 Platform seams and core boundaries (Accepted; rewritten in place for v1 by roadmap 2.1)
 - 0005 Hotkey scheme (Accepted)
 - 0006 Upscaling filter for readable text at 10x to 20x (Accepted)
