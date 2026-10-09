@@ -1,7 +1,14 @@
+use std::{
+    mem::size_of,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+
 use cv_core::{Frame, OutputInfo};
 use cv_magnifier::{CaptureError, CaptureSource};
 use windows::{
     core::Interface,
+    Win32::Foundation::RECT,
     Win32::Graphics::{
         Direct3D::D3D_DRIVER_TYPE_HARDWARE,
         Direct3D11::{
@@ -11,12 +18,14 @@ use windows::{
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
-            IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
-            DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_WAIT_TIMEOUT,
-            DXGI_OUTDUPL_FRAME_INFO,
+            IDXGIAdapter, IDXGIDevice, IDXGIOutput1, IDXGIOutput2, IDXGIOutputDuplication,
+            DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+            DXGI_ERROR_MORE_DATA, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
         },
     },
 };
+
+use crate::proto;
 
 struct D3dCtx {
     device: ID3D11Device,
@@ -31,6 +40,11 @@ pub struct Capturer {
     width: u32,
     height: u32,
     output_idx: u32,
+    /// 3.1 prototype: the output's top-left in virtual-screen pixels, to map the overlay rect
+    /// into frame space.
+    origin: (i32, i32),
+    stats: CaptureStats,
+    dirty: Vec<RECT>,
 }
 
 impl Capturer {
@@ -42,13 +56,24 @@ impl Capturer {
 
     fn create(output_idx: u32) -> windows::core::Result<Self> {
         let ctx = create_device()?;
-        let (duplication, width, height) = create_duplication(&ctx.device, output_idx)?;
-        let staging = create_staging(&ctx.device, width, height)?;
-        Ok(Self { ctx, duplication: Some(duplication), staging, width, height, output_idx })
+        let dup = create_duplication(&ctx.device, output_idx)?;
+        let staging = create_staging(&ctx.device, dup.width, dup.height)?;
+        Ok(Self {
+            ctx,
+            duplication: Some(dup.duplication),
+            staging,
+            width: dup.width,
+            height: dup.height,
+            output_idx,
+            origin: dup.origin,
+            stats: CaptureStats::new(),
+            dirty: Vec::new(),
+        })
     }
 
     /// Returns `None` on timeout (no new frame yet), `Err` on device loss.
     fn acquire(&mut self, timeout_ms: u32) -> windows::core::Result<Option<Frame>> {
+        self.stats.report_if_due();
         // No duplication: the last rebuild failed, so report it lost and let the loop retry.
         let Some(duplication) = &self.duplication else {
             return Err(DXGI_ERROR_ACCESS_LOST.into());
@@ -63,10 +88,23 @@ impl Capturer {
                 Err(e) => return Err(e),
             }
 
+            // 3.1 prototype: classify the frame before copying it.
+            let image = info.LastPresentTime != 0;
+            let dirty = if image { dirty_rects(duplication, &mut self.dirty)? } else { &[][..] };
+            let overlay = proto::overlay().map(|r| RECT {
+                left: r.left - self.origin.0,
+                top: r.top - self.origin.1,
+                right: r.right - self.origin.0,
+                bottom: r.bottom - self.origin.1,
+            });
+            self.stats.record_frame(image, info.AccumulatedFrames, dirty, overlay.as_ref());
+
+            let copy_started = Instant::now();
             let texture: ID3D11Texture2D = resource.unwrap().cast()?;
             self.ctx.context.CopyResource(&self.staging, &texture);
             let data = read_staging(&self.ctx.context, &self.staging, self.width, self.height)?;
             duplication.ReleaseFrame()?;
+            self.stats.copy += copy_started.elapsed();
 
             Ok(Some(Frame { width: self.width, height: self.height, data }))
         }
@@ -74,13 +112,14 @@ impl Capturer {
 
     /// Switch to capturing a different output (monitor). Recreates duplication + staging.
     fn duplicate(&mut self, idx: u32) -> windows::core::Result<()> {
-        let (duplication, width, height) = create_duplication(&self.ctx.device, idx)?;
-        let staging = create_staging(&self.ctx.device, width, height)?;
-        self.duplication = Some(duplication);
+        let dup = create_duplication(&self.ctx.device, idx)?;
+        let staging = create_staging(&self.ctx.device, dup.width, dup.height)?;
+        self.duplication = Some(dup.duplication);
         self.staging = staging;
-        self.width = width;
-        self.height = height;
+        self.width = dup.width;
+        self.height = dup.height;
         self.output_idx = idx;
+        self.origin = dup.origin;
         Ok(())
     }
 
@@ -92,6 +131,113 @@ impl Capturer {
         self.duplication = None;
         *self = Self::create(self.output_idx)?;
         Ok(())
+    }
+}
+
+/// The dirty rects of the frame currently held, in frame pixels. `buf` is reused between frames.
+unsafe fn dirty_rects<'a>(
+    duplication: &IDXGIOutputDuplication,
+    buf: &'a mut Vec<RECT>,
+) -> windows::core::Result<&'a [RECT]> {
+    let rect_size = size_of::<RECT>() as u32;
+    loop {
+        let mut required = 0u32;
+        let result = unsafe {
+            duplication.GetFrameDirtyRects(
+                buf.len() as u32 * rect_size,
+                buf.as_mut_ptr(),
+                &mut required,
+            )
+        };
+        match result {
+            Ok(()) => return Ok(&buf[..(required / rect_size) as usize]),
+            Err(e) if e.code() == DXGI_ERROR_MORE_DATA => {
+                buf.resize((required / rect_size) as usize, RECT::default());
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Once-a-second capture report for the 3.1 prototype.
+struct CaptureStats {
+    since: Instant,
+    /// Image updates (`LastPresentTime` non-zero).
+    image: u32,
+    /// Pointer-only updates: no new desktop image, the frame is copied anyway.
+    pointer_only: u32,
+    /// Image updates whose dirty rects all lie inside the overlay: suspected extra frames.
+    overlay_only: u32,
+    /// Image updates with at least one dirty rect touching the overlay.
+    touching_overlay: u32,
+    /// Image updates that reported no dirty rects at all.
+    no_rects: u32,
+    accumulated: u32,
+    dirty_px: u64,
+    copy: Duration,
+}
+
+impl CaptureStats {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            image: 0,
+            pointer_only: 0,
+            overlay_only: 0,
+            touching_overlay: 0,
+            no_rects: 0,
+            accumulated: 0,
+            dirty_px: 0,
+            copy: Duration::ZERO,
+        }
+    }
+
+    fn record_frame(&mut self, image: bool, accumulated: u32, dirty: &[RECT], overlay: Option<&RECT>) {
+        if !image {
+            self.pointer_only += 1;
+            return;
+        }
+        self.image += 1;
+        self.accumulated += accumulated;
+        if dirty.is_empty() {
+            self.no_rects += 1;
+        }
+        self.dirty_px += dirty
+            .iter()
+            .map(|r| ((r.right - r.left).max(0) as u64) * ((r.bottom - r.top).max(0) as u64))
+            .sum::<u64>();
+        if let Some(o) = overlay {
+            if !dirty.is_empty() && dirty.iter().all(|r| proto::contains(o, r)) {
+                self.overlay_only += 1;
+            }
+            if dirty.iter().any(|r| proto::intersects(o, r)) {
+                self.touching_overlay += 1;
+            }
+        }
+    }
+
+    fn report_if_due(&mut self) {
+        let wall = self.since.elapsed();
+        if wall < Duration::from_secs(1) {
+            return;
+        }
+        let frames = self.image + self.pointer_only;
+        let copy_ms = self.copy.as_secs_f64() * 1000.0;
+        eprintln!(
+            "[proto] capture: {:.1} s, frames {frames} (image {}, pointer-only {}), image frames \
+             with dirty rects only inside overlay {}, touching overlay {}, with no rects {}, \
+             accumulated {}, dirty {:.2} Mpx, copy {copy_ms:.1} ms total ({:.2} ms per frame)",
+            wall.as_secs_f64(),
+            self.image,
+            self.pointer_only,
+            self.overlay_only,
+            self.touching_overlay,
+            self.no_rects,
+            self.accumulated,
+            self.dirty_px as f64 / 1e6,
+            copy_ms / f64::from(frames.max(1)),
+        );
+        *self = Self::new();
     }
 }
 
@@ -185,18 +331,57 @@ fn create_device() -> windows::core::Result<D3dCtx> {
     }
 }
 
+struct Duplication {
+    duplication: IDXGIOutputDuplication,
+    width: u32,
+    height: u32,
+    /// The output's top-left in virtual-screen pixels.
+    origin: (i32, i32),
+}
+
+/// 3.1 prototype: the multiplane overlay support of each output is logged once per process.
+static MPO_LOGGED: AtomicBool = AtomicBool::new(false);
+
 fn create_duplication(
     device: &ID3D11Device,
     output_idx: u32,
-) -> windows::core::Result<(IDXGIOutputDuplication, u32, u32)> {
+) -> windows::core::Result<Duplication> {
     unsafe {
         let dxgi: IDXGIDevice = device.cast()?;
         let adapter = dxgi.GetAdapter()?;
         let output = adapter.EnumOutputs(output_idx)?;
+        let coords = output.GetDesc()?.DesktopCoordinates;
+        if !MPO_LOGGED.swap(true, Ordering::Relaxed) {
+            log_mpo_support(&adapter);
+        }
         let output1: IDXGIOutput1 = output.cast()?;
         let dup = output1.DuplicateOutput(device)?;
         let desc = dup.GetDesc();
-        Ok((dup, desc.ModeDesc.Width, desc.ModeDesc.Height))
+        Ok(Duplication {
+            duplication: dup,
+            width: desc.ModeDesc.Width,
+            height: desc.ModeDesc.Height,
+            origin: (coords.left, coords.top),
+        })
+    }
+}
+
+/// Logs `IDXGIOutput2::SupportsOverlays` for every output: the 24H2 extra-frame issue was seen
+/// only on outputs with multiplane overlay support.
+fn log_mpo_support(adapter: &IDXGIAdapter) {
+    let mut idx = 0;
+    while let Ok(output) = unsafe { adapter.EnumOutputs(idx) } {
+        let mpo = output
+            .cast::<IDXGIOutput2>()
+            .map(|o| unsafe { o.SupportsOverlays() }.as_bool());
+        let name = unsafe { output.GetDesc() }
+            .map(|d| String::from_utf16_lossy(&d.DeviceName).trim_end_matches('\0').to_string())
+            .unwrap_or_default();
+        match mpo {
+            Ok(m) => eprintln!("[proto] output {idx} {name}: multiplane overlay support {m}"),
+            Err(e) => eprintln!("[proto] output {idx} {name}: IDXGIOutput2 unavailable: {e}"),
+        }
+        idx += 1;
     }
 }
 

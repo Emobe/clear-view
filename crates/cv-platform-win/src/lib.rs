@@ -9,6 +9,7 @@ mod dpi;
 mod hotkey;
 mod overlay;
 mod pointer;
+mod proto;
 
 pub use capture::{Capturer, enumerate_outputs};
 pub use dpi::set_dpi_awareness;

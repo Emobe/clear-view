@@ -1,3 +1,6 @@
+// 3.1 prototype: docking no longer registers an AppBar, so most of this file is unused here.
+#![allow(dead_code)]
+
 use std::mem::size_of;
 
 use windows::Win32::{

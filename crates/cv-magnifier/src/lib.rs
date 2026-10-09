@@ -6,6 +6,7 @@ mod capture;
 mod gfx;
 mod host;
 mod magnifier;
+pub mod proto;
 
 pub use capture::{CaptureError, CaptureSource, spawn_capture};
 pub use host::{Layout, OverlayHost};

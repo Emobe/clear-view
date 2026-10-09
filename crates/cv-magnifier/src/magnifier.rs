@@ -18,6 +18,7 @@ use cv_core::{
 use crate::{
     gfx::WgpuState,
     host::{Layout, OverlayHost},
+    proto,
 };
 
 /// The magnifier for one overlay window: smoothing, the active monitor, the applied layout and
@@ -45,17 +46,18 @@ impl Magnifier {
         let wgpu = unsafe {
             WgpuState::new(display, window, start.width, start.height, start.width, start.height)
         };
-        Self {
-            view: View::new(
-                wgpu,
-                start,
-                outputs,
-                app_state,
-                frame_state,
-                desired_output,
-                Instant::now(),
-            ),
-        }
+        let mut view = View::new(
+            wgpu,
+            start,
+            outputs,
+            app_state,
+            frame_state,
+            desired_output,
+            Instant::now(),
+        );
+        view.skip_idle = proto::flag("CV_PROTO_IDLE_SKIP");
+        eprintln!("[proto] skip idle presents: {}", view.skip_idle);
+        Self { view }
     }
 
     /// One tick: follow the pointer, apply any layout change through `host`, then draw.
@@ -127,6 +129,10 @@ struct View<R> {
     applied: Applied,
     last_frame: Option<Arc<Frame>>,
     last_uniforms: Option<Uniforms>,
+    /// 3.1 prototype (`CV_PROTO_IDLE_SKIP=1`): present only when something changed.
+    skip_idle: bool,
+    /// Something changed since the last present: a new frame, new uniforms or a resize.
+    needs_present: bool,
 }
 
 impl<R: Renderer> View<R> {
@@ -157,6 +163,8 @@ impl<R: Renderer> View<R> {
             applied: Applied::Hidden,
             last_frame: None,
             last_uniforms: None,
+            skip_idle: false,
+            needs_present: true,
         }
     }
 
@@ -184,6 +192,7 @@ impl<R: Renderer> View<R> {
             let (w, h) = host.apply_layout(&self.layout_for(want));
             if want != Applied::Hidden {
                 self.renderer.resize(w, h);
+                self.needs_present = true;
             }
             self.applied = want;
         }
@@ -195,6 +204,7 @@ impl<R: Renderer> View<R> {
 
     fn resized(&mut self, width: u32, height: u32) {
         self.renderer.resize(width, height);
+        self.needs_present = true;
     }
 
     /// Switches the active monitor to the one under the pointer, if that changed.
@@ -256,6 +266,7 @@ impl<R: Renderer> View<R> {
             if new_frame {
                 self.renderer.upload_frame(&frame.data, frame.width, frame.height);
                 self.last_frame = Some(Arc::clone(frame));
+                self.needs_present = true;
             }
         }
 
@@ -271,11 +282,18 @@ impl<R: Renderer> View<R> {
         if self.last_uniforms != Some(uniforms) {
             self.renderer.write_uniforms(&uniforms);
             self.last_uniforms = Some(uniforms);
+            self.needs_present = true;
         }
 
+        if self.skip_idle && !self.needs_present {
+            proto::SKIPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        self.needs_present = false;
         if !self.renderer.render() {
             // Surface lost or outdated: reconfigure to recover.
             self.renderer.resize(win_w, win_h);
+            self.needs_present = true;
         }
     }
 }
@@ -714,6 +732,27 @@ mod tests {
         rig.step();
         let (_, gpu) = rig.step();
         assert_eq!(gpu, [Gpu::Render, Gpu::Resize(1920, 540)]);
+    }
+
+    #[test]
+    fn idle_skip_presents_only_after_a_change() {
+        let mut rig = Rig::new();
+        rig.view.skip_idle = true;
+        rig.set(|s| {
+            s.smooth_speed = 1.0;
+            s.enabled = true;
+        });
+        let renders = |gpu: &[Gpu]| count(gpu, |c| matches!(c, Gpu::Render));
+        assert_eq!(renders(&rig.step().1), 1);
+        assert_eq!(renders(&rig.step().1), 0);
+        rig.publish_frame();
+        assert_eq!(renders(&rig.step().1), 1);
+        assert_eq!(renders(&rig.step().1), 0);
+        rig.point_at(700, 300);
+        assert_eq!(renders(&rig.step().1), 1);
+        rig.view.resized(800, 600);
+        assert_eq!(renders(&rig.step().1), 1);
+        assert_eq!(renders(&rig.step().1), 0);
     }
 
     #[test]

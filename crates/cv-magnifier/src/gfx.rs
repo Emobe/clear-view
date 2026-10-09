@@ -1,6 +1,9 @@
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-use crate::magnifier::{Renderer, Uniforms};
+use crate::{
+    magnifier::{Renderer, Uniforms},
+    proto,
+};
 
 /// shader.wgsl with the cleanEdge port (MIT, see clean_edge.wgsl) appended. WGSL has no `#include`.
 const SHADER: &str = concat!(include_str!("shader.wgsl"), "\n", include_str!("clean_edge.wgsl"));
@@ -88,6 +91,11 @@ impl WgpuState {
             .find(|&&f| f == wgpu::TextureFormat::Bgra8Unorm)
             .copied()
             .unwrap_or(caps.formats[0]);
+
+        eprintln!(
+            "[proto] surface formats {:?}, alpha modes {:?}; using {:?}, {:?}",
+            caps.formats, caps.alpha_modes, surface_format, caps.alpha_modes[0]
+        );
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage:                          wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -325,6 +333,7 @@ impl WgpuState {
         encode_pass(&mut enc, &view, &self.pipeline, &self.bind_group);
         self.queue.submit([enc.finish()]);
         self.queue.present(output);
+        proto::PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         true
     }
 }
@@ -359,16 +368,21 @@ impl Renderer for WgpuState {
 
 /// A DX12-only instance. FXC is set explicitly: wgpu 30's default picks DXC when
 /// `dxcompiler.dll` is on the PATH, so the compiler would differ between machines.
+///
+/// 3.1 prototype: `CV_PROTO_VISUAL=1` presents through a DirectComposition visual
+/// (`DxgiFromVisual`) instead of a swapchain on the HWND.
 fn dx12_instance() -> wgpu::Instance {
+    let mut dx12 = wgpu::Dx12BackendOptions {
+        shader_compiler: wgpu::Dx12Compiler::Fxc,
+        ..Default::default()
+    };
+    if proto::flag("CV_PROTO_VISUAL") {
+        dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    }
+    eprintln!("[proto] dx12 presentation system: {:?}", dx12.presentation_system);
     wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::DX12,
-        backend_options: wgpu::BackendOptions {
-            dx12: wgpu::Dx12BackendOptions {
-                shader_compiler: wgpu::Dx12Compiler::Fxc,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        backend_options: wgpu::BackendOptions { dx12, ..Default::default() },
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
 }

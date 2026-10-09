@@ -19,7 +19,7 @@ use windows::{
             Magnification::{MagInitialize, MagShowSystemCursor, MagUninitialize},
             WindowsAndMessaging::{
                 ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-                GetMessageW, HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA,
+                GetMessageW, GetWindowRect, HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA,
                 LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
                 RegisterWindowMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
                 SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
@@ -37,7 +37,7 @@ use cv_core::{FrameState, OutputInfo, PointerSource, ScreenPoint, SharedState};
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 
-use crate::{appbar, pointer::CursorPointer};
+use crate::{appbar, pointer::CursorPointer, proto};
 
 const CLASS_NAME: PCWSTR = w!("clear_view_overlay");
 
@@ -157,6 +157,7 @@ fn teardown(hwnd: HWND, appbar_active: bool) {
 /// and destroys the window.
 struct WinHost {
     hwnd: HWND,
+    #[allow(dead_code)] // 3.1 prototype: no AppBar is registered
     callback_msg: u32,
     /// What `apply_layout` last made the window.
     applied: Layout,
@@ -191,13 +192,12 @@ impl WinHost {
         Some(rect_dims(rect))
     }
 
-    /// Runs every tick: while docked the cursor is clipped to the work area, in fullscreen the
-    /// clip is released. Nothing while hidden.
+    /// Runs every tick: the clip is released while shown. Nothing while hidden.
+    /// 3.1 prototype: no clip while docked either, so the mouse can go under the panel.
     fn update_clip(&self) {
         match self.applied {
             Layout::Hidden => {}
-            Layout::Fullscreen { .. } => update_clip_cursor(false),
-            Layout::Docked { .. } => update_clip_cursor(true),
+            Layout::Fullscreen { .. } | Layout::Docked { .. } => update_clip_cursor(false),
         }
     }
 }
@@ -230,30 +230,30 @@ impl OverlayHost for WinHost {
                 move_window(self.hwnd, rect);
                 rect_dims(rect)
             }
+            // 3.1 prototype: overlay docking. The panel sits on top of the desktop at the edge of
+            // its monitor; no AppBar, so the work area is not changed.
             Layout::Docked { monitor, edge, thickness } => {
-                let (sw, sh) = (monitor.width as i32, monitor.height as i32);
-                let same_edge =
-                    matches!(&self.applied, Layout::Docked { edge: e, .. } if e == edge);
-                let rect = if self.appbar_active && same_edge {
-                    // Panel size change: the registration stays.
-                    appbar::reposition(self.hwnd, *edge, *thickness as i32, sw, sh)
-                } else {
-                    self.unregister_appbar();
-                    let rect = appbar::register(
-                        self.hwnd,
-                        *edge,
-                        *thickness as i32,
-                        sw,
-                        sh,
-                        self.callback_msg,
-                    );
-                    self.appbar_active = true;
-                    rect
+                self.unregister_appbar();
+                let local = appbar::panel_rect(
+                    *edge,
+                    *thickness as i32,
+                    monitor.width as i32,
+                    monitor.height as i32,
+                );
+                let rect = RECT {
+                    left: local.left + monitor.left,
+                    top: local.top + monitor.top,
+                    right: local.right + monitor.left,
+                    bottom: local.bottom + monitor.top,
                 };
                 move_window(self.hwnd, rect);
                 rect_dims(rect)
             }
         };
+        proto::set_overlay(match layout {
+            Layout::Hidden => None,
+            Layout::Fullscreen { .. } | Layout::Docked { .. } => window_rect(self.hwnd),
+        });
 
         if was_hidden && *layout != Layout::Hidden {
             unsafe {
@@ -354,6 +354,7 @@ fn run_overlay(
 
     // The loop runs the tick itself rather than dispatching WM_TIMER to `wnd_proc`, so the host
     // and magnifier are plain locals and `wnd_proc` never touches them.
+    let mut stats = RenderStats::new();
     let mut msg = MSG::default();
     loop {
         let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
@@ -370,8 +371,10 @@ fn run_overlay(
             {
                 magnifier.resized(w, h);
             }
-            magnifier.tick(&mut host, Instant::now());
+            let started = Instant::now();
+            magnifier.tick(&mut host, started);
             host.update_clip();
+            stats.record(started.elapsed());
             continue;
         }
         unsafe {
@@ -457,5 +460,65 @@ fn move_window(hwnd: HWND, r: RECT) {
         )
         .ok();
     }
-    appbar::notify_moved(hwnd);
+    // 3.1 prototype: no AppBar is registered, so the shell is not told about moves.
+}
+
+/// The window's rect in virtual-screen pixels.
+fn window_rect(hwnd: HWND) -> Option<RECT> {
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r) }.ok().map(|()| r)
+}
+
+/// Once-a-second render thread report for the 3.1 prototype: ticks, presents, tick time and
+/// process CPU.
+struct RenderStats {
+    since: Instant,
+    cpu_at_start: u64,
+    ticks: u32,
+    tick_total: Duration,
+    tick_max: Duration,
+}
+
+impl RenderStats {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            cpu_at_start: proto::process_cpu_100ns(),
+            ticks: 0,
+            tick_total: Duration::ZERO,
+            tick_max: Duration::ZERO,
+        }
+    }
+
+    fn record(&mut self, took: Duration) {
+        self.ticks += 1;
+        self.tick_total += took;
+        self.tick_max = self.tick_max.max(took);
+        if self.since.elapsed() >= Duration::from_secs(1) {
+            self.report();
+            *self = Self::new();
+        }
+    }
+
+    fn report(&self) {
+        let wall = self.since.elapsed().as_secs_f64();
+        let cpu = proto::process_cpu_100ns().saturating_sub(self.cpu_at_start) as f64 * 1e-7;
+        let one_core = 100.0 * cpu / wall;
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let presents = cv_magnifier::proto::PRESENTS.swap(0, Ordering::Relaxed);
+        let skipped = cv_magnifier::proto::SKIPPED.swap(0, Ordering::Relaxed);
+        let overlay = match proto::overlay() {
+            None => "hidden".to_string(),
+            Some(r) => format!("{}x{} at ({}, {})", r.right - r.left, r.bottom - r.top, r.left, r.top),
+        };
+        let avg_ms = self.tick_total.as_secs_f64() * 1000.0 / f64::from(self.ticks.max(1));
+        eprintln!(
+            "[proto] render: overlay {overlay}, ticks {}, presents {presents}, skipped {skipped}, \
+             tick avg {avg_ms:.2} ms max {:.2} ms, process cpu {one_core:.1}% of one core \
+             ({:.1}% of {cores})",
+            self.ticks,
+            self.tick_max.as_secs_f64() * 1000.0,
+            one_core / cores as f64,
+        );
+    }
 }
