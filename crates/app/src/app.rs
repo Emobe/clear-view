@@ -115,6 +115,7 @@ impl eframe::App for ClearViewApp {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut s.interpolation, Interpolation::Bilinear, "Bilinear");
                 ui.radio_value(&mut s.interpolation, Interpolation::Bicubic,  "Bicubic");
+                ui.radio_value(&mut s.interpolation, Interpolation::Sharp,    "Sharp");
             });
 
             #[cfg(feature = "tts")]

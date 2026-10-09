@@ -1,6 +1,6 @@
 // Uniforms — 32 bytes (crop 16 bytes + color_mode 4 bytes + interp_mode 4 bytes + cursor 8 bytes).
 // color_mode:  0=None, 1=Inverted, 2=Greyscale, 3=GreyscaleInverted
-// interp_mode: 0=Bilinear, 1=Bicubic (Catmull-Rom)
+// interp_mode: 0=Bilinear, 1=Bicubic (Catmull-Rom), 2=Sharp bilinear
 // cursor_x/y:  software cursor position in output window pixels
 struct Uniforms {
     src_x:       f32,
@@ -78,14 +78,32 @@ fn sample_bicubic(uv: vec2<f32>) -> vec4<f32> {
     return clamp(col, vec4(0.0), vec4(1.0));
 }
 
+// Sharp bilinear (ADR 0006): each texel is drawn flat, and only the last ~1 output pixel
+// before the next texel is blended. `texel` is the position in texel units; `scale` is
+// output pixels per texel. At scale 1 this is plain bilinear.
+fn sample_sharp(texel: vec2<f32>, dims: vec2<f32>, scale: vec2<f32>) -> vec4<f32> {
+    let base   = floor(texel);
+    let centre = fract(texel) - 0.5;
+    let region = 0.5 - 0.5 / scale;
+    let f      = (centre - clamp(centre, -region, region)) * scale + 0.5;
+    return textureSampleLevel(frame_tex, frame_samp, (base + f) / dims, 0.0);
+}
+
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     // Remap panel UV into the crop sub-region of the frame texture.
     let uv = in.uv * vec2(u.src_w, u.src_h) + vec2(u.src_x, u.src_y);
 
+    // Derivatives must be taken in uniform control flow, so before any branch.
+    let dims  = vec2<f32>(textureDimensions(frame_tex, 0));
+    let texel = uv * dims;
+    let scale = max(1.0 / max(fwidth(texel), vec2(1e-6)), vec2(1.0));
+
     var col: vec4<f32>;
     if u.interp_mode == 1u {
         col = sample_bicubic(uv);
+    } else if u.interp_mode == 2u {
+        col = sample_sharp(texel, dims, scale);
     } else {
         col = textureSample(frame_tex, frame_samp, uv);
     }
