@@ -1,15 +1,19 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cv_core::{
     AppState, ColorFilter, DisplayMode, Edge, Interpolation, SharedState, ZOOM_MAX, ZOOM_MIN,
 };
 use eframe::egui;
 
-use crate::hotkey::{HotkeyFailures, TOGGLE_LABEL};
+use crate::platform::TOGGLE_LABEL;
 
 /// Filled with the egui context once the window exists. Threads that change state the panel
 /// shows (the hotkey thread flips `enabled`) call `request_repaint()` on it afterwards.
 pub type RepaintSlot = Arc<OnceLock<egui::Context>>;
+
+/// One line per binding that failed to register, for the settings panel. Filled once at startup
+/// by the hotkey thread; never saved.
+pub type HotkeyFailures = Arc<Mutex<Vec<String>>>;
 
 pub struct ClearViewApp {
     state: SharedState,

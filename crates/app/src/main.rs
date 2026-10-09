@@ -1,13 +1,13 @@
 mod app;
-mod hotkey;
 mod settings;
 
 use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU32, Ordering}};
 
-use windows::Win32::UI::HiDpi::{
-    AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
+// The platform backend (ADR 0004). One per target; only Windows exists before v1.
+#[cfg(windows)]
+use cv_platform_win as platform;
+#[cfg(not(windows))]
+compile_error!("clear-view has a platform backend for Windows only");
 
 /// Stops the render thread when dropped, so a panic in `main` still restores the work area,
 /// system cursor and cursor clip.
@@ -28,30 +28,15 @@ impl Drop for OverlayGuard {
 }
 
 fn main() -> eframe::Result {
-    // Per-Monitor v2 makes the cursor, monitor rects, captured frames and window rects all
-    // physical pixels. The call fails if awareness is already set, so check what took effect:
-    // anything else means Windows scales some of those values and the view and circle drift.
-    unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        if !AreDpiAwarenessContextsEqual(
-            GetThreadDpiAwarenessContext(),
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-        )
-        .as_bool()
-        {
-            eprintln!(
-                "[dpi] process is not Per-Monitor v2 DPI aware; the view and cursor circle \
-                 may not line up at display scaling above 100%"
-            );
-        }
-    }
+    // Before any window or thread: everything below works in physical pixels.
+    platform::set_dpi_awareness();
 
     // Load before any thread starts so the TTS thread's initial volume and rate come from the file.
     let shared = cv_core::shared_from(settings::load());
     let frame_state: cv_core::FrameState = Arc::new(Mutex::new(None));
 
     // Enumerate monitors once at startup.
-    let outputs = cv_capture::enumerate_outputs();
+    let outputs = platform::enumerate_outputs();
 
     // Shared signal: render thread writes desired output index; capture thread reads it.
     let desired_output = Arc::new(AtomicU32::new(0));
@@ -61,7 +46,7 @@ fn main() -> eframe::Result {
         let frame_state    = frame_state.clone();
         let desired_output = desired_output.clone();
         std::thread::spawn(move || {
-            let mut capturer = match cv_capture::Capturer::new() {
+            let mut capturer = match platform::Capturer::new() {
                 Ok(c) => c,
                 Err(e) => { eprintln!("[capture] init failed: {e}"); return; }
             };
@@ -103,18 +88,30 @@ fn main() -> eframe::Result {
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.
     // The panel does not poll, so the thread wakes it after a change or a failed registration.
     let repaint: app::RepaintSlot = Arc::new(OnceLock::new());
-    let hotkey_failures: hotkey::HotkeyFailures = Arc::new(Mutex::new(Vec::new()));
+    let hotkey_failures: app::HotkeyFailures = Arc::new(Mutex::new(Vec::new()));
     {
-        let state = shared.clone();
-        let repaint = repaint.clone();
-        let failures = hotkey_failures.clone();
-        std::thread::spawn(move || {
-            hotkey::hotkey_loop(state, failures, move || {
+        let wake = {
+            let repaint = repaint.clone();
+            move || {
                 if let Some(ctx) = repaint.get() {
                     ctx.request_repaint();
                 }
-            });
-        });
+            }
+        };
+        let failures = hotkey_failures.clone();
+        let wake_failures = wake.clone();
+        let state = shared.clone();
+        platform::spawn_hotkey_thread(
+            // After the push, so a panel that was already drawn repaints with the failures.
+            move |lines| {
+                failures.lock().unwrap().extend(lines);
+                wake_failures();
+            },
+            move |action| {
+                state.write().apply(action);
+                wake();
+            },
+        );
     }
 
     // TTS thread: SAPI speech, MTA COM init. Only with `--features tts`.

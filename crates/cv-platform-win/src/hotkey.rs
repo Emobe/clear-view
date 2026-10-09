@@ -1,6 +1,4 @@
-use std::sync::{Arc, Mutex};
-
-use cv_core::SharedState;
+use cv_core::Action;
 use windows::core::HRESULT;
 use windows::Win32::Foundation::ERROR_HOTKEY_ALREADY_REGISTERED;
 use windows::Win32::UI::{
@@ -10,17 +8,6 @@ use windows::Win32::UI::{
     },
     WindowsAndMessaging::*,
 };
-
-/// One line per binding that failed to register, for the settings panel. Filled once at startup
-/// by the hotkey thread; never saved.
-pub type HotkeyFailures = Arc<Mutex<Vec<String>>>;
-
-#[derive(Clone, Copy)]
-enum Action {
-    Toggle,
-    ZoomIn,
-    ZoomOut,
-}
 
 struct Binding {
     id: i32,
@@ -42,13 +29,25 @@ pub const TOGGLE_LABEL: &str = BINDINGS[0].label;
 const MODS: HOT_KEY_MODIFIERS =
     HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0 | MOD_SHIFT.0 | MOD_NOREPEAT.0);
 
-/// Registers the bindings once, then blocks in `GetMessageW` and applies each `WM_HOTKEY`.
-/// A binding that fails to register has no hotkey for the session: it is logged and added to
-/// `failures`, with no fallback combination and no retry (ADR 0005).
-/// `wake` runs after each change so the settings panel redraws.
-pub fn hotkey_loop(state: SharedState, failures: HotkeyFailures, wake: impl Fn()) {
+/// Starts the hotkey thread. `RegisterHotKey` with no window posts `WM_HOTKEY` to the thread
+/// that registered it, so registering and the message loop share this one thread.
+/// The thread is detached and ends with the process.
+///
+/// `on_failures` runs once, only if a binding failed, with one line per failed binding for the
+/// settings panel. `on_action` runs for each hotkey press.
+pub fn spawn_hotkey_thread(
+    on_failures: impl FnOnce(Vec<String>) + Send + 'static,
+    on_action: impl FnMut(Action) + Send + 'static,
+) {
+    std::thread::spawn(move || hotkey_loop(on_failures, on_action));
+}
+
+/// Registers the bindings once, then blocks in `GetMessageW` and reports each `WM_HOTKEY`.
+/// A binding that fails to register has no hotkey for the session: it is logged and reported,
+/// with no fallback combination and no retry (ADR 0005).
+fn hotkey_loop(on_failures: impl FnOnce(Vec<String>), mut on_action: impl FnMut(Action)) {
     unsafe {
-        let mut failed = false;
+        let mut failures = Vec::new();
         for b in &BINDINGS {
             if let Err(e) = RegisterHotKey(None, b.id, MODS, b.vk) {
                 eprintln!("[hotkey] RegisterHotKey failed for {}: {e}", b.label);
@@ -57,13 +56,11 @@ pub fn hotkey_loop(state: SharedState, failures: HotkeyFailures, wake: impl Fn()
                 } else {
                     format!("could not be registered (error {:#010x})", e.code().0)
                 };
-                failures.lock().unwrap().push(format!("{}: {why}", b.label));
-                failed = true;
+                failures.push(format!("{}: {why}", b.label));
             }
         }
-        // After the pushes, so a panel that was already drawn repaints with the failures.
-        if failed {
-            wake();
+        if !failures.is_empty() {
+            on_failures(failures);
         }
 
         let mut msg = MSG::default();
@@ -82,15 +79,7 @@ pub fn hotkey_loop(state: SharedState, failures: HotkeyFailures, wake: impl Fn()
             let Some(b) = BINDINGS.iter().find(|b| b.id == msg.wParam.0 as i32) else {
                 continue;
             };
-            {
-                let mut s = state.write();
-                match b.action {
-                    Action::Toggle => s.enabled = !s.enabled,
-                    Action::ZoomIn => s.step_zoom(1),
-                    Action::ZoomOut => s.step_zoom(-1),
-                }
-            }
-            wake();
+            on_action(b.action);
         }
     }
 }

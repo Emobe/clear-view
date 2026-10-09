@@ -73,11 +73,13 @@ cargo test --workspace
 
 ## Crate structure
 
-- `cv-core`: shared types (Frame, AppState, SharedState, DisplayMode, ColorFilter, Interpolation) and pure view math in `geometry` (crop, zoom, lerp, cursor mapping) with unit tests. Platform-neutral; keep it that way.
-- `cv-capture`: DXGI Desktop Duplication, staging texture, CPU readback
-- `cv-render`: wgpu pipeline (gfx.rs, shader.wgsl), overlay window, AppBar, cursor handling
+- `cv-core`: shared types (Frame, AppState, SharedState, DisplayMode, ColorFilter, Interpolation, the hotkey `Action` and `AppState::apply`) and pure view math in `geometry` (crop, zoom, lerp, cursor mapping) with unit tests. Platform-neutral; keep it that way.
+- `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings. Starts with `#![cfg(windows)]`.
+- `cv-render`: wgpu pipeline (gfx.rs, shader.wgsl), overlay window, AppBar, cursor handling. Its Win32 parts move to cv-platform-win in roadmap 2.3.
 - `cv-tts`: reader thread (SAPI, UIA). Built only with the `tts` feature.
-- `app`: main.rs, egui settings panel, hotkey thread, settings persistence
+- `app`: main.rs wiring, egui settings panel, settings persistence. Picks the backend with `#[cfg(windows)] use cv_platform_win as platform;` and has no `windows` dependency.
+
+Only cv-platform-win, cv-render (until 2.3) and parked cv-tts may depend on `windows`. Check with `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
 
 ## Architecture
 
@@ -86,7 +88,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **Main thread**: eframe (egui settings panel), always on top. No polling: the panel repaints on input, or when another thread calls `request_repaint()` through `app::RepaintSlot`. Any thread that changes state the panel shows must call it. Each frame the panel clones `AppState` under a read lock and writes back only the fields it changed (app.rs `apply_changes`).
 - **Capture thread**: DXGI Desktop Duplication to D3D11 staging texture to CPU BGRA8, stored in `Arc<Mutex<Option<Arc<Frame>>>>`. Switches monitor when the render thread changes `desired_output`.
 - **Render thread**: overlay window and wgpu pipeline. Uploads the frame when it changed, blits through the shader, lerps the cursor for smooth follow, handles docking and monitor changes.
-- **Hotkey thread**: `RegisterHotKey` (Ctrl+Alt+Shift+Z; no Win-key combos, the shell owns them) toggles `AppState.enabled`.
+- **Hotkey thread**: spawned by cv-platform-win. `RegisterHotKey` (Ctrl+Alt+Shift+Z toggle, +Up and +Down zoom; no Win-key combos, the shell owns them) reports each press as an `Action`; app applies it with `AppState::apply` and wakes the panel.
 - **TTS thread**: only with the `tts` feature. Owns all COM, UIA and SAPI state (MTA). See docs/later/tts-plan.md and ADR 0003.
 
 ## Key design decisions

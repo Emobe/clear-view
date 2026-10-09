@@ -10,14 +10,16 @@ path = "src/main.rs"
 
 [dependencies]
 cv-core = { path = "../cv-core" }
-cv-capture = { path = "../cv-capture" }
 cv-render = { path = "../cv-render" }
 cv-tts = { path = "../cv-tts", optional = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
-windows = { workspace = true }
+
+# The platform backend (ADR 0004). app itself has no `windows` dependency.
+[target.'cfg(windows)'.dependencies]
+cv-platform-win = { path = "../cv-platform-win" }
 
 [features]
 # Speech is parked until after v1. Off by default.
