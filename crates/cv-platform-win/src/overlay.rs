@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::Cell,
     ffi::c_void,
     mem::size_of,
     num::NonZeroIsize,
@@ -33,62 +33,33 @@ use windows::{
     core::{BOOL, PCWSTR, w},
 };
 
-use cv_core::{
-    ColorFilter, DisplayMode, Edge, Frame, FrameState, Interpolation, OutputInfo, PointerSource,
-    ScreenPoint, SharedState,
-};
-use cv_core::geometry::{self, panel_pct_to_px, window_dims};
-use cv_magnifier::WgpuState;
+use cv_core::{FrameState, OutputInfo, PointerSource, ScreenPoint, SharedState};
+use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 
 use crate::{appbar, pointer::CursorPointer};
 
-struct WindowData {
-    wgpu: WgpuState,
-    frame_state: FrameState,
-    app_state: SharedState,
-    smooth_x: f32,
-    smooth_y: f32,
-    last_tick: Instant,
-    /// All monitors enumerated at startup (virtual-screen coords).
-    outputs: Vec<OutputInfo>,
-    /// Index into `outputs` for the currently-active monitor.
-    active_output_idx: u32,
-    /// Top-left of the active monitor in virtual screen coordinates.
-    monitor_left: i32,
-    monitor_top: i32,
-    /// Width/height of the active monitor.
-    screen_w: i32,
-    screen_h: i32,
-    /// Shared with the capture thread — signals which output to duplicate.
-    desired_output: Arc<AtomicU32>,
-    callback_msg: u32,
-    // Change-detection: what is currently applied to the window.
-    cur_enabled: bool,
-    cur_mode: DisplayMode,
-    cur_panel_size: u32,
-    appbar_active: bool,
-    // GPU write caching — skip redundant uploads/uniform writes.
-    last_frame: Option<Arc<Frame>>,
-    last_crop: [f32; 4],
-    last_color_mode: u32,
-    last_interp_mode: u32,
-    last_edge_threshold: f32,
-    last_cursor_x: u32,
-    last_cursor_y: u32,
-}
-
-thread_local! {
-    static WIN_DATA: RefCell<Option<WindowData>> = const { RefCell::new(None) };
-}
-
 const CLASS_NAME: PCWSTR = w!("clear_view_overlay");
+
+/// The tick timer on the overlay window.
+const TIMER_ID: usize = 1;
+const TICK_MS: u32 = 16;
 
 /// The overlay window, as an integer so other threads can post `WM_CLOSE` to it. 0 = none.
 /// There is one overlay per process.
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 /// Set when `teardown` has finished, so the console handler knows it may return.
 static TEARDOWN_DONE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// The registered AppBar callback message. 0 until the window exists.
+    static CALLBACK_MSG: Cell<u32> = const { Cell::new(0) };
+    /// Set by `wnd_proc` on `ABN_POSCHANGED` and handled by the message loop before the next
+    /// tick. The notification can arrive inside a tick (the shell sends it while
+    /// `SHAppBarMessage` or `SetWindowPos` is running), and the magnifier must not be called
+    /// from inside its own call (ADR 0004).
+    static APPBAR_POS_CHANGED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// How long to wait for the render thread to restore the machine before giving up.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
@@ -158,19 +129,13 @@ unsafe extern "system" fn console_ctrl_handler(_event: u32) -> BOOL {
 }
 
 /// Restores everything the overlay changed: the AppBar work area, the system cursor and the
-/// cursor clip, then destroys the window. Runs from `TeardownGuard`, so it also runs when the
-/// render thread panics. It does not rely on `WIN_DATA` being in a usable state.
-fn teardown(hwnd: HWND) {
+/// cursor clip, then destroys the window. Runs from `WinHost`'s `Drop`, so it also runs when
+/// the render thread panics.
+fn teardown(hwnd: HWND, appbar_active: bool) {
     OVERLAY_HWND.store(0, Ordering::SeqCst);
     unsafe {
-        let _ = KillTimer(Some(hwnd), 1);
+        let _ = KillTimer(Some(hwnd), TIMER_ID);
     }
-    // Drop the wgpu surface before the window it draws to goes away.
-    let data = WIN_DATA.with(|d| d.try_borrow_mut().ok().and_then(|mut b| b.take()));
-    // With no data (early panic, or a borrow in flight) assume the AppBar may be registered;
-    // ABM_REMOVE always succeeds.
-    let appbar_active = data.as_ref().is_none_or(|w| w.appbar_active);
-    drop(data);
     if appbar_active {
         appbar::unregister(hwnd);
     }
@@ -187,11 +152,135 @@ fn teardown(hwnd: HWND) {
     TEARDOWN_DONE.store(true, Ordering::SeqCst);
 }
 
-struct TeardownGuard(HWND);
+/// The overlay window as the magnifier sees it (ADR 0004). Owns the AppBar registration,
+/// window placement, system cursor hiding and the cursor clip. Dropping it restores the machine
+/// and destroys the window.
+struct WinHost {
+    hwnd: HWND,
+    callback_msg: u32,
+    /// What `apply_layout` last made the window.
+    applied: Layout,
+    appbar_active: bool,
+}
 
-impl Drop for TeardownGuard {
+impl WinHost {
+    fn unregister_appbar(&mut self) {
+        if self.appbar_active {
+            appbar::unregister(self.hwnd);
+            self.appbar_active = false;
+        }
+    }
+
+    /// Answers `ABN_POSCHANGED`: re-queries the AppBar position and moves the window there.
+    /// Returns the new client size, or `None` when not docked.
+    fn reposition_appbar(&mut self) -> Option<(u32, u32)> {
+        if !self.appbar_active {
+            return None;
+        }
+        let Layout::Docked { monitor, edge, thickness } = &self.applied else {
+            return None;
+        };
+        let rect = appbar::reposition(
+            self.hwnd,
+            *edge,
+            *thickness as i32,
+            monitor.width as i32,
+            monitor.height as i32,
+        );
+        move_window(self.hwnd, rect);
+        Some(rect_dims(rect))
+    }
+
+    /// Runs every tick: while docked the cursor is clipped to the work area, in fullscreen the
+    /// clip is released. Nothing while hidden.
+    fn update_clip(&self) {
+        match self.applied {
+            Layout::Hidden => {}
+            Layout::Fullscreen { .. } => update_clip_cursor(false),
+            Layout::Docked { .. } => update_clip_cursor(true),
+        }
+    }
+}
+
+impl PointerSource for WinHost {
+    fn position(&self) -> Option<ScreenPoint> {
+        CursorPointer.position()
+    }
+}
+
+impl OverlayHost for WinHost {
+    fn apply_layout(&mut self, layout: &Layout) -> (u32, u32) {
+        let was_hidden = self.applied == Layout::Hidden;
+        let size = match layout {
+            Layout::Hidden => {
+                self.unregister_appbar();
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                }
+                (0, 0)
+            }
+            Layout::Fullscreen { monitor } => {
+                self.unregister_appbar();
+                let rect = RECT {
+                    left: monitor.left,
+                    top: monitor.top,
+                    right: monitor.left + monitor.width as i32,
+                    bottom: monitor.top + monitor.height as i32,
+                };
+                move_window(self.hwnd, rect);
+                rect_dims(rect)
+            }
+            Layout::Docked { monitor, edge, thickness } => {
+                let (sw, sh) = (monitor.width as i32, monitor.height as i32);
+                let same_edge =
+                    matches!(&self.applied, Layout::Docked { edge: e, .. } if e == edge);
+                let rect = if self.appbar_active && same_edge {
+                    // Panel size change: the registration stays.
+                    appbar::reposition(self.hwnd, *edge, *thickness as i32, sw, sh)
+                } else {
+                    self.unregister_appbar();
+                    let rect = appbar::register(
+                        self.hwnd,
+                        *edge,
+                        *thickness as i32,
+                        sw,
+                        sh,
+                        self.callback_msg,
+                    );
+                    self.appbar_active = true;
+                    rect
+                };
+                move_window(self.hwnd, rect);
+                rect_dims(rect)
+            }
+        };
+
+        if was_hidden && *layout != Layout::Hidden {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_SHOW);
+            }
+        }
+        // The magnifier draws its own cursor only in fullscreen. No reference count, so a
+        // repeated call is harmless.
+        let show_cursor = !matches!(layout, Layout::Fullscreen { .. });
+        let _ = unsafe { MagShowSystemCursor(show_cursor) };
+
+        self.applied = layout.clone();
+        size
+    }
+
+    fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
+        let display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+        let window = RawWindowHandle::Win32(Win32WindowHandle::new(
+            NonZeroIsize::new(self.hwnd.0 as isize).expect("overlay window handle is non-null"),
+        ));
+        (display, window)
+    }
+}
+
+impl Drop for WinHost {
     fn drop(&mut self) {
-        teardown(self.0);
+        teardown(self.hwnd, self.appbar_active);
     }
 }
 
@@ -210,8 +299,9 @@ fn run_overlay(
         width: 1920,
         height: 1080,
     });
-    let screen_w = primary.width as i32;
-    let screen_h = primary.height as i32;
+
+    let callback_msg = unsafe { RegisterWindowMessageW(w!("ClearViewAppBar")) };
+    CALLBACK_MSG.set(callback_msg);
 
     let hwnd = unsafe {
         let hinstance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
@@ -232,8 +322,8 @@ fn run_overlay(
             WS_POPUP, // starts hidden
             primary.left,
             primary.top,
-            screen_w,
-            screen_h,
+            primary.width as i32,
+            primary.height as i32,
             None,
             None,
             Some(hinstance),
@@ -246,73 +336,51 @@ fn run_overlay(
         hwnd
     };
     OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
-    // From here on, any exit from this function (including a panic) restores the machine.
-    let _guard = TeardownGuard(hwnd);
+    // From here on, any exit from this function (including a panic) restores the machine when
+    // `host` is dropped.
+    let mut host = WinHost { hwnd, callback_msg, applied: Layout::Hidden, appbar_active: false };
 
-    let callback_msg = unsafe { RegisterWindowMessageW(w!("ClearViewAppBar")) };
-
-    // wgpu init (blocking) — window starts primary-monitor-sized.
-    let display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
-    let window = RawWindowHandle::Win32(Win32WindowHandle::new(
-        NonZeroIsize::new(hwnd.0 as isize).unwrap(),
-    ));
-    // SAFETY: the window belongs to this thread, and `teardown` drops `WIN_DATA` (and with it
-    // the surface) before `DestroyWindow`.
-    let wgpu = unsafe {
-        WgpuState::new(
-            display,
-            window,
-            screen_w as u32,
-            screen_h as u32,
-            primary.width,
-            primary.height,
-        )
+    // wgpu init (blocking): the window starts primary-monitor-sized.
+    // SAFETY: `magnifier` is declared after `host`, so it (and its wgpu surface) is dropped
+    // first; the window is destroyed in `host`'s `Drop`.
+    let mut magnifier = unsafe {
+        Magnifier::new(&host, primary, outputs, app_state, frame_state, desired_output)
     };
-
-    WIN_DATA.with(|d| {
-        *d.borrow_mut() = Some(WindowData {
-            wgpu,
-            frame_state,
-            app_state,
-            smooth_x: screen_w as f32 / 2.0 + primary.left as f32,
-            smooth_y: screen_h as f32 / 2.0 + primary.top as f32,
-            last_tick: Instant::now(),
-            active_output_idx: primary.idx,
-            monitor_left: primary.left,
-            monitor_top: primary.top,
-            screen_w,
-            screen_h,
-            outputs,
-            desired_output,
-            callback_msg,
-            cur_enabled: false,
-            cur_mode: DisplayMode::Fullscreen,
-            cur_panel_size: 300,
-            appbar_active: false,
-            last_frame: None,
-            last_crop: [f32::NAN; 4],   // NAN != NAN → forces first write
-            last_color_mode: u32::MAX,  // forces first write
-            last_interp_mode: u32::MAX, // forces first write
-            last_edge_threshold: f32::NAN, // NAN != NAN → forces first write
-            last_cursor_x: u32::MAX,    // forces first write
-            last_cursor_y: u32::MAX,    // forces first write
-        });
-    });
 
     // Cursor hiding is best-effort: a failed Mag* call leaves nothing to act on.
     let _ = unsafe { MagInitialize() };
 
-    unsafe { SetTimer(Some(hwnd), 1, 16, None) };
+    unsafe { SetTimer(Some(hwnd), TIMER_ID, TICK_MS, None) };
 
+    // The loop runs the tick itself rather than dispatching WM_TIMER to `wnd_proc`, so the host
+    // and magnifier are plain locals and `wnd_proc` never touches them.
     let mut msg = MSG::default();
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+    loop {
+        let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        if ret.0 == 0 {
+            break; // WM_QUIT
+        }
+        if ret.0 == -1 {
+            eprintln!("[render] GetMessageW failed: {}", windows::core::Error::from_thread());
+            break;
+        }
+        if msg.message == WM_TIMER && msg.hwnd == hwnd && msg.wParam.0 == TIMER_ID {
+            if APPBAR_POS_CHANGED.take()
+                && let Some((w, h)) = host.reposition_appbar()
+            {
+                magnifier.resized(w, h);
+            }
+            magnifier.tick(&mut host, Instant::now());
+            host.update_clip();
+            continue;
+        }
         unsafe {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
 
-    // `_guard` runs `teardown` as the function returns.
+    // `magnifier` then `host` drop here; `host` runs `teardown`.
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -321,12 +389,11 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let callback_msg = WIN_DATA
-        .with(|d| d.borrow().as_ref().map(|w| w.callback_msg))
-        .unwrap_or(0);
-
+    let callback_msg = CALLBACK_MSG.get();
     if msg != 0 && msg == callback_msg {
-        handle_appbar_callback(hwnd, wparam);
+        if wparam.0 == appbar::ABN_POSCHANGED {
+            APPBAR_POS_CHANGED.set(true);
+        }
         return LRESULT(0);
     }
 
@@ -342,324 +409,10 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         },
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
-        WM_TIMER => {
-            on_timer(hwnd);
-            LRESULT(0)
-        }
+        // The message loop runs the tick; nothing to do if a timer message is dispatched.
+        WM_TIMER => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-}
-
-fn handle_appbar_callback(hwnd: HWND, wparam: WPARAM) {
-    if wparam.0 != appbar::ABN_POSCHANGED {
-        return;
-    }
-
-    let params = WIN_DATA.with(|d| {
-        let b = d.borrow();
-        let w = b.as_ref()?;
-        if !w.appbar_active {
-            return None;
-        }
-        match w.cur_mode {
-            DisplayMode::Docked(e) => Some((e, w.cur_panel_size, w.screen_w, w.screen_h)),
-            _ => None,
-        }
-    });
-    let Some((edge, panel_pct, sw, sh)) = params else {
-        return;
-    };
-    let thickness = panel_pct_to_px(panel_pct, match edge { Edge::Top | Edge::Bottom => sh, _ => sw });
-
-    // Borrow is dropped — safe to call SetWindowPos.
-    let rect = appbar::reposition(hwnd, edge, thickness, sw, sh);
-    move_window(hwnd, rect);
-    WIN_DATA.with(|d| {
-        if let Some(w) = d.borrow_mut().as_mut() {
-            let (rw, rh) = rect_dims(rect);
-            w.wgpu.resize(rw, rh);
-        }
-    });
-}
-
-fn on_timer(hwnd: HWND) {
-    // ── Snapshot desired state ───────────────────────────────────────────────
-    struct Snap {
-        enabled: bool,
-        mode: DisplayMode,
-        panel_size: u32,
-        zoom: f32,
-        smooth_speed: f32,
-        color_filter: ColorFilter,
-        interpolation: Interpolation,
-        edge_threshold: f32,
-        frame: Option<Arc<Frame>>,
-        cur_enabled: bool,
-        cur_mode: DisplayMode,
-        cur_panel_size: u32,
-        appbar_active: bool,
-        screen_w: i32,
-        screen_h: i32,
-        monitor_left: i32,
-        monitor_top: i32,
-        callback_msg: u32,
-    }
-
-    let snap = WIN_DATA.with(|d| {
-        let b = d.borrow();
-        let w = b.as_ref()?;
-        let s = w.app_state.read();
-        let frame = w.frame_state.lock().ok()?.clone();
-        Some(Snap {
-            enabled: s.enabled,
-            mode: s.display_mode,
-            panel_size: s.panel_size,
-            zoom: s.zoom,
-            smooth_speed: s.smooth_speed,
-            color_filter: s.color_filter,
-            interpolation: s.interpolation,
-            edge_threshold: s.edge_threshold,
-            frame,
-            cur_enabled: w.cur_enabled,
-            cur_mode: w.cur_mode,
-            cur_panel_size: w.cur_panel_size,
-            appbar_active: w.appbar_active,
-            screen_w: w.screen_w,
-            screen_h: w.screen_h,
-            monitor_left: w.monitor_left,
-            monitor_top: w.monitor_top,
-            callback_msg: w.callback_msg,
-        })
-    });
-    let Some(snap) = snap else { return };
-
-    let sw = snap.screen_w;
-    let sh = snap.screen_h;
-
-    // ── State transitions ────────────────────────────────────────────────────
-    let enabled_changed = snap.enabled != snap.cur_enabled;
-    let mode_changed = snap.mode != snap.cur_mode;
-    let panel_size_changed = snap.panel_size != snap.cur_panel_size;
-
-    let need_transition =
-        enabled_changed || (snap.enabled && mode_changed) || (snap.enabled && panel_size_changed);
-
-    let mut new_appbar_active = snap.appbar_active;
-    let mut new_rect: Option<RECT> = None;
-
-    if need_transition {
-        if enabled_changed && !snap.enabled {
-            // ── Disabling ─────────────────────────────────────────────────
-            if snap.appbar_active {
-                appbar::unregister(hwnd);
-                new_appbar_active = false;
-            }
-            unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
-        } else if enabled_changed && snap.enabled {
-            // ── Enabling ──────────────────────────────────────────────────
-            if snap.appbar_active {
-                appbar::unregister(hwnd);
-                new_appbar_active = false;
-            }
-            match snap.mode {
-                DisplayMode::Fullscreen => {
-                    new_rect = Some(RECT {
-                        left: snap.monitor_left,
-                        top: snap.monitor_top,
-                        right: snap.monitor_left + sw,
-                        bottom: snap.monitor_top + sh,
-                    });
-                }
-                DisplayMode::Docked(e) => {
-                    let rect = appbar::register(hwnd, e, panel_pct_to_px(snap.panel_size, match e { Edge::Top | Edge::Bottom => sh, _ => sw }), sw, sh, snap.callback_msg);
-                    new_rect = Some(rect);
-                    new_appbar_active = true;
-                }
-            }
-        } else if snap.enabled && mode_changed {
-            // ── Mode change while enabled ─────────────────────────────────
-            if snap.appbar_active {
-                appbar::unregister(hwnd);
-                new_appbar_active = false;
-            }
-            match snap.mode {
-                DisplayMode::Fullscreen => {
-                    new_rect = Some(RECT {
-                        left: snap.monitor_left,
-                        top: snap.monitor_top,
-                        right: snap.monitor_left + sw,
-                        bottom: snap.monitor_top + sh,
-                    });
-                }
-                DisplayMode::Docked(e) => {
-                    let rect = appbar::register(hwnd, e, panel_pct_to_px(snap.panel_size, match e { Edge::Top | Edge::Bottom => sh, _ => sw }), sw, sh, snap.callback_msg);
-                    new_rect = Some(rect);
-                    new_appbar_active = true;
-                }
-            }
-        } else if snap.enabled && panel_size_changed {
-            // ── Panel size change while docked ────────────────────────────
-            if let DisplayMode::Docked(e) = snap.mode {
-                let rect = appbar::reposition(hwnd, e, panel_pct_to_px(snap.panel_size, match e { Edge::Top | Edge::Bottom => sh, _ => sw }), sw, sh);
-                new_rect = Some(rect);
-            }
-        }
-
-        // ── move_window outside any WIN_DATA borrow ───────────────────────
-        if let Some(rect) = new_rect {
-            move_window(hwnd, rect);
-        }
-
-        // ── ShowWindow (only on enable/disable) ───────────────────────────
-        if enabled_changed && snap.enabled {
-            unsafe { let _ = ShowWindow(hwnd, SW_SHOW); }
-        }
-
-        // ── Cursor visibility via Magnification API ───────────────────────
-        let show_cursor = !(snap.enabled && snap.mode == DisplayMode::Fullscreen);
-        let _ = unsafe { MagShowSystemCursor(show_cursor) };
-
-        // ── Write back tracking state + resize wgpu surface ──────────────
-        WIN_DATA.with(|d| {
-            let mut b = d.borrow_mut();
-            let w = b.as_mut().unwrap();
-            w.cur_enabled    = snap.enabled;
-            w.cur_mode       = snap.mode;
-            w.cur_panel_size = snap.panel_size;
-            w.appbar_active  = new_appbar_active;
-            if let Some(rect) = new_rect {
-                let (rw, rh) = rect_dims(rect);
-                w.wgpu.resize(rw, rh);
-            }
-        });
-    }
-
-    // ── Render ───────────────────────────────────────────────────────────────
-    if !snap.enabled {
-        return;
-    }
-
-    // A failed read gives (0, 0), as before the pointer moved behind `PointerSource`.
-    let cursor = CursorPointer.position().unwrap_or(ScreenPoint { x: 0, y: 0 });
-
-    // ── Monitor follow: collect switch rect before taking the main borrow ───
-    // We compute the move rect here (outside WIN_DATA borrow) so that
-    // move_window → SetWindowPos → wnd_proc re-entry cannot deadlock.
-    let monitor_move_rect: Option<RECT> = WIN_DATA.with(|d| {
-        let mut b = d.borrow_mut();
-        let w = b.as_mut().unwrap();
-
-        let target = geometry::output_at(&w.outputs, cursor.x, cursor.y)?;
-        if target.idx == w.active_output_idx {
-            return None;
-        }
-
-        let new_idx = target.idx;
-        let nl = target.left;
-        let nt = target.top;
-        let nw = target.width;
-        let nh = target.height;
-
-        w.desired_output.store(new_idx, Ordering::Relaxed);
-        w.active_output_idx = new_idx;
-        w.monitor_left = nl;
-        w.monitor_top = nt;
-        w.screen_w = nw as i32;
-        w.screen_h = nh as i32;
-
-        w.wgpu.recreate_frame_texture(nw, nh);
-        w.last_frame = None; // force re-upload on next frame
-
-        if snap.mode == DisplayMode::Fullscreen {
-            let rect = RECT {
-                left: nl,
-                top: nt,
-                right: nl + nw as i32,
-                bottom: nt + nh as i32,
-            };
-            w.wgpu.resize(nw, nh);
-            Some(rect)
-        } else {
-            None
-        }
-    });
-
-    // SetWindowPos is called here — borrow fully released, no re-entrancy risk.
-    if let Some(rect) = monitor_move_rect {
-        move_window(hwnd, rect);
-    }
-
-    // ── Clip cursor every tick while docked ───────────────────────────────
-    update_clip_cursor(matches!(snap.mode, DisplayMode::Docked(_)));
-
-    // ── Main render: lerp, crop, upload, uniforms, present ──────────────────
-    WIN_DATA.with(|d| {
-        let mut b = d.borrow_mut();
-        let w = b.as_mut().unwrap();
-
-        // Frame-rate-independent lerp toward actual cursor.
-        let now = Instant::now();
-        let dt = now.duration_since(w.last_tick).as_secs_f32();
-        w.last_tick = now;
-        let alpha = geometry::smooth_alpha(snap.smooth_speed, dt);
-        w.smooth_x = geometry::lerp_toward(w.smooth_x, cursor.x as f32, alpha);
-        w.smooth_y = geometry::lerp_toward(w.smooth_y, cursor.y as f32, alpha);
-
-        // Convert smoothed cursor to monitor-local coordinates (DXGI frame origin = 0,0).
-        let cx = geometry::to_monitor_local(w.smooth_x, w.monitor_left);
-        let cy = geometry::to_monitor_local(w.smooth_y, w.monitor_top);
-
-        let cur_sw = w.screen_w;
-        let cur_sh = w.screen_h;
-        let (win_w, win_h) = window_dims(snap.mode, snap.panel_size, cur_sw, cur_sh);
-
-        let fw = w.wgpu.tex_w as f32;
-        let fh = w.wgpu.tex_h as f32;
-        let crop_rect = geometry::compute_crop(cx, cy, win_w, win_h, snap.zoom, fw, fh);
-        let crop = crop_rect.normalized();
-
-        // Upload frame only when the capture thread has produced a new Arc<Frame>.
-        if let Some(frame) = &snap.frame {
-            let new_frame = w
-                .last_frame
-                .as_ref()
-                .is_none_or(|last| !Arc::ptr_eq(last, frame));
-            if new_frame {
-                w.wgpu.upload_frame(&frame.data, frame.width, frame.height);
-                w.last_frame = Some(Arc::clone(frame));
-            }
-        }
-
-        // Cursor position in output window pixel space, accounting for zoom/crop.
-        let (cursor_x, cursor_y) = geometry::cursor_in_output(cx, cy, &crop_rect, win_w, win_h);
-
-        // Write uniforms only when crop, settings, or cursor have changed.
-        let color_mode = snap.color_filter.as_u32();
-        let interp_mode = snap.interpolation.as_u32();
-        if crop != w.last_crop
-            || color_mode != w.last_color_mode
-            || interp_mode != w.last_interp_mode
-            || snap.edge_threshold != w.last_edge_threshold
-            || cursor_x != w.last_cursor_x
-            || cursor_y != w.last_cursor_y
-        {
-            w.wgpu.write_uniforms(
-                crop, color_mode, interp_mode, cursor_x, cursor_y, snap.edge_threshold,
-            );
-            w.last_crop = crop;
-            w.last_color_mode = color_mode;
-            w.last_interp_mode = interp_mode;
-            w.last_edge_threshold = snap.edge_threshold;
-            w.last_cursor_x = cursor_x;
-            w.last_cursor_y = cursor_y;
-        }
-
-        if !w.wgpu.render() {
-            // Surface lost/outdated — reconfigure to recover.
-            let (rw, rh) = window_dims(snap.mode, snap.panel_size, cur_sw, cur_sh);
-            w.wgpu.resize(rw, rh);
-        }
-    });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

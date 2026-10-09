@@ -75,7 +75,7 @@ cargo test --workspace
 
 - `cv-core`: shared types (Frame, AppState, SharedState, DisplayMode, ColorFilter, Interpolation, the hotkey `Action` and `AppState::apply`) and pure view math in `geometry` (crop, zoom, lerp, cursor mapping) with unit tests. Platform-neutral; keep it that way.
 - `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings, and the overlay (overlay.rs: window, render thread and loop, cursor clip and hiding, clean exit; appbar.rs). Starts with `#![cfg(windows)]`.
-- `cv-magnifier`: the platform-neutral magnifier. wgpu pipeline (gfx.rs, shader.wgsl, clean_edge.wgsl); `WgpuState::new` takes raw display and window handles. No `windows` dependency.
+- `cv-magnifier`: the platform-neutral magnifier. `Magnifier::tick` (magnifier.rs: pointer follow, layout decisions, lerp, crop, upload and uniform caching, unit-tested with a fake host and renderer); the `OverlayHost`/`Layout` and `CaptureSource` seams and the capture loop; wgpu pipeline (gfx.rs, shader.wgsl, clean_edge.wgsl), which takes raw display and window handles. No `windows` dependency.
 - `cv-tts`: reader thread (SAPI, UIA). Built only with the `tts` feature.
 - `app`: main.rs wiring, egui settings panel, settings persistence. Picks the backend with `#[cfg(windows)] use cv_platform_win as platform;` and has no `windows` dependency.
 
@@ -87,7 +87,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 
 - **Main thread**: eframe (egui settings panel), always on top. No polling: the panel repaints on input, or when another thread calls `request_repaint()` through `app::RepaintSlot`. Any thread that changes state the panel shows must call it. Each frame the panel clones `AppState` under a read lock and writes back only the fields it changed (app.rs `apply_changes`).
 - **Capture thread**: DXGI Desktop Duplication to D3D11 staging texture to CPU BGRA8, stored in `Arc<Mutex<Option<Arc<Frame>>>>`. Switches monitor when the render thread changes `desired_output`.
-- **Render thread**: overlay window and wgpu pipeline. Uploads the frame when it changed, blits through the shader, lerps the cursor for smooth follow, handles docking and monitor changes.
+- **Render thread**: owned by cv-platform-win. Creates the overlay window; its message loop runs `Magnifier::tick` on each 16 ms timer, passing `WinHost` (the `OverlayHost`: window placement, AppBar, cursor hiding, cursor clip). `wnd_proc` borrows no state: `ABN_POSCHANGED` sets a flag the loop handles before the next tick, because the magnifier must not be called from inside its own `apply_layout`.
 - **Hotkey thread**: spawned by cv-platform-win. `RegisterHotKey` (Ctrl+Alt+Shift+Z toggle, +Up and +Down zoom; no Win-key combos, the shell owns them) reports each press as an `Action`; app applies it with `AppState::apply` and wakes the panel.
 - **TTS thread**: only with the `tts` feature. Owns all COM, UIA and SAPI state (MTA). See docs/later/tts-plan.md and ADR 0003.
 

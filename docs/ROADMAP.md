@@ -67,6 +67,7 @@ Goal: something your mum can use for real in fullscreen mode, so feedback starts
 2.3 Portable renderer: gfx.rs takes raw display and window handles instead of `HWND`; the Win32 overlay (window, loop, AppBar, cursor clip, cursor hiding, clean exit) and appbar.rs move to cv-platform-win; cv-render drops `windows` and is renamed cv-magnifier.
 2.4 Seam traits `PointerSource`, `OverlayHost`, `CaptureSource`; the capture loop moves from main.rs to cv-magnifier behind `CaptureSource`.
 2.5 `Magnifier::tick`: the per-tick logic moves out of `on_timer` behind `OverlayHost` and `Layout`, with fake-host unit tests. Stop and propose sub-items if it is bigger than one step.
+2.5a Capture survives a lock (STATUS Finding 16): a failed reconnect no longer ends the capture thread; it retries with a short sleep until capture is available again (lock screen, UAC prompt, remote session). Verify: unlock with fullscreen on shows the live desktop, and the view does not slide to the top-left while locked (Finding 15).
 2.6 wgpu 22 to 30, naga with it; `bench_modes_4k` before and after.
 2.7 eframe and egui 0.29 to 0.36 (needs Rust 1.95 or newer), or 0.35 if 0.36 is too much churn.
 
