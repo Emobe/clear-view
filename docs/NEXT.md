@@ -3,21 +3,21 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.4 All four edges and the panel size setting, limited to 10–90% (ADR 0007).
-ADR: docs/adr/0007-docked-overlay.md, Accepted. Run `/step 3.4`.
+Item: 3.5 Remove AppBar docking and ClipCursor (ADR 0007).
+ADR: docs/adr/0007-docked-overlay.md, Accepted. Run `/step 3.5`.
 
-Notes for 3.4 (from ADR 0007 and 3.3; if you change the ADR, the ADR wins):
-- 3.3 (PR #34) put Docked Top on the overlay: `WinHost::apply_layout` has a `Docked { edge: Edge::Top }` arm that unregisters any AppBar and calls `move_window` to `geometry::docked_rect`; `update_clip` releases the clip for Top. 3.4 widens both to every edge, so docking no longer registers an AppBar or clips the cursor.
-- `geometry::docked_rect` already handles all four edges (tested). The magnifier's system cursor hit test (`update_system_cursor`, `OverlayHost::set_system_cursor`) already runs on every docked edge; no magnifier change is expected beyond tests for the other edges.
-- Panel size 10–90%, default 50: `AppState::sanitize` (cv-core/src/lib.rs, now clamps 1–100), the panel slider (app/src/app.rs, now 1..=100), and the `sanitize_clamps_out_of_range` test. A saved value outside the range loads clamped.
-- Leave appbar.rs, `update_clip_cursor`, `reposition_appbar` and the `ABN_POSCHANGED` path in place even if unused by docking; 3.5 removes them. If they become dead code, clippy will warn: decide in the plan whether to `#[allow(dead_code)]` them until 3.5 or fold that removal into 3.4.
-- Verify should include the taskbar under a bottom panel (clicks reach it, does it draw over the panel), Left and Right panels, and switching edges with the pointer inside the panel.
+Notes for 3.5 (from ADR 0007 "Removed in 3.5" and 3.4; if you change the ADR, the ADR wins):
+- 3.4 (PR #35) put every docked edge on the overlay. Nothing registers an AppBar any more; `appbar_active` is never set true. `appbar::register`, `ABM_NEW` and `WinHost::callback_msg` carry `#[allow(dead_code)] // removed in 3.5`.
+- Remove: cv-platform-win/src/appbar.rs (and `mod appbar` in lib.rs), `appbar::notify_moved` in `move_window`, `WinHost::appbar_active`, `unregister_appbar`, `reposition_appbar`, `callback_msg`, the `CALLBACK_MSG` and `APPBAR_POS_CHANGED` thread-locals, `RegisterWindowMessageW`, the callback branch in `wnd_proc`, the AppBar part of `teardown`, `update_clip_cursor`, `WinHost::update_clip` and its call in the loop, and `Magnifier::resized` if nothing else calls it. Drop `windows` features that only these used (check `Win32_UI_Shell` is not used elsewhere).
+- Shutdown: `OverlayHandle::shutdown` and `teardown` call `update_clip_cursor(false)`. Decide in the plan whether a single `ClipCursor(None)` stays on exit as cheap insurance (PRODUCT principle 2) or goes with the rest; nothing sets a clip any more.
+- No setting is removed: `display_mode` and `panel_size` stay.
+- CLAUDE.md still describes AppBar docking (Key design decisions "Docked panel", the render thread's `ABN_POSCHANGED` note, and cv-platform-win's appbar.rs in Crate structure). Update it in 3.5.
 - Model: Sonnet high (CLAUDE.md model guide for /step).
 
-Then: 3.5 removes appbar.rs, `update_clip_cursor`, `reposition_appbar` and the `ABN_POSCHANGED` path; before 3.6 you read the build and MPO lines (`[system] …` at startup) on the tester's machine.
+Then: 3.6 tester build 2 with docked mode, tag v0.2.0; before handing it over you read the build and MPO lines (`[system] …` at startup) on the tester's machine.
 
 What comes next:
-- 3.4 and 3.5 finish ADR 0007.
+- 3.5 finishes ADR 0007.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
@@ -33,6 +33,7 @@ Still true:
 - Not an option in code: the native Windows Magnifier and the Magnification API for zooming or smoothing (your decision). `MagShowSystemCursor` for cursor hiding stays.
 - Screenshots of the magnifier don't show the zoomed view (the overlay is excluded from capture). To compare filters by eye, run an ordinary unzoomed screenshot through the shader offscreen (docs/later/text-smoothing.md).
 - Jitter: none noticeable at high zoom in 1.5. You expect it may show with caret tracking (Phase 4). Unconfirmed candidates if it does: the 16 ms `SetTimer` (cv-platform-win/src/overlay.rs `TICK_MS`) against 60 Hz vsync, `dt` measured at timer time not present time.
-- Finding 12 (mouse cannot reach the taskbar) is docked-only, gone on the top edge since 3.3, and closes with 3.4/3.5. Finding 13 is ignored by your decision.
+- Finding 12 (mouse cannot reach the taskbar) is resolved by 3.4. Finding 13 is ignored by your decision.
+- Panel size is 10–90% (`cv_core::PANEL_SIZE_MIN`, `PANEL_SIZE_MAX`, ADR 0007); the numbers can change in a step without a new ADR.
 - Work in roadmap order.
 - Old 2.3 (TTS toggles) is dropped; its patch is in docs/archive/. Do not bring it back.
