@@ -109,6 +109,8 @@ This is not part of the 3.1 question, but it is the largest cost measured.
 
 ## Recommendation for the 3.2 ADR
 
+Your verdict after trying it (2026-10-09): "overlay is the way forward."
+
 1. **Window.** Keep the current overlay window and styles: topmost, click-through layered window, no activation, `WDA_EXCLUDEFROMCAPTURE`. Place it with `SetWindowPos` at the monitor edge. No AppBar, no `ClipCursor`, no work-area change. This is a backend-only change inside `WinHost::apply_layout`, as ADR 0004 intended.
 2. **Swapchain.** Stay on `DxgiFromHwnd`. DirectComposition gave no measured benefit.
 3. **Extra frames.** Build no mitigation now. The ADR should require checking the tester's Windows build (26100.2314 or later) and MPO support before 3.6. If the issue does appear, present only on change (the idle skip measured here) rather than filtering captured frames (finding 2).
