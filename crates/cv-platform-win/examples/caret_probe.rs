@@ -473,10 +473,12 @@ mod probe {
     }
 }
 
-/// On-screen outlines of the latest readings: one click-through, topmost window over the whole
-/// virtual screen, black made transparent with a colour key, never activated. It runs its own
-/// thread and message loop; the probe thread hands it rectangles and posts a redraw when they
-/// change.
+/// On-screen outlines of the latest readings: one small click-through, topmost, never-activated
+/// window per source, sized to its outline and moved with it, black made transparent with a
+/// colour key. Nothing covers the whole monitor: a topmost window that does makes the shell treat
+/// the monitor as running a full-screen app and drop the taskbar below other windows. The
+/// windows run on their own thread and message loop; the probe thread hands over rectangles and
+/// posts a relayout when they change.
 #[cfg(windows)]
 mod outline {
     use std::{
@@ -499,12 +501,12 @@ mod outline {
             },
             System::LibraryLoader::GetModuleHandleW,
             UI::WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetSystemMetrics,
-                HTTRANSPARENT, LWA_COLORKEY, MSG, PostMessageW, RegisterClassExW,
-                SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-                SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, ShowWindow, TranslateMessage,
-                WM_APP, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
+                HTTRANSPARENT, HWND_TOPMOST, LWA_COLORKEY, MSG, PostMessageW, RegisterClassExW,
+                SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+                SetWindowPos, ShowWindow, TranslateMessage, WM_APP, WM_NCHITTEST, WM_PAINT,
+                WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
         core::w,
@@ -517,18 +519,19 @@ mod outline {
     /// show all three outlines.
     const GAPS: [i32; 3] = [2, 5, 8];
     const THICKNESS: i32 = 2;
-    const WM_REDRAW: u32 = WM_APP + 1;
+    const WM_RELAYOUT: u32 = WM_APP + 1;
 
     static RECTS: Mutex<[Option<ScreenRect>; 3]> = Mutex::new([None; 3]);
-    /// The outline window as an integer, so the probe thread can post to it. 0 until created.
-    static WINDOW: AtomicIsize = AtomicIsize::new(0);
+    /// The outline windows (gui, msaa, uia) as integers, so the probe thread can post to them.
+    /// 0 until created.
+    static WINDOWS: [AtomicIsize; 3] = [const { AtomicIsize::new(0) }; 3];
 
     pub fn spawn() {
         thread::spawn(run);
     }
 
-    /// Replaces the outlined rectangles (gui, msaa, uia) and asks the window to redraw, unless
-    /// nothing moved: a redraw clears the whole virtual screen.
+    /// Replaces the outlined rectangles (gui, msaa, uia) and asks the outline thread to move the
+    /// windows, unless nothing moved.
     pub fn show(rects: [Option<ScreenRect>; 3]) {
         let Ok(mut current) = RECTS.lock() else {
             return;
@@ -538,11 +541,15 @@ mod outline {
         }
         *current = rects;
         drop(current);
-        let raw = WINDOW.load(Ordering::SeqCst);
-        if raw != 0 {
-            let hwnd = HWND(raw as *mut c_void);
-            let _ = unsafe { PostMessageW(Some(hwnd), WM_REDRAW, WPARAM(0), LPARAM(0)) };
+        // All three windows belong to the outline thread, so any one of them can take the message.
+        if let Some(hwnd) = window(0) {
+            let _ = unsafe { PostMessageW(Some(hwnd), WM_RELAYOUT, WPARAM(0), LPARAM(0)) };
         }
+    }
+
+    fn window(index: usize) -> Option<HWND> {
+        let raw = WINDOWS[index].load(Ordering::SeqCst);
+        (raw != 0).then_some(HWND(raw as *mut c_void))
     }
 
     fn run() {
@@ -561,35 +568,36 @@ mod outline {
         };
         unsafe { RegisterClassExW(&wc) };
 
-        let (left, top, width, height) = virtual_screen();
-        let created = unsafe {
-            CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE
-                    | WS_EX_TOOLWINDOW,
-                class,
-                w!("caret probe outlines"),
-                WS_POPUP,
-                left,
-                top,
-                width,
-                height,
-                None,
-                None,
-                Some(hinstance),
-                None,
-            )
-        };
-        let hwnd = match created {
-            Ok(hwnd) => hwnd,
-            Err(e) => {
-                eprintln!("[probe] outline window failed: {e}; outlines off");
-                return;
-            }
-        };
-        // Black pixels are see-through; everything drawn in colour shows.
-        let _ = unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_COLORKEY) };
-        WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
-        let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+        // Created hidden; `relayout` shows, sizes and places each one.
+        for slot in &WINDOWS {
+            let created = unsafe {
+                CreateWindowExW(
+                    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+                        | WS_EX_TOOLWINDOW,
+                    class,
+                    w!("caret probe outline"),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    None,
+                    None,
+                    Some(hinstance),
+                    None,
+                )
+            };
+            let hwnd = match created {
+                Ok(hwnd) => hwnd,
+                Err(e) => {
+                    eprintln!("[probe] outline window failed: {e}; outlines off");
+                    return;
+                }
+            };
+            // Black pixels are see-through; the outline drawn in colour shows.
+            let _ = unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_COLORKEY) };
+            slot.store(hwnd.0 as isize, Ordering::SeqCst);
+        }
 
         let mut msg = MSG::default();
         while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
@@ -600,17 +608,6 @@ mod outline {
         }
     }
 
-    fn virtual_screen() -> (i32, i32, i32, i32) {
-        unsafe {
-            (
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN),
-            )
-        }
-    }
-
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
         msg: u32,
@@ -618,8 +615,8 @@ mod outline {
         lparam: LPARAM,
     ) -> LRESULT {
         match msg {
-            WM_REDRAW => {
-                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            WM_RELAYOUT => {
+                relayout();
                 LRESULT(0)
             }
             WM_PAINT => {
@@ -631,25 +628,52 @@ mod outline {
         }
     }
 
-    fn paint(hwnd: HWND) {
+    /// Hides each window with no rectangle and fits the others around theirs: the window is the
+    /// rectangle grown by its gap plus the outline thickness.
+    fn relayout() {
         let rects = RECTS.lock().map(|r| *r).unwrap_or([None; 3]);
-        let (origin_x, origin_y, _, _) = virtual_screen();
-        let mut ps = PAINTSTRUCT::default();
-        let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-        // Clear to the colour key, then draw each outline `THICKNESS` frames thick.
-        unsafe { FillRect(hdc, &ps.rcPaint, HBRUSH(GetStockObject(BLACK_BRUSH).0)) };
-        for ((rect, colour), gap) in rects.iter().zip(COLOURS).zip(GAPS) {
-            let Some(r) = rect else {
+        for (index, (rect, gap)) in rects.iter().zip(GAPS).enumerate() {
+            let Some(hwnd) = window(index) else {
                 continue;
             };
-            let brush = unsafe { CreateSolidBrush(colour) };
+            let Some(r) = rect else {
+                let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+                continue;
+            };
+            let pad = gap + THICKNESS;
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    r.left - pad,
+                    r.top - pad,
+                    r.width as i32 + 2 * pad,
+                    r.height as i32 + 2 * pad,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+        }
+    }
+
+    /// Clears to the colour key and draws the window's outline `THICKNESS` frames thick along
+    /// its edges.
+    fn paint(hwnd: HWND) {
+        let index = WINDOWS.iter().position(|w| w.load(Ordering::SeqCst) == hwnd.0 as isize);
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+        unsafe { FillRect(hdc, &ps.rcPaint, HBRUSH(GetStockObject(BLACK_BRUSH).0)) };
+        let mut client = RECT::default();
+        if let Some(index) = index
+            && unsafe { GetClientRect(hwnd, &mut client) }.is_ok()
+        {
+            let brush = unsafe { CreateSolidBrush(COLOURS[index]) };
             for step in 0..THICKNESS {
-                let pad = gap + step;
                 let frame = RECT {
-                    left: r.left - origin_x - pad,
-                    top: r.top - origin_y - pad,
-                    right: r.left - origin_x + r.width as i32 + pad,
-                    bottom: r.top - origin_y + r.height as i32 + pad,
+                    left: client.left + step,
+                    top: client.top + step,
+                    right: client.right - step,
+                    bottom: client.bottom - step,
                 };
                 unsafe { FrameRect(hdc, &frame, brush) };
             }
