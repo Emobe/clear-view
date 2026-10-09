@@ -2,19 +2,25 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: ready
-Item: 4.3 (ADR first) Caret sources, superseding ADR 0003's rule that only the TTS thread owns UIA (UIA moves to a core thread): which source per app type, fallback order, how the core reports a caret position, and what happens in elevated windows without UIAccess.
-ADR: needed. Run `/adr 4.3` with Opus high: it touches a platform seam and the core's thread model, and supersedes part of ADR 0003.
+State: blocked-on-adr
+Item: 4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet.
+ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Status Proposed, on branch step/4.3-caret-sources-adr. /step 4.4 resumes after you set its Status to Accepted. It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change. 4.3 goes in the STATUS Done list when you say "I approve".
+
+Notes for 4.4 (from ADR 0008's recommendation; if you change the ADR, the ADR wins):
+- cv-core: `#[non_exhaustive] CoreEvent { CaretMoved { at, rect, source, app }, CaretLost { at, app } }`, `CaretSource { Msaa, Uia, Gui, FocusRect }`, `AppId { pid, exe }`, and a fan-out hub over `std::sync::mpsc` (`subscribe`, `publish` drops closed receivers). Unit tests. No new dependency.
+- cv-platform-win: `spawn_caret_source(hub)` with a `shutdown` handle (`PostThreadMessageW(WM_QUIT)`, join, unhook). MTA first; `CUIAutomation8` with `ConnectionTimeout` and `TransactionTimeout` lowered to a few hundred ms (log the value). No window, no UIA event handlers. Message loop via `MsgWaitForMultipleObjectsEx`.
+- Wake: out-of-context WinEvents with `WINEVENT_SKIPOWNPROCESS` for foreground, focus and caret show, hide and location change (`OBJID_CARET`). Poll at 20 Hz only while the last answer came from uia or the focus rectangle, until focus or foreground changes.
+- Chain, first non-empty wins: msaa (`OBJID_CARET` on `hwndFocus`, `accLocation`) → uia (`GetFocusedElement`, `TextPattern2.GetCaretRange`, else `GetSelection()[0]`, expanded to a character when empty) → gui (`rcCaret`, converted to physical with `LogicalToPhysicalPointForPerMonitorDPI` on `hwndCaret`) → focus rectangle (the focused element's UIA `BoundingRectangle`, else the `hwndFocus` window rect). The probe (cv-platform-win/examples/caret_probe.rs) has working code for the first three.
+- Events only on change. `[caret]` log lines on source changes and `[caret] no source in <exe>` once per foreground change.
+- The UIA and MSAA `windows` features (`Win32_UI_Accessibility`, `Win32_System_Com`, `Win32_System_Ole`, `Win32_System_Variant`) move from cv-platform-win's dev-dependencies to normal ones. `windows` still only in cv-platform-win and cv-tts.
+- No magnifier change in 4.4. app spawns the thread and shuts it down with the overlay; something must hold a receiver or log the events so you can see them (a `[caret]` log is enough).
+- Verify: each 4.2 app with the log on; Notepad and Explorer rename at 150% with an outline of the reported rect (reuse the probe's outline code in a dev-only form); exit paths leave nothing behind.
+- If the step is bigger than one PR, split (for example hub and types first, then the thread) and propose sub-items here.
+- Model: Sonnet high (CLAUDE.md model guide for /step).
+
+4.2a (you) can run any time before 4.8: the caret probe in desktop Word and in Chrome if installed (ROADMAP 4.2a).
 
 On hold by your decision (2026-10-09): everything involving the tester, until you raise it: 1.8, 3.6, 4.9, 6.8, and the tester's email app in 4.2. /next skips them. 4.2 was recorded without the email app; that app is measured when you pick the tester work up again.
-
-Notes for 4.3, from 4.2 (docs/prototypes/caret-sources.md):
-- On the caret: Notepad and Explorer rename all three; Brave and Edge msaa and uia (no gui); Windows Terminal uia only. uia gave a position in every app that had one.
-- No source in the Explorer address bar and search box (XAML `TextBox`): `TextPattern2.GetCaretRange` is active but `GetBoundingRectangles` is empty, also after expanding to a character and with the caret mid-text. Needs a non-caret fallback (for example the focused element's rectangle).
-- LibreOffice: none (not on the v1 list).
-- Not measured: Word (not installed; a v1 Must app), Chrome (not installed; Brave and Edge are Chromium), the tester's email app (on hold), elevated windows. The ADR should say how Word gets measured, before 4.8 at the latest.
-- UIA method per app (`GetCaretRange` vs `GetSelection`), costs outside Explorer and line-end behaviour were not recorded. Explorer costs: gui 0 ms, msaa under 1 ms, uia 3–12 ms (first calls 75 ms msaa, 36 ms uia).
-- ADR 0003's carry-over rules (MTA first, plain data over channels, no COM pointers across threads) apply to the core thread. The probe follows them (UIA thread owns no window).
 
 Held, for when you pick it up again — notes for 3.6:
 - The agent's part, like 1.7 (PR #22): plain `cargo build --release` with no `RUSTFLAGS` gives `target\release\clear-view.exe` (static CRT from `.cargo/config.toml`); update TESTER.md; tag v0.2.0. v0.1.0 is an annotated tag ("Tester build 1 (roadmap 1.7)") on bb81f33; tag the merged commit the same way only after you approve, and ask before pushing the tag.
@@ -27,6 +33,7 @@ What comes next:
 - 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
 - 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Its extra `windows` features are dev-dependencies, so the app doesn't compile them.
 - 4.2 (you) measured the caret sources; results in docs/prototypes/caret-sources.md.
+- 4.3 wrote ADR 0008 (Proposed) from those results; 4.4 to 4.8 build it.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
