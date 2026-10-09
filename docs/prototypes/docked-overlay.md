@@ -87,9 +87,9 @@ With `CV_PROTO_IDLE_SKIP=1`, presents dropped from 40–41 to 27–32 a second, 
 
 You moved the mouse under the docked panel freely; without `ClipCursor` there is no wall (Finding 12). The magnified view in the panel worked fine and followed the pointer under the panel, because `Magnifier::tick` is unchanged. The real desktop under the panel stays where it is ("the actual view underneath doesn't pan at all but that's to be expected"); only the magnified view moves.
 
-You could click through the panel onto what is under it, as the docs say: [layered windows](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features) with `WS_EX_TRANSPARENT` pass mouse events to the windows underneath. These checks were **not reported** and are still open:
+You could click through the panel onto what is under it, as the docs say: [layered windows](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features) with `WS_EX_TRANSPARENT` pass mouse events to the windows underneath. In a second session you checked the rest and reported that all of it works; individual items were not itemised:
 
-- right-clicks, scrolling and dragging on windows under the panel (clicks work)
+- right-clicks, scrolling and dragging on windows under the panel
 - the panel never taking focus
 - the taskbar being reachable under a bottom panel
 - maximised windows keeping their full size
@@ -116,5 +116,4 @@ Your verdict after trying it (2026-10-09): "overlay is the way forward."
 3. **Extra frames.** Build no mitigation now. The ADR should require checking the tester's Windows build (26100.2314 or later) and MPO support before 3.6. If the issue does appear, present only on change (the idle skip measured here) rather than filtering captured frames (finding 2).
 4. **Under the panel.** Keep following the pointer: the panel magnifies the area around the pointer while the real desktop stays put. You found this works. Still to decide: the system cursor is visible on top of the panel at its real position, so should it be hidden or drawn differently while it is under the panel?
 5. **Panel size limits.** Not measured. The ADR should set them.
-6. **Before 3.3,** finish the open checks in finding 5.
-7. **Separately** (5.6 or earlier): stop copying pointer-only frames (finding 6).
+6. **Separately** (5.6 or earlier): stop copying pointer-only frames (finding 6).
