@@ -30,7 +30,7 @@ Reviewed against docs/PRODUCT.md on 2026-10-08. Their files are not edited; chan
 
 - 0001 CPU readback for capture: stands. Revisited with numbers at 5.5 and 5.6.
 - 0002 wgpu renderer and AppBar docking: the wgpu part stands. The AppBar docking part is replaced by overlay docking; the ADR from 3.2 supersedes it. 0002 notes the overlay already uses WS_EX_TRANSPARENT, WS_EX_NOACTIVATE and WDA_EXCLUDEFROMCAPTURE.
-- 0003 Single TTS thread with UIA and SAPI: parked with the reader. Its rule that only the TTS thread owns UIA conflicts with caret tracking in the core; the ADR from 4.3 supersedes that part. The rest (MTA first, plain data over channels, no COM pointers across threads) carries over to the core thread.
+- 0003 Single TTS thread with UIA and SAPI: parked with the reader. Its rule that only the TTS thread owns UIA conflicts with caret tracking in the core; the ADR from 4.3 (0008, Accepted) supersedes that part. The rest (MTA first, plain data over channels, no COM pointers across threads) carries over to the core thread.
 - 0004 Platform seams and core boundaries: rewritten in place for v1 scope by 2.1 and Accepted 2026-10-09. Questions 4 to 6 of the old brief (Wayland, Wayland cursor, reader interfaces) are deferred, not answered.
 
 ## Phase 0: Clean starting point
@@ -86,12 +86,13 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 
 4.1 Caret probe: a small dev binary that logs the caret rectangle from each available source (GetGUIThreadInfo, MSAA caret object, UIA text patterns) once a second. Not shipped.
 4.2 (you) Run the probe in Notepad, Word, Chrome, Edge, File Explorer (rename and address bar) and the tester's email app. Record which sources give correct positions in docs/prototypes/caret-sources.md.
+4.2a (you) Run the caret probe in desktop Word (body text, a table cell, a header, a long document scrolled down), and in Chrome where it is installed. Record the answering source, the UIA method the probe prints and the costs in docs/prototypes/caret-sources.md. Before 4.8. If Word needs a source outside ADR 0008's chain, that is a new ADR first (pending ADR 0008).
 4.3 (ADR first) Caret sources, superseding ADR 0003's rule that only the TTS thread owns UIA (UIA moves to a core thread): which source per app type, fallback order, how the core reports a caret position, and what happens in elevated windows without UIAccess.
-4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet.
-4.5 Tracking policy as pure logic in cv-core with unit tests: follow the caret while typing, return to the mouse when it moves past a threshold, smoothing between targets.
-4.6 Wire the policy into fullscreen mode.
+4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet (pending ADR 0008): `CoreEvent` (`CaretMoved`, `CaretLost`), `CaretSource`, `AppId` and a fan-out hub in cv-core with unit tests; the caret thread in cv-platform-win (MTA, no window, lowered UIA timeouts) with the chain msaa → uia → gui → focus rectangle, woken by out-of-context WinEvents and polling at 20 Hz only while the answer came from uia or the focus rectangle; gui converted to physical pixels; `[caret]` log lines. Verify includes Notepad and Explorer rename at 150% scaling.
+4.5 Tracking policy as pure logic in cv-core with unit tests: follow the caret while typing, return to the mouse when it moves past a threshold, smoothing between targets. Input is `CaretMoved` and `CaretLost`; the policy decides what part of a `FocusRect` to show (pending ADR 0008).
+4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
 4.7 Wire the policy into docked mode.
-4.8 (you) Run the app list from 4.2 with tracking on. Failures become sub-items of 4.8.
+4.8 (you) Run the app list from 4.2 with tracking on, plus Word (4.2a) and an admin Notepad (elevated, ADR 0008 option a). Failures become sub-items of 4.8 (pending ADR 0008).
 4.9 Tester build 3, tag v0.3.0. (you) Feedback into docs/FEEDBACK.md.
 
 ## Phase 5: Multiple monitors and performance (M4)
