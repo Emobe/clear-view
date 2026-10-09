@@ -30,7 +30,7 @@ Reviewed against docs/PRODUCT.md on 2026-10-08. Their files are not edited; chan
 
 - 0001 CPU readback for capture: stands. Revisited with numbers at 5.5 and 5.6.
 - 0002 wgpu renderer and AppBar docking: the wgpu part stands. The AppBar docking part is replaced by overlay docking; the ADR from 3.2 supersedes it. 0002 notes the overlay already uses WS_EX_TRANSPARENT, WS_EX_NOACTIVATE and WDA_EXCLUDEFROMCAPTURE.
-- 0003 Single TTS thread with UIA and SAPI: parked with the reader. Its rule that only the TTS thread owns UIA conflicts with caret tracking in the core; the ADR from 4.3 (0008, Proposed) supersedes that part. The rest (MTA first, plain data over channels, no COM pointers across threads) carries over to the core thread.
+- 0003 Single TTS thread with UIA and SAPI: parked with the reader. Its rule that only the TTS thread owns UIA conflicts with caret tracking in the core; the ADR from 4.3 (0008, Accepted) supersedes that part. The rest (MTA first, plain data over channels, no COM pointers across threads) carries over to the core thread.
 - 0004 Platform seams and core boundaries: rewritten in place for v1 scope by 2.1 and Accepted 2026-10-09. Questions 4 to 6 of the old brief (Wayland, Wayland cursor, reader interfaces) are deferred, not answered.
 
 ## Phase 0: Clean starting point

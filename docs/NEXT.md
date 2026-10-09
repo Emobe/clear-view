@@ -2,9 +2,9 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: blocked-on-adr
+State: ready
 Item: 4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet.
-ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Status Proposed, on branch step/4.3-caret-sources-adr. /step 4.4 resumes after you set its Status to Accepted. It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change. 4.3 goes in the STATUS Done list when you say "I approve".
+ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Accepted by you 2026-10-09 (PR #39). Run `/step 4.4`. It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change. 4.3 goes in the STATUS Done list when you say "I approve".
 
 Notes for 4.4 (from ADR 0008's recommendation; if you change the ADR, the ADR wins):
 - cv-core: `#[non_exhaustive] CoreEvent { CaretMoved { at, rect, source, app }, CaretLost { at, app } }`, `CaretSource { Msaa, Uia, Gui, FocusRect }`, `AppId { pid, exe }`, and a fan-out hub over `std::sync::mpsc` (`subscribe`, `publish` drops closed receivers). Unit tests. No new dependency.
@@ -33,7 +33,7 @@ What comes next:
 - 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
 - 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Its extra `windows` features are dev-dependencies, so the app doesn't compile them.
 - 4.2 (you) measured the caret sources; results in docs/prototypes/caret-sources.md.
-- 4.3 wrote ADR 0008 (Proposed) from those results; 4.4 to 4.8 build it.
+- 4.3 wrote ADR 0008 (Accepted) from those results; 4.4 to 4.8 build it.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
