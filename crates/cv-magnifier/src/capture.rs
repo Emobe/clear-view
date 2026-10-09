@@ -5,9 +5,10 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
 use cv_core::{Frame, FrameState};
@@ -15,6 +16,10 @@ use cv_core::{Frame, FrameState};
 /// How long one `next_frame` call waits for a new frame before the loop checks for a monitor
 /// switch again.
 const FRAME_TIMEOUT_MS: u32 = 100;
+
+/// How long the thread waits between attempts to make or rebuild a source that failed, for
+/// example while the lock screen or a UAC prompt is up (STATUS Finding 16).
+const RECONNECT_RETRY: Duration = Duration::from_millis(250);
 
 /// Why a capture call failed. Each variant keeps the platform's message for the log.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +55,8 @@ pub trait CaptureSource {
 
 /// Starts the capture thread. `factory` runs on that thread with the output to start on, so
 /// the source and any OS objects in it never cross threads. The thread is meant to be left
-/// running; it ends only if the source cannot be created or a reconnect fails.
+/// running and never ends on its own: a factory or reconnect that fails is retried every
+/// `RECONNECT_RETRY` until capture is available again.
 pub fn spawn_capture<S, F>(
     factory: F,
     frame_state: FrameState,
@@ -58,29 +64,108 @@ pub fn spawn_capture<S, F>(
 ) -> JoinHandle<()>
 where
     S: CaptureSource,
-    F: FnOnce(u32) -> Result<S, CaptureError> + Send + 'static,
+    F: FnMut(u32) -> Result<S, CaptureError> + Send + 'static,
+{
+    spawn_capture_with(
+        factory,
+        frame_state,
+        desired_output,
+        Arc::new(AtomicBool::new(false)),
+        RECONNECT_RETRY,
+    )
+}
+
+/// `spawn_capture` with the stop flag and retry delay the tests need to end the thread.
+fn spawn_capture_with<S, F>(
+    mut factory: F,
+    frame_state: FrameState,
+    desired_output: Arc<AtomicU32>,
+    stop: Arc<AtomicBool>,
+    retry: Duration,
+) -> JoinHandle<()>
+where
+    S: CaptureSource,
+    F: FnMut(u32) -> Result<S, CaptureError> + Send + 'static,
 {
     std::thread::spawn(move || {
-        let start = desired_output.load(Ordering::Relaxed);
-        let mut source = match factory(start) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[capture] init failed: {e}");
-                return;
-            }
-        };
-        run_capture(&mut source, start, &frame_state, &desired_output);
+        if let Some((mut source, start)) = make_source(&mut factory, &desired_output, &stop, retry)
+        {
+            run_capture(&mut source, start, &frame_state, &desired_output, &stop, retry);
+        }
     })
 }
 
-/// The loop itself. Returns when a reconnect fails.
+/// Calls `factory` for the wanted output until it succeeds. `None` only if `stop` is set.
+fn make_source<S, F>(
+    factory: &mut F,
+    desired_output: &AtomicU32,
+    stop: &AtomicBool,
+    retry: Duration,
+) -> Option<(S, u32)>
+where
+    F: FnMut(u32) -> Result<S, CaptureError>,
+{
+    let mut failed = 0u32;
+    while !stop.load(Ordering::Relaxed) {
+        let start = desired_output.load(Ordering::Relaxed);
+        match factory(start) {
+            Ok(source) => {
+                if failed > 0 {
+                    eprintln!("[capture] started after {} attempts", failed + 1);
+                }
+                return Some((source, start));
+            }
+            Err(e) => {
+                if failed == 0 {
+                    eprintln!("[capture] init failed: {e} — retrying every {} ms", retry.as_millis());
+                }
+                failed += 1;
+                std::thread::sleep(retry);
+            }
+        }
+    }
+    None
+}
+
+/// The loop itself. A failed frame call puts it in an outage: each pass then tries `reconnect`
+/// and sleeps `retry` if that fails, without reading frames, until a reconnect succeeds. A
+/// monitor switch asked for during the outage is made on the first pass after it. Returns only
+/// when `stop` is set.
 fn run_capture<S: CaptureSource>(
     source: &mut S,
     mut current: u32,
     frame_state: &FrameState,
     desired_output: &AtomicU32,
+    stop: &AtomicBool,
+    retry: Duration,
 ) {
-    loop {
+    // Failed reconnects in the current outage; `None` while capture works.
+    let mut failed_reconnects: Option<u32> = None;
+
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(failed) = failed_reconnects {
+            match source.reconnect() {
+                Ok(()) => {
+                    if failed > 0 {
+                        eprintln!("[capture] reconnected after {} attempts", failed + 1);
+                    }
+                    failed_reconnects = None;
+                }
+                Err(e) => {
+                    // Logged once per outage, not on every retry.
+                    if failed == 0 {
+                        eprintln!(
+                            "[capture] reconnect failed: {e} — retrying every {} ms",
+                            retry.as_millis()
+                        );
+                    }
+                    failed_reconnects = Some(failed + 1);
+                    std::thread::sleep(retry);
+                    continue;
+                }
+            }
+        }
+
         // Switch output if the render thread requested a different monitor.
         let wanted = desired_output.load(Ordering::Relaxed);
         if wanted != current {
@@ -97,9 +182,7 @@ fn run_capture<S: CaptureSource>(
             Ok(None) => {}
             Err(e) => {
                 eprintln!("[capture] {e} — reconnecting");
-                if source.reconnect().is_err() {
-                    break;
-                }
+                failed_reconnects = Some(0);
             }
         }
     }
@@ -120,12 +203,15 @@ mod tests {
         Reconnect,
     }
 
-    /// A scripted source. When `frames` runs out, `next_frame` fails; when `reconnects` runs
-    /// out, `reconnect` fails, so every script ends the loop.
+    /// A scripted source. When `frames` runs out, `next_frame` sets `stop`, which ends the loop.
+    /// `switches` and `reconnects` succeed once their scripts run out.
     struct Fake {
         frames: VecDeque<Result<Option<Frame>, CaptureError>>,
         switches: VecDeque<bool>,
         reconnects: VecDeque<bool>,
+        /// Runs on every `reconnect` call, before its result is decided.
+        on_reconnect: Option<Box<dyn FnMut()>>,
+        stop: Arc<AtomicBool>,
         calls: Arc<Mutex<Vec<Call>>>,
     }
 
@@ -135,6 +221,8 @@ mod tests {
                 frames: frames.into(),
                 switches: VecDeque::new(),
                 reconnects: VecDeque::new(),
+                on_reconnect: None,
+                stop: Arc::new(AtomicBool::new(false)),
                 calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -148,9 +236,10 @@ mod tests {
         fn next_frame(&mut self, timeout_ms: u32) -> Result<Option<Frame>, CaptureError> {
             assert_eq!(timeout_ms, FRAME_TIMEOUT_MS);
             self.calls.lock().unwrap().push(Call::Next);
-            self.frames
-                .pop_front()
-                .unwrap_or_else(|| Err(CaptureError::Other("script ended".into())))
+            self.frames.pop_front().unwrap_or_else(|| {
+                self.stop.store(true, Ordering::Relaxed);
+                Ok(None)
+            })
         }
 
         fn switch_output(&mut self, idx: u32) -> Result<(), CaptureError> {
@@ -164,7 +253,10 @@ mod tests {
 
         fn reconnect(&mut self) -> Result<(), CaptureError> {
             self.calls.lock().unwrap().push(Call::Reconnect);
-            if self.reconnects.pop_front().unwrap_or(false) {
+            if let Some(hook) = &mut self.on_reconnect {
+                hook();
+            }
+            if self.reconnects.pop_front().unwrap_or(true) {
                 Ok(())
             } else {
                 Err(CaptureError::DeviceLost("reconnect refused".into()))
@@ -185,13 +277,23 @@ mod tests {
         slot.lock().unwrap().as_ref().map(|f| f.width)
     }
 
+    /// Runs the loop with no retry delay until the fake's script ends.
+    fn run(fake: &mut Fake, current: u32, slot: &FrameState, desired_output: &AtomicU32) {
+        let stop = fake.stop.clone();
+        run_capture(fake, current, slot, desired_output, &stop, Duration::ZERO);
+    }
+
+    fn lost() -> Result<Option<Frame>, CaptureError> {
+        Err(CaptureError::AccessLost("gone".into()))
+    }
+
     #[test]
     fn frames_reach_the_slot_newest_last() {
         let mut fake = Fake::new(vec![frame(1), frame(2)]);
         let s = slot();
-        run_capture(&mut fake, 0, &s, &AtomicU32::new(0));
+        run(&mut fake, 0, &s, &AtomicU32::new(0));
         assert_eq!(slot_marker(&s), Some(2));
-        assert_eq!(fake.calls(), [Call::Next, Call::Next, Call::Next, Call::Reconnect]);
+        assert_eq!(fake.calls(), [Call::Next, Call::Next, Call::Next]);
     }
 
     #[test]
@@ -199,24 +301,21 @@ mod tests {
         let mut fake = Fake::new(vec![Ok(None)]);
         let s = slot();
         *s.lock().unwrap() = Some(Arc::new(Frame { width: 7, height: 1, data: Vec::new() }));
-        run_capture(&mut fake, 0, &s, &AtomicU32::new(0));
+        run(&mut fake, 0, &s, &AtomicU32::new(0));
         assert_eq!(slot_marker(&s), Some(7));
     }
 
     #[test]
     fn requested_output_is_switched_to_once() {
         let mut fake = Fake::new(vec![Ok(None), Ok(None)]);
-        run_capture(&mut fake, 0, &slot(), &AtomicU32::new(1));
-        assert_eq!(
-            fake.calls(),
-            [Call::Switch(1), Call::Next, Call::Next, Call::Next, Call::Reconnect]
-        );
+        run(&mut fake, 0, &slot(), &AtomicU32::new(1));
+        assert_eq!(fake.calls(), [Call::Switch(1), Call::Next, Call::Next, Call::Next]);
     }
 
     #[test]
     fn same_output_is_not_switched() {
         let mut fake = Fake::new(vec![Ok(None)]);
-        run_capture(&mut fake, 2, &slot(), &AtomicU32::new(2));
+        run(&mut fake, 2, &slot(), &AtomicU32::new(2));
         assert!(!fake.calls().iter().any(|c| matches!(c, Call::Switch(_))));
     }
 
@@ -224,46 +323,81 @@ mod tests {
     fn failed_switch_is_retried_on_the_next_pass() {
         let mut fake = Fake::new(vec![Ok(None), Ok(None)]);
         fake.switches = [false, true].into();
-        run_capture(&mut fake, 0, &slot(), &AtomicU32::new(1));
+        run(&mut fake, 0, &slot(), &AtomicU32::new(1));
         assert_eq!(
             fake.calls(),
-            [Call::Switch(1), Call::Next, Call::Switch(1), Call::Next, Call::Next, Call::Reconnect]
+            [Call::Switch(1), Call::Next, Call::Switch(1), Call::Next, Call::Next]
         );
     }
 
     #[test]
     fn error_reconnects_and_carries_on() {
-        let mut fake = Fake::new(vec![Err(CaptureError::AccessLost("gone".into())), frame(3)]);
-        fake.reconnects = [true].into();
+        let mut fake = Fake::new(vec![lost(), frame(3)]);
         let s = slot();
-        run_capture(&mut fake, 0, &s, &AtomicU32::new(0));
+        run(&mut fake, 0, &s, &AtomicU32::new(0));
         assert_eq!(slot_marker(&s), Some(3));
+        assert_eq!(fake.calls(), [Call::Next, Call::Reconnect, Call::Next, Call::Next]);
+    }
+
+    #[test]
+    fn failed_reconnect_is_retried_then_capture_resumes() {
+        let mut fake = Fake::new(vec![lost(), frame(4)]);
+        fake.reconnects = [false, false, true].into();
+        let s = slot();
+        run(&mut fake, 0, &s, &AtomicU32::new(0));
+        assert_eq!(slot_marker(&s), Some(4));
+        // No frame is asked for while the reconnect keeps failing.
         assert_eq!(
             fake.calls(),
-            [Call::Next, Call::Reconnect, Call::Next, Call::Next, Call::Reconnect]
+            [
+                Call::Next,
+                Call::Reconnect,
+                Call::Reconnect,
+                Call::Reconnect,
+                Call::Next,
+                Call::Next
+            ]
         );
     }
 
     #[test]
-    fn failed_reconnect_ends_the_loop() {
-        let mut fake = Fake::new(vec![Err(CaptureError::DeviceLost("gone".into())), frame(4)]);
-        let s = slot();
-        run_capture(&mut fake, 0, &s, &AtomicU32::new(0));
-        assert_eq!(fake.calls(), [Call::Next, Call::Reconnect]);
-        assert_eq!(slot_marker(&s), None);
+    fn switch_asked_for_during_an_outage_is_made_once_capture_is_back() {
+        let desired = Arc::new(AtomicU32::new(0));
+        let mut fake = Fake::new(vec![lost(), Ok(None)]);
+        fake.reconnects = [false, true].into();
+        let hook_desired = desired.clone();
+        fake.on_reconnect = Some(Box::new(move || hook_desired.store(1, Ordering::Relaxed)));
+        run(&mut fake, 0, &slot(), &desired);
+        assert_eq!(
+            fake.calls(),
+            [
+                Call::Next,
+                Call::Reconnect,
+                Call::Reconnect,
+                Call::Switch(1),
+                Call::Next,
+                Call::Next
+            ]
+        );
     }
 
     #[test]
     fn spawned_thread_starts_on_the_requested_output_and_publishes() {
         let (tx, rx) = mpsc::channel();
         let s = slot();
-        let handle = spawn_capture(
+        let stop = Arc::new(AtomicBool::new(false));
+        let fake_stop = stop.clone();
+        let handle = spawn_capture_with(
             move |idx| {
                 tx.send(idx).unwrap();
-                Ok(Fake::new(vec![frame(5)]))
+                let mut fake = Fake::new(vec![frame(5)]);
+                fake.stop = fake_stop.clone();
+                Ok(fake)
             },
             s.clone(),
             Arc::new(AtomicU32::new(2)),
+            stop,
+            Duration::ZERO,
         );
         handle.join().unwrap();
         assert_eq!(rx.recv().unwrap(), 2);
@@ -271,14 +405,52 @@ mod tests {
     }
 
     #[test]
-    fn spawned_thread_ends_when_the_source_cannot_be_made() {
+    fn failed_factory_is_retried_then_frames_publish() {
         let s = slot();
-        let handle = spawn_capture(
-            |_| Err::<Fake, _>(CaptureError::Other("no device".into())),
+        let stop = Arc::new(AtomicBool::new(false));
+        let fake_stop = stop.clone();
+        let attempts = Arc::new(AtomicU32::new(0));
+        let counted = attempts.clone();
+        let handle = spawn_capture_with(
+            move |_| {
+                if counted.fetch_add(1, Ordering::Relaxed) < 2 {
+                    return Err(CaptureError::Other("locked".into()));
+                }
+                let mut fake = Fake::new(vec![frame(6)]);
+                fake.stop = fake_stop.clone();
+                Ok(fake)
+            },
             s.clone(),
             Arc::new(AtomicU32::new(0)),
+            stop,
+            Duration::ZERO,
         );
         handle.join().unwrap();
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
+        assert_eq!(slot_marker(&s), Some(6));
+    }
+
+    #[test]
+    fn spawned_thread_that_never_gets_a_source_ends_when_stopped() {
+        let s = slot();
+        let stop = Arc::new(AtomicBool::new(false));
+        let factory_stop = stop.clone();
+        let attempts = Arc::new(AtomicU32::new(0));
+        let counted = attempts.clone();
+        let handle = spawn_capture_with(
+            move |_| {
+                if counted.fetch_add(1, Ordering::Relaxed) == 4 {
+                    factory_stop.store(true, Ordering::Relaxed);
+                }
+                Err::<Fake, _>(CaptureError::Other("no device".into()))
+            },
+            s.clone(),
+            Arc::new(AtomicU32::new(0)),
+            stop,
+            Duration::ZERO,
+        );
+        handle.join().unwrap();
+        assert_eq!(attempts.load(Ordering::Relaxed), 5);
         assert_eq!(slot_marker(&s), None);
     }
 
