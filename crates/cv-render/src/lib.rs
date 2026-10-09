@@ -71,6 +71,7 @@ struct WindowData {
     last_crop: [f32; 4],
     last_color_mode: u32,
     last_interp_mode: u32,
+    last_edge_threshold: f32,
     last_cursor_x: u32,
     last_cursor_y: u32,
 }
@@ -281,6 +282,7 @@ fn run_overlay(
             last_crop: [f32::NAN; 4],   // NAN != NAN → forces first write
             last_color_mode: u32::MAX,  // forces first write
             last_interp_mode: u32::MAX, // forces first write
+            last_edge_threshold: f32::NAN, // NAN != NAN → forces first write
             last_cursor_x: u32::MAX,    // forces first write
             last_cursor_y: u32::MAX,    // forces first write
         });
@@ -379,6 +381,7 @@ fn on_timer(hwnd: HWND) {
         smooth_speed: f32,
         color_filter: ColorFilter,
         interpolation: Interpolation,
+        edge_threshold: f32,
         frame: Option<Arc<Frame>>,
         cur_enabled: bool,
         cur_mode: DisplayMode,
@@ -404,6 +407,7 @@ fn on_timer(hwnd: HWND) {
             smooth_speed: s.smooth_speed,
             color_filter: s.color_filter,
             interpolation: s.interpolation,
+            edge_threshold: s.edge_threshold,
             frame,
             cur_enabled: w.cur_enabled,
             cur_mode: w.cur_mode,
@@ -626,14 +630,17 @@ fn on_timer(hwnd: HWND) {
         if crop != w.last_crop
             || color_mode != w.last_color_mode
             || interp_mode != w.last_interp_mode
+            || snap.edge_threshold != w.last_edge_threshold
             || cursor_x != w.last_cursor_x
             || cursor_y != w.last_cursor_y
         {
-            w.wgpu
-                .write_uniforms(crop, color_mode, interp_mode, cursor_x, cursor_y);
+            w.wgpu.write_uniforms(
+                crop, color_mode, interp_mode, cursor_x, cursor_y, snap.edge_threshold,
+            );
             w.last_crop = crop;
             w.last_color_mode = color_mode;
             w.last_interp_mode = interp_mode;
+            w.last_edge_threshold = snap.edge_threshold;
             w.last_cursor_x = cursor_x;
             w.last_cursor_y = cursor_y;
         }

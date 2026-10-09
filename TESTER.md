@@ -28,7 +28,7 @@ Zoom goes from 1x to 20x. Below 4x each press changes it by 0.5, from 4x up by 1
 - **Zoom** and **Follow speed** sliders
 - **Display mode**: use **Fullscreen**. The docked modes (Top, Bottom, Left, Right) are old and being replaced; in them the mouse cannot reach the taskbar.
 - **Colour filter**: none, inverted, greyscale, greyscale + inverted
-- **Interpolation**: how the zoomed picture is smoothed. Bicubic is the default; try Sharp for crisper edges.
+- **Interpolation**: how the zoomed picture is smoothed. Bicubic is the default; try Sharp for crisper edges, or Smooth edges for rounded diagonals. With Smooth edges, the Edge threshold slider sets how alike two colours must be to count as one shape.
 
 Settings are saved automatically and come back next time.
 

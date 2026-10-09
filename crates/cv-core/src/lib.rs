@@ -39,14 +39,17 @@ pub enum Interpolation {
     Bicubic,
     /// Sharp bilinear: texels drawn as flat blocks, edges blended over about 1 output pixel (ADR 0006).
     Sharp,
+    /// cleanEdge edge smoothing: texels drawn as blocks with diagonal edges cut in (ADR 0006, 1.9).
+    CleanEdge,
 }
 
 impl Interpolation {
     pub fn as_u32(self) -> u32 {
         match self {
-            Self::Bilinear => 0,
-            Self::Bicubic  => 1,
-            Self::Sharp    => 2,
+            Self::Bilinear  => 0,
+            Self::Bicubic   => 1,
+            Self::Sharp     => 2,
+            Self::CleanEdge => 3,
         }
     }
 }
@@ -88,6 +91,9 @@ pub struct AppState {
     /// Lerp speed per logical 60 Hz tick (0.01–1.0).
     pub smooth_speed: f32,
     pub interpolation: Interpolation,
+    /// cleanEdge colour similarity threshold (0–1): RGB distance at or below which two texels
+    /// count as the same shape. Only used by `Interpolation::CleanEdge`.
+    pub edge_threshold: f32,
     pub display_mode: DisplayMode,
     /// Panel size as a percentage of the relevant screen dimension (1–100). Ignored in Fullscreen mode.
     pub panel_size: u32,
@@ -109,6 +115,7 @@ impl Default for AppState {
             zoom: 2.0,
             smooth_speed: 0.15,
             interpolation: Interpolation::default(),
+            edge_threshold: 0.1,
             display_mode: DisplayMode::Fullscreen,
             panel_size: 50,
             color_filter: ColorFilter::None,
@@ -127,8 +134,10 @@ impl AppState {
         let d = Self::default();
         if !self.zoom.is_finite() { self.zoom = d.zoom; }
         if !self.smooth_speed.is_finite() { self.smooth_speed = d.smooth_speed; }
+        if !self.edge_threshold.is_finite() { self.edge_threshold = d.edge_threshold; }
         self.zoom = self.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
         self.smooth_speed = self.smooth_speed.clamp(0.01, 1.0);
+        self.edge_threshold = self.edge_threshold.clamp(0.0, 1.0);
         self.panel_size = self.panel_size.clamp(1, 100);
         self.tts_volume = self.tts_volume.min(100);
         self.tts_rate = self.tts_rate.clamp(-10, 10);
@@ -182,7 +191,8 @@ mod tests {
             enabled: true,
             zoom: 4.5,
             smooth_speed: 0.4,
-            interpolation: Interpolation::Sharp,
+            interpolation: Interpolation::CleanEdge,
+            edge_threshold: 0.25,
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 30,
             color_filter: ColorFilter::GreyscaleInverted,
@@ -242,7 +252,7 @@ mod tests {
             let j = serde_json::to_string(&f).unwrap();
             assert_eq!(serde_json::from_str::<ColorFilter>(&j).unwrap(), f);
         }
-        for i in [Interpolation::Bilinear, Interpolation::Bicubic, Interpolation::Sharp] {
+        for i in [Interpolation::Bilinear, Interpolation::Bicubic, Interpolation::Sharp, Interpolation::CleanEdge] {
             let j = serde_json::to_string(&i).unwrap();
             assert_eq!(serde_json::from_str::<Interpolation>(&j).unwrap(), i);
         }
@@ -264,6 +274,7 @@ mod tests {
             zoom: 99.0,
             smooth_speed: 0.0,
             panel_size: 0,
+            edge_threshold: -0.5,
             tts_volume: 500,
             tts_rate: -50,
             ..AppState::default()
@@ -272,14 +283,17 @@ mod tests {
         assert_eq!(s.zoom, 20.0);
         assert_eq!(s.smooth_speed, 0.01);
         assert_eq!(s.panel_size, 1);
+        assert_eq!(s.edge_threshold, 0.0);
         assert_eq!(s.tts_volume, 100);
         assert_eq!(s.tts_rate, -10);
 
         s.panel_size = 400;
         s.zoom = 0.2;
+        s.edge_threshold = 3.0;
         s.sanitize();
         assert_eq!(s.panel_size, 100);
         assert_eq!(s.zoom, 1.0);
+        assert_eq!(s.edge_threshold, 1.0);
     }
 
     #[test]
@@ -366,10 +380,16 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_non_finite_floats() {
-        let mut s = AppState { zoom: f32::NAN, smooth_speed: f32::INFINITY, ..AppState::default() };
+        let mut s = AppState {
+            zoom: f32::NAN,
+            smooth_speed: f32::INFINITY,
+            edge_threshold: f32::NAN,
+            ..AppState::default()
+        };
         s.sanitize();
         assert_eq!(s.zoom, AppState::default().zoom);
         assert_eq!(s.smooth_speed, AppState::default().smooth_speed);
+        assert_eq!(s.edge_threshold, AppState::default().edge_threshold);
     }
 
     #[test]
