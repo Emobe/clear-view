@@ -1,6 +1,6 @@
 # 0006: Upscaling filter for readable text at 10x to 20x
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-09
 
 ## Context

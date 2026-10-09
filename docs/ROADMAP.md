@@ -52,11 +52,11 @@ Goal: something your mum can use for real in fullscreen mode, so feedback starts
 1.2 (ADR first) Hotkey scheme: RegisterHotKey combinations vs a low-level keyboard hook (needed for a Caps Lock modifier like ZoomText's); default bindings for on/off, zoom in, zoom out; what happens when a binding is already taken.
 1.3 Hotkeys from the ADR: on/off, zoom in, zoom out. A failed registration is shown in the settings window, not only on stdout.
 1.4 Zoom range 1x to 20x. `sanitize` currently clamps to 10. Zoom steps for the hotkeys decided in this step and recorded in the PR.
-1.5 Readability at 10x and above: add sharp bilinear as a third interpolation mode and a naga test that validates shader.wgsl (pending ADR 0006); compare bilinear, bicubic and sharp at 10x and 20x, check for shimmer or jitter while smooth-following at high zoom, pick the default. You judge; the agent fixes what you find.
+1.5 Readability at 10x and above: add sharp bilinear as a third interpolation mode and a naga test that validates shader.wgsl (ADR 0006); compare bilinear, bicubic and sharp at 10x and 20x, check for shimmer or jitter while smooth-following at high zoom, pick the default. You judge; the agent fixes what you find.
 1.6 Display scaling: cursor circle and view line up at 100%, 125% and 150%. Fix if not.
 1.7 Tester build: a release build you can copy to the tester's machine by hand, a one-page TESTER.md with the hotkeys and how to quit, and a git tag v0.1.0.
 1.8 (you) Tester uses it. Record what's missing or wrong in docs/FEEDBACK.md. Feedback items get added to later phases by you.
-1.9 Edge-smoothing mode (pending ADR 0006): port cleanEdge (MIT, single pass, any scale) as a fourth interpolation mode and measure its cost at 4K. If it fails on anti-aliased text, record why; a multi-pass Super-xBR pipeline then needs its own ADR after ADR 0004. Runs before 1.7 instead if you judge sharp bilinear not good enough for the tester.
+1.9 Edge-smoothing mode (ADR 0006): port cleanEdge (MIT, single pass, any scale) as a fourth interpolation mode and measure its cost at 4K. If it fails on anti-aliased text, record why; a multi-pass Super-xBR pipeline then needs its own ADR after ADR 0004. Runs before 1.7 instead if you judge sharp bilinear not good enough for the tester.
 
 ## Phase 2: Platform seams
 

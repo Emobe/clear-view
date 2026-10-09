@@ -33,9 +33,12 @@ impl ColorFilter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum Interpolation {
-    #[default]
     Bilinear,
+    /// Default: chosen by you after comparing the three modes at 10x and 20x (1.5).
+    #[default]
     Bicubic,
+    /// Sharp bilinear: texels drawn as flat blocks, edges blended over about 1 output pixel (ADR 0006).
+    Sharp,
 }
 
 impl Interpolation {
@@ -43,6 +46,7 @@ impl Interpolation {
         match self {
             Self::Bilinear => 0,
             Self::Bicubic  => 1,
+            Self::Sharp    => 2,
         }
     }
 }
@@ -178,7 +182,7 @@ mod tests {
             enabled: true,
             zoom: 4.5,
             smooth_speed: 0.4,
-            interpolation: Interpolation::Bicubic,
+            interpolation: Interpolation::Sharp,
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 30,
             color_filter: ColorFilter::GreyscaleInverted,
@@ -238,7 +242,7 @@ mod tests {
             let j = serde_json::to_string(&f).unwrap();
             assert_eq!(serde_json::from_str::<ColorFilter>(&j).unwrap(), f);
         }
-        for i in [Interpolation::Bilinear, Interpolation::Bicubic] {
+        for i in [Interpolation::Bilinear, Interpolation::Bicubic, Interpolation::Sharp] {
             let j = serde_json::to_string(&i).unwrap();
             assert_eq!(serde_json::from_str::<Interpolation>(&j).unwrap(), i);
         }

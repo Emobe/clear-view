@@ -267,7 +267,7 @@ impl WgpuState {
     /// Write all uniforms to the 32-byte buffer.
     /// crop:        [src_x, src_y, src_w, src_h] normalised to [0, 1].
     /// color_mode:  ColorFilter::as_u32()   — 0=None,1=Inverted,2=Greyscale,3=GreyscaleInverted.
-    /// interp_mode: Interpolation::as_u32() — 0=Bilinear, 1=Bicubic.
+    /// interp_mode: Interpolation::as_u32() — 0=Bilinear, 1=Bicubic, 2=Sharp.
     /// cursor_x/y:  software cursor position in output window pixels.
     pub fn write_uniforms(&self, crop: [f32; 4], color_mode: u32, interp_mode: u32, cursor_x: u32, cursor_y: u32) {
         let mut bytes = [0u8; 32];
@@ -316,5 +316,20 @@ impl WgpuState {
         self.queue.submit([enc.finish()]);
         output.present();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wgpu::naga;
+
+    /// wgpu only validates the shader when the pipeline is created at runtime; this catches errors in `cargo test`.
+    #[test]
+    fn shader_parses_and_validates() {
+        let module = naga::front::wgsl::parse_str(super::SHADER)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(super::SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(super::SHADER)));
     }
 }

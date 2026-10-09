@@ -26,6 +26,7 @@ Current roadmap:
 - 1.2 Hotkey scheme ADR (ADR 0005, branch step/1.2-hotkey-adr, PR #16)
 - 1.3 Hotkeys from the ADR (branch step/1.3-hotkeys, PR #17)
 - 1.4 Zoom range 1x to 20x (branch step/1.4-zoom-range, PR #18)
+- 1.5 Readability at 10x and above (ADR 0006, branch step/1.5-readability, PR #20)
 
 ## Works (a command proved it, or you verified it)
 
@@ -41,13 +42,14 @@ Current roadmap:
 - Hotkey scheme decided (1.2, approved by you 2026-10-09): ADR 0005 is Accepted, option 3: `RegisterHotKey` only with fixed Ctrl+Alt+Shift bindings kept as data, and a Caps Lock hook layer only if the tester asks for it after 1.8.
 - Hotkeys (1.3, approved by you 2026-10-09): Ctrl+Alt+Shift+Z toggles on and off, Ctrl+Alt+Shift+Up zooms in and Ctrl+Alt+Shift+Down zooms out (ADR 0005, `RegisterHotKey`, `MOD_NOREPEAT`, registered once at startup; the thread blocks in `GetMessageW`). A binding that fails to register is logged with its error code and listed in the settings window. You ran the step's whole Verify list (toggle in fullscreen and docked with the panel focused and unfocused, zoom keys and limits, no repeat on hold, zoom saved across relaunch, idle CPU, a second copy showing the conflict line, an elevated window in the foreground, the old "Win +=" label gone, panel controls reachable with failure lines showing) and reported that all of it works; individual items were not itemised, so the elevated-window result is not recorded separately.
 - Zoom range 1x to 20x (1.4, approved by you 2026-10-09): `ZOOM_MAX` is 20 and the slider reaches it. Hotkey zoom step is 0.5 below 4x and 1.0 from 4x up (`ZOOM_STEP_FINE`, `ZOOM_STEP_COARSE`, `ZOOM_COARSE_FROM`); stepping out from exactly 4x uses the fine step, so in and out presses retrace the same values. You ran the step's whole Verify list and reported that it works; individual items were not itemised. You judged 20x "quite blurry but not terrible" (Finding 14, roadmap 1.5). Saved zoom of 10 or lower still loads; a hand-edited 99 loads as 20.
+- Readability at high zoom (1.5, approved by you 2026-10-09): ADR 0006 is Accepted (option 2). A third interpolation mode, Sharp (sharp bilinear: texels drawn flat, edges blended over about 1 output pixel, scale from `fwidth`), sits next to Bilinear and Bicubic in the panel and can be switched at any zoom. You compared the three and chose Bicubic as the default (`Interpolation::default()`); a saved choice in settings.json still wins. A cv-render test validates shader.wgsl through `wgpu::naga`, so shader errors fail `cargo test`. You ran the step's whole Verify list and reported that it works; individual items were not itemised. You saw no noticeable jitter while smooth-following at high zoom, so no jitter fix was made; you expect it may show up with caret tracking (Phase 4). Sharp makes edges crisp, but on anti-aliased text it turns the soft edge pixels into sharp grey blocks (Finding 14).
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 44 tests. cv-core 34 (17 in `geometry::tests`, 17 in `tests` for serde round-trips, `sanitize` and `step_zoom`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`). cv-capture, cv-render and cv-tts have none.
+- `cargo test --workspace`: passes, 45 tests (1.5). cv-core 34 (17 in `geometry::tests`, 17 in `tests` for serde round-trips, `sanitize` and `step_zoom`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`), cv-render 1 (`gfx::tests::shader_parses_and_validates`). cv-capture and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
 ## Broken
@@ -60,11 +62,11 @@ Code is present and builds; you have not verified the behaviour. Anything you di
 
 Magnifier (read from code, file paths given)
 - DXGI capture details: `DXGI_ERROR_WAIT_TIMEOUT` retry and reconnect on error (crates/cv-capture/src/lib.rs). Capture itself and output switching are seen working.
-- Bilinear vs Catmull-Rom bicubic, frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-render/src/lib.rs, gfx.rs, shader.wgsl. The four colour filters are seen working.
+- Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-render/src/lib.rs, gfx.rs. The four colour filters and the three interpolation modes are seen working (1.5).
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (lib.rs:391)
 - `ClipCursor` to the work area every tick while docked (lib.rs:472)
 - AppBar details on each of the four edges, and unregister on toggle-off (appbar.rs, lib.rs:324). Docking in general is seen working; which edges you tried is not recorded.
-- egui panel controls not yet verified: display mode and panel size beyond what docking showed, interpolation: crates/app/src/app.rs. Zoom, follow speed and colour filter are seen working.
+- egui panel controls not yet verified: display mode and panel size beyond what docking showed: crates/app/src/app.rs. Zoom, follow speed and colour filter are seen working.
 
 Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
 
@@ -99,7 +101,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 11. **Docking needs to change.** You tested docked mode while approving old 2.1: it works, but you want it changed. Details to come from you; nothing is planned or on the roadmap yet. Finding 10 is related.
 12. **Mouse cannot reach the taskbar.** You reported it while testing 1.1: "like an invisible wall". You remember it appearing before 1.1, and 1.1 did not touch the cursor clip logic, so it is not from that work. Cause not found. Which mode it happens in was not recorded. A candidate from the code, unconfirmed: while docked, `update_clip_cursor` clips the cursor to `SPI_GETWORKAREA` every tick (cv-render/src/lib.rs), and the work area excludes the taskbar. Not on the roadmap yet; it overlaps Finding 11 and roadmap 3.5 (remove ClipCursor). You decide where it goes. Update from testing 1.4: you confirmed it happens in docked mode, which matches the candidate above (the cursor clip to the work area). Fullscreen is not affected. It goes with roadmap 3.5 (remove AppBar docking and ClipCursor); no separate item.
 13. **Taskbar disappears in fullscreen with a game open. Not a bug, ignored by your decision.** Reported while testing 1.4. You said it only happens in fullscreen when something like a game is open, and to ignore it. Not investigated. The earlier candidates (shell hiding the taskbar behind a topmost fullscreen overlay, or the taskbar being out of view at high zoom) were never confirmed.
-14. **Image is blurry at high zoom.** You reported it while testing 1.4: "quite blurry but not terrible", wants smoothing or sharpening. This is roadmap 1.5 (bilinear vs bicubic, sharpening), not 1.4.
+14. **Image is blurry at high zoom. Partly addressed by 1.5.** You reported it while testing 1.4: "quite blurry but not terrible", wants smoothing or sharpening. 1.5 added the Sharp mode (ADR 0006). Testing it, you found it "definitely sharpens it", but most text is anti-aliased, so Sharp only makes the soft edge pixels sharper. Edge smoothing is roadmap 1.9 (cleanEdge), after tester feedback (1.8); if cleanEdge fails on anti-aliased text, a multi-pass Super-xBR pipeline needs its own ADR after ADR 0004. You kept 1.9 in its place after 1.8 and chose Bicubic as the default.
 
 Git (collected by command)
 - Branch: master at 89cc84c, equal to origin/master and to feat/tts-stage4. Nothing unpushed.
@@ -133,7 +135,7 @@ Mark each: works, broken, or not tested.
 - [ ] Mouse reaches the taskbar in each mode (Finding 12: it does not in some case)
 - [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving old 2.1)
 - [ ] Magnifier starts off after a relaunch that restores saved settings (old 2.2; implied by `enabled` not being saved, not watched)
-- [ ] Bilinear vs bicubic
+- [x] Bilinear vs bicubic vs sharp at 10x and 20x (1.5; you chose Bicubic as the default)
 - [ ] Cursor circle lines up with the real pointer at 100%, 125%, 150% scaling (confirmed on your current display scaling only)
 - [x] Second monitor, fullscreen: active monitor switches, circle and capture follow (confirmed while approving old 2.1)
 - [ ] Second monitor, docked: where the panel lands and where the cursor can go (Finding 10)
