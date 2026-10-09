@@ -1,5 +1,7 @@
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
+use crate::magnifier::{Renderer, Uniforms};
+
 /// shader.wgsl with the cleanEdge port (MIT, see clean_edge.wgsl) appended. WGSL has no `#include`.
 const SHADER: &str = concat!(include_str!("shader.wgsl"), "\n", include_str!("clean_edge.wgsl"));
 
@@ -326,6 +328,34 @@ impl WgpuState {
         self.queue.submit([enc.finish()]);
         output.present();
         true
+    }
+}
+
+impl Renderer for WgpuState {
+    fn frame_size(&self) -> (u32, u32) {
+        (self.tex_w, self.tex_h)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        WgpuState::resize(self, width, height);
+    }
+
+    fn recreate_frame_texture(&mut self, width: u32, height: u32) {
+        WgpuState::recreate_frame_texture(self, width, height);
+    }
+
+    fn upload_frame(&mut self, data: &[u8], width: u32, height: u32) {
+        WgpuState::upload_frame(self, data, width, height);
+    }
+
+    fn write_uniforms(&mut self, u: &Uniforms) {
+        WgpuState::write_uniforms(
+            self, u.crop, u.color_mode, u.interp_mode, u.cursor_x, u.cursor_y, u.edge_threshold,
+        );
+    }
+
+    fn render(&mut self) -> bool {
+        WgpuState::render(self)
     }
 }
 
