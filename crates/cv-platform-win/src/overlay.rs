@@ -1,10 +1,8 @@
-mod appbar;
-mod gfx;
-
 use std::{
     cell::RefCell,
     ffi::c_void,
     mem::size_of,
+    num::NonZeroIsize,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
@@ -39,7 +37,10 @@ use cv_core::{
     ColorFilter, DisplayMode, Edge, Frame, FrameState, Interpolation, OutputInfo, SharedState,
 };
 use cv_core::geometry::{self, panel_pct_to_px, window_dims};
-use gfx::WgpuState;
+use cv_magnifier::WgpuState;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
+
+use crate::appbar;
 
 struct WindowData {
     wgpu: WgpuState,
@@ -250,13 +251,22 @@ fn run_overlay(
     let callback_msg = unsafe { RegisterWindowMessageW(w!("ClearViewAppBar")) };
 
     // wgpu init (blocking) — window starts primary-monitor-sized.
-    let wgpu = WgpuState::new(
-        hwnd,
-        screen_w as u32,
-        screen_h as u32,
-        primary.width,
-        primary.height,
-    );
+    let display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+    let window = RawWindowHandle::Win32(Win32WindowHandle::new(
+        NonZeroIsize::new(hwnd.0 as isize).unwrap(),
+    ));
+    // SAFETY: the window belongs to this thread, and `teardown` drops `WIN_DATA` (and with it
+    // the surface) before `DestroyWindow`.
+    let wgpu = unsafe {
+        WgpuState::new(
+            display,
+            window,
+            screen_w as u32,
+            screen_h as u32,
+            primary.width,
+            primary.height,
+        )
+    };
 
     WIN_DATA.with(|d| {
         *d.borrow_mut() = Some(WindowData {

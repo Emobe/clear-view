@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 cv-core = { path = "../cv-core" }
-cv-render = { path = "../cv-render" }
 cv-tts = { path = "../cv-tts", optional = true }
 eframe = { workspace = true }
 egui = { workspace = true }

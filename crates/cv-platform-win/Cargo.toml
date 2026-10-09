@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 # The Windows backend (ADR 0004). No crate but this one (and parked cv-tts) may depend on
-# `windows`; cv-render's dependency moves here in roadmap 2.3.
+# `windows`.
 [dependencies]
-cv-core = { path = "../cv-core" }
-windows = { workspace = true }
+cv-core           = { path = "../cv-core" }
+cv-magnifier      = { path = "../cv-magnifier" }
+windows           = { workspace = true }
+raw-window-handle = { workspace = true }

@@ -79,7 +79,6 @@ version = "0.1.0"
 dependencies = [
  "cv-core",
  "cv-platform-win",
- "cv-render",
  "cv-tts",
  "dirs",
  "eframe",
@@ -463,21 +462,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "cv-platform-win"
-version = "0.1.0"
-dependencies = [
- "cv-core",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "cv-render"
+name = "cv-magnifier"
 version = "0.1.0"
 dependencies = [
  "cv-core",
  "pollster",
  "raw-window-handle",
  "wgpu",
+]
+
+[[package]]
+name = "cv-platform-win"
+version = "0.1.0"
+dependencies = [
+ "cv-core",
+ "cv-magnifier",
+ "raw-window-handle",
  "windows 0.62.2",
 ]
 

@@ -11,7 +11,7 @@ compile_error!("clear-view has a platform backend for Windows only");
 
 /// Stops the render thread when dropped, so a panic in `main` still restores the work area,
 /// system cursor and cursor clip.
-struct OverlayGuard(Option<cv_render::OverlayHandle>);
+struct OverlayGuard(Option<platform::OverlayHandle>);
 
 impl OverlayGuard {
     fn shutdown(&mut self) {
@@ -77,8 +77,8 @@ fn main() -> eframe::Result {
 
     // Renderer thread: overlay window, reads frame_state + app state.
     // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the
-    // console are handled inside cv-render.
-    let mut overlay = OverlayGuard(Some(cv_render::spawn_overlay(
+    // console are handled inside the backend.
+    let mut overlay = OverlayGuard(Some(platform::spawn_overlay(
         frame_state.clone(),
         shared.clone(),
         outputs,
