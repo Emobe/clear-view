@@ -61,7 +61,14 @@ Goal: something your mum can use for real in fullscreen mode, so feedback starts
 ## Phase 2: Platform seams
 
 2.1 (ADR first) ADR 0004 with Opus, rewritten in place (see Existing ADRs): boundaries between core (pointer and caret sources, later focus and text), magnifier (capture, render, tracking policy, modes) and the Windows backend (window host, hotkeys, capture). The core's event API must not rule out a reader or per-app scripting later. Also decides when to upgrade wgpu 22 and eframe 0.29. Linux stays possible through the seam, but the ADR does not design the Linux backends or the reader. Its output replaces 2.2 with numbered sub-items.
-2.2 Refactor behind the boundaries ADR 0004 defines. cv-render/src/lib.rs is split up (Finding 5). Behaviour must not change.
+2.2 to 2.7 replace the single refactor item (Finding 5). None of them may change behaviour; each Verify list uses the regression list in ADR 0004.
+
+2.2 (pending ADR 0004) cv-platform-win: new crate absorbing cv-capture unchanged; DPI awareness and `RegisterHotKey` move in from app; the hotkey `Action` and its effect on `AppState` move to cv-core with tests; app drops its `windows` dependency.
+2.3 (pending ADR 0004) Portable renderer: gfx.rs takes raw display and window handles instead of `HWND`; the Win32 overlay (window, loop, AppBar, cursor clip, cursor hiding, clean exit) and appbar.rs move to cv-platform-win; cv-render drops `windows` and is renamed cv-magnifier.
+2.4 (pending ADR 0004) Seam traits `PointerSource`, `OverlayHost`, `CaptureSource`; the capture loop moves from main.rs to cv-magnifier behind `CaptureSource`.
+2.5 (pending ADR 0004) `Magnifier::tick`: the per-tick logic moves out of `on_timer` behind `OverlayHost` and `Layout`, with fake-host unit tests. Stop and propose sub-items if it is bigger than one step.
+2.6 (pending ADR 0004) wgpu 22 to 30, naga with it; `bench_modes_4k` before and after.
+2.7 (pending ADR 0004) eframe and egui 0.29 to 0.36 (needs Rust 1.95 or newer), or 0.35 if 0.36 is too much churn.
 
 ## Phase 3: Docked overlay (M2)
 
@@ -111,4 +118,4 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 - Hotkey scheme and defaults (1.2).
 - Docked behaviour on multiple monitors (5.1).
 - Performance thresholds (5.5).
-- When to upgrade wgpu and eframe (2.1).
+- When to upgrade wgpu and eframe (2.1; ADR 0004 proposes after the refactor, before 3.1: items 2.6 and 2.7).
