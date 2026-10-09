@@ -47,6 +47,7 @@ Current roadmap:
 - 4.2 Caret sources measured (you; results in docs/prototypes/caret-sources.md, branch step/4.2-caret-sources)
 - 4.3 Caret sources ADR (ADR 0008, branch step/4.3-caret-sources-adr, PR #39)
 - 4.4 Core caret source for Windows (ADR 0008, branch step/4.4-caret-source, PR #40)
+- 4.5 Tracking policy in cv-core (ADR 0008, branch step/4.5-tracking-policy, PR #41)
 
 ## Works (a command proved it, or you verified it)
 
@@ -158,14 +159,19 @@ Current roadmap:
   - The UIA and MSAA `windows` features are in the workspace list now, so the app compiles them. `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1` is unchanged.
   - Dev example `cargo run -p cv-platform-win --example caret_events` prints each event and outlines its rect; the outline code is shared with the probe (examples/common/outline.rs).
   - You ran the step's Verify list (the log line per app: Notepad, Explorer rename, address bar and search box, Edge or Brave, Terminal, LibreOffice; the settings panel with a text field focused; outlines at 150% in Notepad, Explorer rename and Edge; the three exit paths) and reported that it works; individual items were not itemised. So the Terminal poll CPU cost is not recorded, and no msaa or uia offset at 150% was reported, so no conversion was added for them.
+- Tracking policy (4.5, approved by you 2026-10-09, PR #41):
+  - cv-core `tracking`: `Tracker::update(now, pointer, events, view) -> (f32, f32)` once per tick, `Tracker::following() -> Following { Pointer, Caret }`; re-exported from `cv_core`. Pure logic, not wired into the magnifier yet (4.6, 4.7). 21 tests.
+  - A caret event takes the view only after the pointer has been still for 250 ms (`POINTER_QUIET`; movement of 2 px or less is jitter, `POINTER_JITTER_PX`). The pointer takes it back after moving more than 24 px (`POINTER_RETURN_PX`, either axis) from where it rested; a caret event re-anchors that point only while the pointer is still. The pointer is read before the events, so the pointer wins a tie.
+  - Caret (msaa, uia, gui): the view holds while the caret is inside the middle of the view (`CARET_MARGIN` 0.2 each side) and re-centres per axis when it leaves. `FocusRect`: centred if it fits the middle area, else its left/top edge at the start of the middle area. `CaretLost` holds the view until the pointer moves or a caret returns.
+  - You ran the step's Verify list (fullscreen and docked follow the mouse as before, clean exit) and reported that it works; individual items were not itemised.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 116 tests and 1 ignored (4.4).
-  - cv-core 50: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`, 6 in `events::tests` for the hub.
+- `cargo test --workspace`: passes, 137 tests and 1 ignored (4.5).
+  - cv-core 71: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`, 6 in `events::tests` for the hub, 21 in `tracking::tests` for the tracking policy.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
   - cv-magnifier 42: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 28 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge), plus the ignored GPU bench `bench_modes_4k`.
   - cv-platform-win 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls). cv-tts has none.
