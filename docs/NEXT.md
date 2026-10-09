@@ -3,26 +3,26 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.2 (ADR first) Docked overlay design from the prototype, superseding the AppBar docking part of ADR 0002: window styles, capture exclusion, handling extra frames, what the panel shows when the mouse is under it, panel size limits.
-Branch: none yet. Run `/adr 3.2`; it writes the ADR on its own branch. No code until you accept it.
+Item: 3.3 Overlay docked mode on the primary monitor, top edge only.
+ADR: docs/adr/0007-docked-overlay.md (roadmap 3.2), Accepted by you 2026-10-09 (PR #33). Run `/step 3.3`. 3.2 goes in the STATUS Done list when you say "I approve".
 
-Notes for 3.2:
-- Read docs/prototypes/docked-overlay.md first. Its "Recommendation for the 3.2 ADR" section is the starting point, and your verdict is "overlay is the way forward".
-- Prototype result on your machine: the current overlay window and styles (topmost, `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED`, `WDA_EXCLUDEFROMCAPTURE`), placed with `SetWindowPos` at the monitor edge, no AppBar, no `ClipCursor`. No extra frames, clicks pass through, the taskbar is reachable, the desktop stays at 100%, the panel follows the pointer under itself. You verified it all by hand (STATUS Works, 3.1).
-- Questions the ADR still has to settle:
-  - The 24H2 extra-frame issue was MPO-only and fixed in build 26100.2314; your outputs have no MPO, so the tester's build and MPO support are unchecked. The prototype showed that filtering frames by dirty rects inside the panel is unsafe (a video under the panel produces them); presenting only on change is the fallback.
-  - The system cursor shows on top of the panel at its real position while the pointer is under the panel: keep it, hide it, or draw it differently?
-  - Panel size limits: not measured.
-  - DirectComposition (`DxgiFromVisual`) gave no measured benefit; the prototype recommends staying on `DxgiFromHwnd`.
-- The change is backend-only inside `WinHost::apply_layout` (ADR 0004); 3.3 to 3.5 build it, 3.5 deletes appbar.rs and `update_clip_cursor`.
-- Model: Opus high (window host at the platform seam, supersedes part of ADR 0002).
+Notes for 3.3 (from ADR 0007's recommendation; if you change the ADR, the ADR wins):
+- Window styles unchanged, `DxgiFromHwnd`. Docked placement is `SetWindowPos` to a new pure `geometry::docked_rect(monitor, edge, thickness)` in cv-core (monitor origin included), replacing `appbar::panel_rect`. Top edge only in 3.3; the other edges keep AppBar docking until 3.4.
+- No AppBar and no `ClipCursor` while docked on the top edge.
+- New `OverlayHost::set_system_cursor(visible)`: the magnifier hides the system cursor while the pointer is inside the panel rect, calling only on change; the hit test is pure and unit-tested; the fake host records the calls. Fullscreen hiding stays in `apply_layout`; `Hidden` and teardown show the cursor.
+- Startup log, one line each: the Windows build and `IDXGIOutput2::SupportsOverlays` per output.
+- Verify includes whether clicking the taskbar covers the panel. If it does, `apply_layout` re-asserts `HWND_TOPMOST` and the PR says so.
+- Nothing against extra frames is built; captured frames are never filtered by dirty rect.
+- Model: Sonnet high (CLAUDE.md model guide for /step).
+
+Then: 3.4 all edges and the 10–90% panel size limits; 3.5 removes appbar.rs, `update_clip_cursor`, `reposition_appbar` and the `ABN_POSCHANGED` path; before 3.6 you read the build and MPO lines on the tester's machine.
 
 After 3.1 (done):
 - step/3.1-overlay-prototype holds the prototype code (73bdf0a). It is never merged; keep it for reference until 3.3 is done.
 - Side finding: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
 
 What comes next:
-- 3.3 to 3.5 build the ADR from 3.2.
+- 3.3 to 3.5 build ADR 0007.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 
