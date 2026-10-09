@@ -3,18 +3,18 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 4.2 (you) Run the probe in Notepad, Word, Chrome, Edge, File Explorer (rename and address bar) and the tester's email app. Record which sources give correct positions in docs/prototypes/caret-sources.md.
-ADR: none. When you've run it, `/step 4.2` asks whether it's done and records what you report.
+Item: 4.3 (ADR first) Caret sources, superseding ADR 0003's rule that only the TTS thread owns UIA (UIA moves to a core thread): which source per app type, fallback order, how the core reports a caret position, and what happens in elevated windows without UIAccess.
+ADR: needed. Run `/adr 4.3` with Opus high: it touches a platform seam and the core's thread model, and supersedes part of ADR 0003.
 
-On hold by your decision (2026-10-09): everything involving the tester, until you raise it: 1.8, 3.6, 4.9, 6.8, and the tester's email app in 4.2. /next skips them. 4.2 goes ahead without the email app; that app is added when you pick the tester work up again.
+On hold by your decision (2026-10-09): everything involving the tester, until you raise it: 1.8, 3.6, 4.9, 6.8, and the tester's email app in 4.2. /next skips them. 4.2 was recorded without the email app; that app is measured when you pick the tester work up again.
 
-Notes for 4.2:
-- Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the log). Outlines on screen: red gui (GetGUIThreadInfo), green msaa (MSAA caret object), blue uia (UI Automation). An outline sitting on the caret means that source is right; a missing outline means the source has nothing; a misplaced one means it's wrong. The console prints one block a second with each source's rect, method, the caret window's DPI and awareness, the UIA framework and class, and the cost in ms. Ctrl+C stops it.
-- Already seen while testing 4.1 (PR #37): Notepad shows all three sources on the caret. Windows Terminal shows only uia (it draws its own caret).
-- Per app, worth writing down for 4.3: which colours sit on the caret, which are missing or off, and whether `uia` says `TextPattern2.GetCaretRange` or falls back to `TextPattern.GetSelection`. Also the cost in ms, and anything odd at line ends or empty lines (`expanded to char`).
-- Optional for 4.3's elevated-window question: an admin Notepad or Task Manager in front.
-- docs/prototypes/caret-sources.md does not exist yet; `/step 4.2` writes it from what you report.
-- Then: 4.3 (ADR first) caret sources, with Opus high (it decides UIA ownership in the core, superseding part of ADR 0003).
+Notes for 4.3, from 4.2 (docs/prototypes/caret-sources.md):
+- On the caret: Notepad and Explorer rename all three; Brave and Edge msaa and uia (no gui); Windows Terminal uia only. uia gave a position in every app that had one.
+- No source in the Explorer address bar and search box (XAML `TextBox`): `TextPattern2.GetCaretRange` is active but `GetBoundingRectangles` is empty, also after expanding to a character and with the caret mid-text. Needs a non-caret fallback (for example the focused element's rectangle).
+- LibreOffice: none (not on the v1 list).
+- Not measured: Word (not installed; a v1 Must app), Chrome (not installed; Brave and Edge are Chromium), the tester's email app (on hold), elevated windows. The ADR should say how Word gets measured, before 4.8 at the latest.
+- UIA method per app (`GetCaretRange` vs `GetSelection`), costs outside Explorer and line-end behaviour were not recorded. Explorer costs: gui 0 ms, msaa under 1 ms, uia 3–12 ms (first calls 75 ms msaa, 36 ms uia).
+- ADR 0003's carry-over rules (MTA first, plain data over channels, no COM pointers across threads) apply to the core thread. The probe follows them (UIA thread owns no window).
 
 Held, for when you pick it up again — notes for 3.6:
 - The agent's part, like 1.7 (PR #22): plain `cargo build --release` with no `RUSTFLAGS` gives `target\release\clear-view.exe` (static CRT from `.cargo/config.toml`); update TESTER.md; tag v0.2.0. v0.1.0 is an annotated tag ("Tester build 1 (roadmap 1.7)") on bb81f33; tag the merged commit the same way only after you approve, and ask before pushing the tag.
@@ -26,6 +26,7 @@ Held, for when you pick it up again — notes for 3.6:
 What comes next:
 - 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
 - 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Its extra `windows` features are dev-dependencies, so the app doesn't compile them.
+- 4.2 (you) measured the caret sources; results in docs/prototypes/caret-sources.md.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.

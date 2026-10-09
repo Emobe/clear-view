@@ -44,6 +44,7 @@ Current roadmap:
 - 3.4 Overlay docking on all four edges, panel size 10–90% (ADR 0007, branch step/3.4-docked-overlay-all-edges, PR #35)
 - 3.5 Remove AppBar docking and ClipCursor (ADR 0007, branch step/3.5-remove-appbar, PR #36)
 - 4.1 Caret probe (branch step/4.1-caret-probe, PR #37)
+- 4.2 Caret sources measured (you; results in docs/prototypes/caret-sources.md, branch step/4.2-caret-sources)
 
 ## Works (a command proved it, or you verified it)
 
@@ -138,6 +139,13 @@ Current roadmap:
     - Once the outlines were redrawn every 100 ms, they "follow nicely". Before that, with redraws once a second, you found them laggy.
     - A game no longer draws over the taskbar while the probe runs. The first outline version caused that (see Finding 13).
     - Individual Verify items beyond these were not itemised.
+- Caret sources measured (4.2, run by you 2026-10-09). Details are in docs/prototypes/caret-sources.md.
+  - Notepad and File Explorer rename: gui, msaa and uia are all on the caret.
+  - Brave and Edge: msaa and uia, no gui.
+  - Windows Terminal: uia only.
+  - File Explorer address bar and search box (XAML `TextBox`): none. uia finds an active caret range but gives no rectangle, even mid-text.
+  - LibreOffice: none.
+  - Not measured: Word and Chrome (not installed), the tester's email app (on hold), elevated windows.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
