@@ -2,9 +2,9 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: blocked-on-adr
+State: ready
 Item: 3.3 Overlay docked mode on the primary monitor, top edge only.
-ADR: docs/adr/0007-docked-overlay.md (roadmap 3.2), Status Proposed, on branch step/3.2-docked-overlay-adr. /step 3.3 resumes after you set its Status to Accepted. 3.2 goes in the STATUS Done list when you say "I approve".
+ADR: docs/adr/0007-docked-overlay.md (roadmap 3.2), Accepted by you 2026-10-09 (PR #33). Run `/step 3.3`. 3.2 goes in the STATUS Done list when you say "I approve".
 
 Notes for 3.3 (from ADR 0007's recommendation; if you change the ADR, the ADR wins):
 - Window styles unchanged, `DxgiFromHwnd`. Docked placement is `SetWindowPos` to a new pure `geometry::docked_rect(monitor, edge, thickness)` in cv-core (monitor origin included), replacing `appbar::panel_rect`. Top edge only in 3.3; the other edges keep AppBar docking until 3.4.

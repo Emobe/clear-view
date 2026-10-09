@@ -1,6 +1,6 @@
 # 0007: Docked overlay
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-09
 
 ## Context
