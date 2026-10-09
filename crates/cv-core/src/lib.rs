@@ -78,6 +78,11 @@ pub const ZOOM_STEP_COARSE: f32 = 1.0;
 /// Zoom at which the hotkey step changes from fine to coarse.
 pub const ZOOM_COARSE_FROM: f32 = 4.0;
 
+/// Docked panel size limits, as a percentage of the monitor dimension the panel spans
+/// (ADR 0007).
+pub const PANEL_SIZE_MIN: u32 = 10;
+pub const PANEL_SIZE_MAX: u32 = 90;
+
 /// Persisted to settings.json except `enabled`, which always starts false.
 /// `#[serde(default)]` lets a file written by an older version load: missing fields take defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,7 +100,8 @@ pub struct AppState {
     /// count as the same shape. Only used by `Interpolation::CleanEdge`.
     pub edge_threshold: f32,
     pub display_mode: DisplayMode,
-    /// Panel size as a percentage of the relevant screen dimension (1–100). Ignored in Fullscreen mode.
+    /// Panel size as a percentage of the relevant screen dimension
+    /// (`PANEL_SIZE_MIN`–`PANEL_SIZE_MAX`). Ignored in Fullscreen mode.
     pub panel_size: u32,
     pub color_filter: ColorFilter,
     /// Master TTS on/off switch.
@@ -138,7 +144,7 @@ impl AppState {
         self.zoom = self.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
         self.smooth_speed = self.smooth_speed.clamp(0.01, 1.0);
         self.edge_threshold = self.edge_threshold.clamp(0.0, 1.0);
-        self.panel_size = self.panel_size.clamp(1, 100);
+        self.panel_size = self.panel_size.clamp(PANEL_SIZE_MIN, PANEL_SIZE_MAX);
         self.tts_volume = self.tts_volume.min(100);
         self.tts_rate = self.tts_rate.clamp(-10, 10);
     }
@@ -335,7 +341,7 @@ mod tests {
         s.sanitize();
         assert_eq!(s.zoom, 20.0);
         assert_eq!(s.smooth_speed, 0.01);
-        assert_eq!(s.panel_size, 1);
+        assert_eq!(s.panel_size, PANEL_SIZE_MIN);
         assert_eq!(s.edge_threshold, 0.0);
         assert_eq!(s.tts_volume, 100);
         assert_eq!(s.tts_rate, -10);
@@ -344,7 +350,7 @@ mod tests {
         s.zoom = 0.2;
         s.edge_threshold = 3.0;
         s.sanitize();
-        assert_eq!(s.panel_size, 100);
+        assert_eq!(s.panel_size, PANEL_SIZE_MAX);
         assert_eq!(s.zoom, 1.0);
         assert_eq!(s.edge_threshold, 1.0);
     }

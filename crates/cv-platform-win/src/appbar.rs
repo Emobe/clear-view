@@ -8,6 +8,7 @@ use windows::Win32::{
 use cv_core::Edge;
 
 // SHAppBarMessage message codes
+#[allow(dead_code)] // docking no longer registers an AppBar (ADR 0007); removed in 3.5
 const ABM_NEW: u32 = 0;
 const ABM_REMOVE: u32 = 1;
 const ABM_QUERYPOS: u32 = 2;
@@ -55,6 +56,7 @@ fn make_abd(hwnd: HWND, callback_msg: u32, edge: Edge, rc: RECT) -> APPBARDATA {
 
 /// Register as a new appbar and claim space on `edge`.
 /// Returns the final RECT after Windows adjusts for other appbars.
+#[allow(dead_code)] // docking no longer registers an AppBar (ADR 0007); removed in 3.5
 pub fn register(hwnd: HWND, edge: Edge, thickness: i32, sw: i32, sh: i32, callback_msg: u32) -> RECT {
     unsafe {
         let mut abd = make_abd(hwnd, callback_msg, edge, panel_rect(edge, thickness, sw, sh));

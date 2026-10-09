@@ -26,7 +26,7 @@ pub fn output_at(outputs: &[OutputInfo], x: i32, y: i32) -> Option<&OutputInfo> 
     })
 }
 
-/// Convert a panel_size percentage (1-100) to pixels along the given screen dimension.
+/// Convert a panel_size percentage to pixels along the given screen dimension (at least 1).
 pub fn panel_pct_to_px(pct: u32, dim: i32) -> i32 {
     (dim * pct as i32 / 100).max(1)
 }

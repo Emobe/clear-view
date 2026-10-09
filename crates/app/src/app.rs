@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cv_core::{
-    AppState, ColorFilter, DisplayMode, Edge, Interpolation, SharedState, ZOOM_MAX, ZOOM_MIN,
+    AppState, ColorFilter, DisplayMode, Edge, Interpolation, PANEL_SIZE_MAX, PANEL_SIZE_MIN,
+    SharedState, ZOOM_MAX, ZOOM_MIN,
 };
 use eframe::egui;
 
@@ -96,7 +97,7 @@ impl eframe::App for ClearViewApp {
             if s.display_mode != DisplayMode::Fullscreen {
                 ui.add_space(4.0);
                 ui.add(
-                    egui::Slider::new(&mut s.panel_size, 1..=100)
+                    egui::Slider::new(&mut s.panel_size, PANEL_SIZE_MIN..=PANEL_SIZE_MAX)
                         .text("Panel size (%)"),
                 );
             }
