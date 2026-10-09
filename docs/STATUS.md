@@ -42,6 +42,7 @@ Current roadmap:
 - 3.2 Docked overlay ADR (ADR 0007, branch step/3.2-docked-overlay-adr, PR #33)
 - 3.3 Overlay docked mode, top edge (ADR 0007, branch step/3.3-docked-overlay-top, PR #34)
 - 3.4 Overlay docking on all four edges, panel size 10–90% (ADR 0007, branch step/3.4-docked-overlay-all-edges, PR #35)
+- 3.5 Remove AppBar docking and ClipCursor (ADR 0007, branch step/3.5-remove-appbar, PR #36)
 
 ## Works (a command proved it, or you verified it)
 
@@ -118,16 +119,21 @@ Current roadmap:
   - `appbar::register`, `ABM_NEW` and `WinHost::callback_msg` are unused and marked `#[allow(dead_code)]` until 3.5 removes the AppBar path.
   - 2 new fake-host tests: the system cursor hides inside and shows outside the panel on Bottom, Left and Right at the boundary pixels; switching edges with the pointer inside hides it again.
   - You ran the step's whole Verify list (each edge flush with no shrinking, mouse under the panel, cursor hidden inside, taskbar clicks under a bottom panel, edge switching with the pointer inside, slider 10–90 resizing live, saved 5 and 95 loading as 10 and 90, toggle off while docked, close while docked) and reported that all of it works; individual items were not itemised, so whether the taskbar draws over a bottom panel after a click is not recorded separately. No `HWND_TOPMOST` re-assert was added.
+- AppBar docking and ClipCursor removed (3.5, approved by you 2026-10-09, PR #36):
+  - appbar.rs is gone, along with the AppBar callback message, the `ABN_POSCHANGED` flag and path, `WinHost::reposition_appbar` and `update_clip`, `update_clip_cursor`, `notify_moved` in `move_window`, `Magnifier::resized` (and its test) and the `Win32_UI_Shell` feature. No setting was removed.
+  - No `ClipCursor` call is left anywhere, exit included (your approval of the plan): nothing sets a clip, and `ClipCursor(None)` is system-wide, so it would free a clip another app set. 3.4 called it every tick while magnifying; that stopped too. Teardown and the `OverlayHandle::shutdown` fallback show the system cursor and destroy the window.
+  - CLAUDE.md describes overlay docking.
+  - You ran the step's Verify list (each edge flush with no shrinking, mouse under the panel, cursor hidden inside, edge and size changes live, taskbar clicks under a bottom panel, fullscreen cursor hidden and every edge reachable, toggle on and off, exit by window close, Ctrl+C and console close while magnifying) and reported that all of it works; individual items were not itemised, so whether the optional check (another app's cursor confinement kept) was tried is not recorded.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 97 tests and 1 ignored (3.4).
+- `cargo test --workspace`: passes, 96 tests and 1 ignored (3.5).
   - cv-core 44: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
-  - cv-magnifier 43: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 29 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge), plus the ignored GPU bench `bench_modes_4k`.
+  - cv-magnifier 42: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 28 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge), plus the ignored GPU bench `bench_modes_4k`.
   - cv-platform-win and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 
@@ -143,7 +149,6 @@ Magnifier (read from code, file paths given)
 - DXGI capture details on a real device: `DXGI_ERROR_WAIT_TIMEOUT` retry, and reconnect after errors other than a lock or UAC prompt (mode change, device removed, remote session) (crates/cv-platform-win/src/capture.rs, loop in crates/cv-magnifier/src/capture.rs). The loop's logic is unit-tested with a fake source (2.4, 2.5a). Capture itself, output switching and recovery after a lock (2.5a) are seen working.
 - Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-magnifier/src/magnifier.rs (unit-tested with a fake renderer in 2.5, not measured on a GPU). The four colour filters and the four interpolation modes are seen working.
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (cv-platform-win/src/overlay.rs)
-- AppBar code still present but unused by docking since 3.4 (cv-platform-win/src/appbar.rs, `update_clip_cursor`, `reposition_appbar`, the `ABN_POSCHANGED` path); 3.5 removes it.
 
 Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
 
@@ -185,7 +190,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
     - The mouse cannot go past the panel (the cursor clip to the work area, Finding 12), so you cannot pan to what is behind it.
     - What you want: the desktop stays at 100%, the panel sits on top of it, and moving the mouse under the panel pans the magnified view there ("a fake pan underneath it").
 
-    This is PRODUCT.md v1 Must 2 ("Docked mode, overlay style") and roadmap Phase 3: the 3.1 prototype, then the 3.2 ADR (docked overlay design, superseding the AppBar part of ADR 0002), then 3.3 to 3.5. Use these points as input to the 3.2 ADR. The 3.1 prototype did all four points on your machine (docs/prototypes/docked-overlay.md). Since 3.4 all four edges are overlay-docked and you verified the four points by hand; the unused AppBar code goes with 3.5.
+    This is PRODUCT.md v1 Must 2 ("Docked mode, overlay style") and roadmap Phase 3: the 3.1 prototype, then the 3.2 ADR (docked overlay design, superseding the AppBar part of ADR 0002), then 3.3 to 3.5. Use these points as input to the 3.2 ADR. The 3.1 prototype did all four points on your machine (docs/prototypes/docked-overlay.md). Since 3.4 all four edges are overlay-docked and you verified the four points by hand. Resolved by 3.5 (PR #36): the AppBar code and the cursor clip are removed.
 12. **Mouse cannot reach the taskbar. Resolved by 3.4 (PR #35):** no docked edge clips the cursor any more, and you reported taskbar clicks under a bottom panel working. The original finding: you reported it while testing 1.1: "like an invisible wall". You remember it appearing before 1.1, and 1.1 did not touch the cursor clip logic, so it is not from that work. Cause not found. Which mode it happens in was not recorded. A candidate from the code, unconfirmed: while docked, `update_clip_cursor` clips the cursor to `SPI_GETWORKAREA` every tick (cv-render/src/lib.rs), and the work area excludes the taskbar. Not on the roadmap yet; it overlaps Finding 11 and roadmap 3.5 (remove ClipCursor). You decide where it goes. Update from testing 1.4: you confirmed it happens in docked mode, which matches the candidate above (the cursor clip to the work area). Fullscreen is not affected. It goes with roadmap 3.5 (remove AppBar docking and ClipCursor); no separate item. The 3.1 prototype, without `ClipCursor`, let the mouse reach the taskbar under a bottom panel (you checked it), which confirms the cause.
 13. **Taskbar disappears in fullscreen with a game open. Not a bug, ignored by your decision.** Reported while testing 1.4. You said it only happens in fullscreen when something like a game is open, and to ignore it. Not investigated. The earlier candidates (shell hiding the taskbar behind a topmost fullscreen overlay, or the taskbar being out of view at high zoom) were never confirmed.
 14. **Image is blurry at high zoom. Partly addressed by 1.5.** You reported it while testing 1.4: "quite blurry but not terrible", wants smoothing or sharpening. 1.5 added the Sharp mode (ADR 0006). Testing it, you found it "definitely sharpens it", but most text is anti-aliased, so Sharp only makes the soft edge pixels sharper. Edge smoothing is roadmap 1.9 (cleanEdge), after tester feedback (1.8); if cleanEdge fails on anti-aliased text, a multi-pass Super-xBR pipeline needs its own ADR after ADR 0004. You kept 1.9 in its place after 1.8 and chose Bicubic as the default. Testing 1.9 (PR #23, approved as built, needs more work): cleanEdge does not lag but "just makes things rounder" and is not as clean as ZoomText; on anti-aliased text it rounds the grey edge pixels instead of using them. Notes on ZoomText xFont, redrawn text and the next filters to try (contour sharpening first, as toggleable enhancements) are in docs/later/text-smoothing.md; they need an ADR before code.
@@ -224,7 +229,7 @@ Mark each: works, broken, or not tested.
 
 - [x] Ctrl+Alt+Shift+Z toggles on and off (confirmed in fullscreen and docked while approving old 2.1; each docked edge not itemised)
 - [x] Docked: work area unchanged on enable, disable and exit (no AppBar on any edge since 3.4; toggle off and close while docked reported working in 3.4, not itemised)
-- [ ] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9; covered by 1.1, reported working, not itemised)
+- [x] After exiting the app while magnifying fullscreen: system cursor is visible, cursor is not clipped (Finding 9; covered by 1.1 and again by 3.5's exit checks, reported working, not itemised)
 - [x] After killing the process in Task Manager, fullscreen and docked: nothing left behind (reported working with 1.1, not itemised)
 - [x] Mouse reaches the taskbar in each mode (Finding 12; docked fixed by 3.4, taskbar clicks under a bottom panel reported working; fullscreen was never affected)
 - [x] Zoom slider, follow speed slider and all four colour filters (confirmed by you while approving old 2.1)

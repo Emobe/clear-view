@@ -3,21 +3,18 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.5 Remove AppBar docking and ClipCursor (ADR 0007).
-ADR: docs/adr/0007-docked-overlay.md, Accepted. Run `/step 3.5`.
+Item: 3.6 Tester build 2 with docked mode, tag v0.2.0 (ADR 0007).
+ADR: none needed. Run `/step 3.6`.
 
-Notes for 3.5 (from ADR 0007 "Removed in 3.5" and 3.4; if you change the ADR, the ADR wins):
-- 3.4 (PR #35) put every docked edge on the overlay. Nothing registers an AppBar any more; `appbar_active` is never set true. `appbar::register`, `ABM_NEW` and `WinHost::callback_msg` carry `#[allow(dead_code)] // removed in 3.5`.
-- Remove: cv-platform-win/src/appbar.rs (and `mod appbar` in lib.rs), `appbar::notify_moved` in `move_window`, `WinHost::appbar_active`, `unregister_appbar`, `reposition_appbar`, `callback_msg`, the `CALLBACK_MSG` and `APPBAR_POS_CHANGED` thread-locals, `RegisterWindowMessageW`, the callback branch in `wnd_proc`, the AppBar part of `teardown`, `update_clip_cursor`, `WinHost::update_clip` and its call in the loop, and `Magnifier::resized` if nothing else calls it. Drop `windows` features that only these used (check `Win32_UI_Shell` is not used elsewhere).
-- Shutdown: `OverlayHandle::shutdown` and `teardown` call `update_clip_cursor(false)`. Decide in the plan whether a single `ClipCursor(None)` stays on exit as cheap insurance (PRODUCT principle 2) or goes with the rest; nothing sets a clip any more.
-- No setting is removed: `display_mode` and `panel_size` stay.
-- CLAUDE.md still describes AppBar docking (Key design decisions "Docked panel", the render thread's `ABN_POSCHANGED` note, and cv-platform-win's appbar.rs in Crate structure). Update it in 3.5.
+Notes for 3.6:
+- The agent's part, like 1.7 (PR #22): plain `cargo build --release` with no `RUSTFLAGS` gives `target\release\clear-view.exe` (static CRT from `.cargo/config.toml`); update TESTER.md; tag v0.2.0. v0.1.0 is an annotated tag ("Tester build 1 (roadmap 1.7)") on bb81f33; tag the merged commit the same way only after you approve, and ask before pushing the tag.
+- TESTER.md line 29 still says "use Fullscreen. The docked modes … are old and being replaced; in them the mouse cannot reach the taskbar." That is wrong since 3.4/3.5: docking is an overlay on any edge, the desktop is not resized, the mouse moves under the panel (which shows that area magnified, cursor hidden inside it), panel size 10–90%.
+- Your part (ADR 0007): before handing the build over, run it on the tester's machine and read the `[system] Windows … build …` and `[system] output N …: multiplane overlay support …` lines. If the build is older than 26100.2314 with MPO true, or the panel causes extra frames, present-only-on-change becomes a sub-item before 3.6 is done. The step should ask you for those values and record them.
+- Feedback goes into docs/FEEDBACK.md (does not exist yet; 1.8 creates it too).
 - Model: Sonnet high (CLAUDE.md model guide for /step).
 
-Then: 3.6 tester build 2 with docked mode, tag v0.2.0; before handing it over you read the build and MPO lines (`[system] …` at startup) on the tester's machine.
-
 What comes next:
-- 3.5 finishes ADR 0007.
+- 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
