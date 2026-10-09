@@ -35,8 +35,8 @@ impl ClearViewApp {
 }
 
 impl eframe::App for ClearViewApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("clear-view");
             ui.separator();
 
