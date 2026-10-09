@@ -54,8 +54,8 @@ impl Magnifier {
         }
     }
 
-    /// One tick: drain the core events, pick the target (the tracking policy in fullscreen, the
-    /// pointer when docked), apply any layout change through `host`, then draw.
+    /// One tick: drain the core events, pick the target (pointer or caret, by the tracking
+    /// policy), apply any layout change through `host`, then draw.
     pub fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
         self.view.tick(host, now);
     }
@@ -117,8 +117,9 @@ struct View<R> {
     pointer: ScreenPoint,
     /// This view's core event subscription, drained every tick (ADR 0008).
     events: Receiver<CoreEvent>,
-    /// The tracking policy (roadmap 4.5). Runs only while enabled in fullscreen; reset
-    /// otherwise, so the view starts on the pointer when it comes back.
+    /// The tracking policy (roadmap 4.5). Runs while enabled, in fullscreen and docked, and
+    /// keeps its state across a mode switch; reset while disabled, so the view starts on the
+    /// pointer when it comes back.
     tracker: Tracker,
     /// The virtual-screen point the view eases toward: the pointer, or the caret.
     target: (f32, f32),
@@ -236,24 +237,23 @@ impl<R: Renderer> View<R> {
         }
     }
 
-    /// The point the view eases toward this tick. Fullscreen runs the tracking policy over the
-    /// pointer and `events` (roadmap 4.6). Docked follows the pointer and drops the events until
-    /// 4.7 wires the policy in there.
+    /// The point the view eases toward this tick: the tracking policy over the pointer and
+    /// `events`, in both modes (roadmap 4.6, 4.7). The view is the window divided by the zoom,
+    /// the same size `draw` crops, so a docked panel keeps the caret inside its own middle area.
     fn track(&mut self, state: &AppState, now: Instant, events: Vec<CoreEvent>) -> (f32, f32) {
-        match state.display_mode {
-            DisplayMode::Fullscreen => {
-                // The window covers the active monitor; the view is that divided by the zoom.
-                let view = (
-                    self.active.width as f32 / state.zoom,
-                    self.active.height as f32 / state.zoom,
-                );
-                self.tracker.update(now, self.pointer, events, view)
-            }
-            DisplayMode::Docked(_) => {
-                self.tracker = Tracker::new();
-                (self.pointer.x as f32, self.pointer.y as f32)
-            }
-        }
+        let (win_w, win_h) = self.window_size(state);
+        let view = (win_w as f32 / state.zoom, win_h as f32 / state.zoom);
+        self.tracker.update(now, self.pointer, events, view)
+    }
+
+    /// The window size the view is drawn into: the active monitor, or the docked panel on it.
+    fn window_size(&self, state: &AppState) -> (u32, u32) {
+        window_dims(
+            state.display_mode,
+            state.panel_size,
+            self.active.width as i32,
+            self.active.height as i32,
+        )
     }
 
     /// Switches the active monitor to the one under the target, if that changed. A target off
@@ -303,12 +303,7 @@ impl<R: Renderer> View<R> {
         let cx = geometry::to_monitor_local(self.smooth_x, self.active.left);
         let cy = geometry::to_monitor_local(self.smooth_y, self.active.top);
 
-        let (win_w, win_h) = window_dims(
-            state.display_mode,
-            state.panel_size,
-            self.active.width as i32,
-            self.active.height as i32,
-        );
+        let (win_w, win_h) = self.window_size(state);
         let (fw, fh) = self.renderer.frame_size();
         let crop = geometry::compute_crop(cx, cy, win_w, win_h, state.zoom, fw as f32, fh as f32);
 
@@ -1098,22 +1093,102 @@ mod tests {
         assert_eq!(rig.smooth(), (900.0, 540.0));
     }
 
-    #[test]
-    fn docked_ignores_carets_but_drains_them() {
+    /// Docked on the top edge at 25% and 10x (a 1920x270 panel, a 192x27 view), snapping to the
+    /// target, the pointer resting at (960, 540) below the panel.
+    fn docked_at_10x() -> Rig {
         let mut rig = Rig::new();
         rig.docked_top();
-        rig.set(|s| s.smooth_speed = 1.0);
+        rig.set(|s| {
+            s.smooth_speed = 1.0;
+            s.zoom = 10.0;
+        });
         rig.step();
+        rig
+    }
 
+    #[test]
+    fn docked_follows_a_caret_and_the_pointer_takes_it_back() {
+        let mut rig = docked_at_10x();
+        rig.caret_at(1500, 300);
+        let (layouts, gpu) = rig.step();
+        assert!(rig.events_drained());
+        assert!(layouts.is_empty());
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+        assert_eq!(Rig::cursor_written(&gpu), Some((CURSOR_HIDDEN, CURSOR_HIDDEN)));
+
+        rig.point_at(970, 540); // a bump keeps the caret
+        rig.step();
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+        rig.point_at(990, 540);
+        rig.step();
+        assert_eq!(rig.smooth(), (990.0, 540.0));
+    }
+
+    #[test]
+    fn the_docked_view_keeps_the_caret_inside_the_panel_not_the_monitor() {
+        // 15 px down is inside the middle of a 108 px fullscreen view at 10x, but past the
+        // middle of the 27 px docked one.
+        let mut full = fullscreen_at_10x();
+        full.caret_at(1500, 300);
+        full.step();
+        full.caret_at(1500, 315);
+        full.step();
+        assert_eq!(full.smooth(), (1500.0, 300.0));
+
+        let mut docked = docked_at_10x();
+        docked.caret_at(1500, 300);
+        docked.step();
+        docked.caret_at(1500, 315);
+        docked.step();
+        assert_eq!(docked.smooth(), (1500.0, 315.0));
+    }
+
+    #[test]
+    fn a_docked_caret_on_the_other_monitor_moves_capture_but_not_the_panel() {
+        let mut rig = docked_at_10x();
+        rig.caret_at(2500, 500);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert!(layouts.is_empty());
+        assert_eq!(gpu.first(), Some(&Gpu::Recreate(1280, 1024)));
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+        assert_eq!(rig.smooth(), (2500.0, 500.0));
+    }
+
+    #[test]
+    fn docked_cursor_hiding_follows_the_pointer_while_the_view_is_on_the_caret() {
+        let mut rig = docked_at_10x();
+        rig.host.cursor.clear();
+        rig.point_at(100, 100); // inside the panel
+        assert_eq!(rig.cursor_step(), [false]);
+        // Still for longer than the quiet time, so a caret can take the view.
+        for _ in 0..20 {
+            rig.caret_at(1500, 700);
+            assert!(rig.cursor_step().is_empty());
+        }
+        assert_eq!(rig.view.tracker.following(), cv_core::Following::Caret);
+        assert_eq!(rig.smooth(), (1500.0, 700.0));
+        assert!(rig.cursor_step().is_empty()); // still inside: still hidden
+
+        rig.point_at(100, 300); // out of the panel, and past the return threshold
+        assert_eq!(rig.cursor_step(), [true]);
+        assert_eq!(rig.smooth(), (100.0, 300.0));
+    }
+
+    #[test]
+    fn switching_modes_keeps_the_view_on_the_caret() {
+        let mut rig = fullscreen_at_10x();
         rig.caret_at(1500, 300);
         rig.step();
-        assert!(rig.events_drained());
-        assert_eq!(rig.smooth(), (960.0, 540.0));
 
-        // The caret seen while docked is not replayed after switching to fullscreen.
+        rig.set(|s| s.display_mode = DisplayMode::Docked(Edge::Top));
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]); // the default 50%
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+
         rig.set(|s| s.display_mode = DisplayMode::Fullscreen);
         rig.step();
-        assert_eq!(rig.smooth(), (960.0, 540.0));
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
     }
 
     #[test]
