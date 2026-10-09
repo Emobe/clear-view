@@ -62,6 +62,11 @@ pub enum DisplayMode {
     Docked(Edge),
 }
 
+pub const ZOOM_MIN: f32 = 1.0;
+pub const ZOOM_MAX: f32 = 10.0;
+/// Hotkey zoom step. Placeholder until roadmap 1.4 decides the real step.
+pub const ZOOM_STEP: f32 = 0.5;
+
 /// Persisted to settings.json except `enabled`, which always starts false.
 /// `#[serde(default)]` lets a file written by an older version load: missing fields take defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,7 +75,7 @@ pub struct AppState {
     /// Not persisted: the magnifier always starts off.
     #[serde(skip)]
     pub enabled: bool,
-    /// Magnification factor (1.0–10.0).
+    /// Magnification factor (`ZOOM_MIN`–`ZOOM_MAX`).
     pub zoom: f32,
     /// Lerp speed per logical 60 Hz tick (0.01–1.0).
     pub smooth_speed: f32,
@@ -114,11 +119,18 @@ impl AppState {
         let d = Self::default();
         if !self.zoom.is_finite() { self.zoom = d.zoom; }
         if !self.smooth_speed.is_finite() { self.smooth_speed = d.smooth_speed; }
-        self.zoom = self.zoom.clamp(1.0, 10.0);
+        self.zoom = self.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
         self.smooth_speed = self.smooth_speed.clamp(0.01, 1.0);
         self.panel_size = self.panel_size.clamp(1, 100);
         self.tts_volume = self.tts_volume.min(100);
         self.tts_rate = self.tts_rate.clamp(-10, 10);
+    }
+
+    /// Moves zoom one `ZOOM_STEP` in (`direction` > 0) or out (< 0), clamped to the zoom range
+    /// and rounded to the slider's 0.1 grid so repeated presses do not drift.
+    pub fn step_zoom(&mut self, direction: i32) {
+        let z = self.zoom + ZOOM_STEP * direction.signum() as f32;
+        self.zoom = ((z * 10.0).round() / 10.0).clamp(ZOOM_MIN, ZOOM_MAX);
     }
 }
 
@@ -253,6 +265,50 @@ mod tests {
         s.sanitize();
         assert_eq!(s.panel_size, 100);
         assert_eq!(s.zoom, 1.0);
+    }
+
+    #[test]
+    fn step_zoom_moves_one_step() {
+        let mut s = AppState { zoom: 2.0, ..AppState::default() };
+        s.step_zoom(1);
+        assert_eq!(s.zoom, 2.0 + ZOOM_STEP);
+        s.step_zoom(-1);
+        assert_eq!(s.zoom, 2.0);
+    }
+
+    #[test]
+    fn step_zoom_clamps_at_both_ends() {
+        let mut s = AppState { zoom: ZOOM_MAX - 0.1, ..AppState::default() };
+        s.step_zoom(1);
+        assert_eq!(s.zoom, ZOOM_MAX);
+        s.step_zoom(1);
+        assert_eq!(s.zoom, ZOOM_MAX);
+
+        s.zoom = ZOOM_MIN + 0.1;
+        s.step_zoom(-1);
+        assert_eq!(s.zoom, ZOOM_MIN);
+        s.step_zoom(-1);
+        assert_eq!(s.zoom, ZOOM_MIN);
+    }
+
+    #[test]
+    fn step_zoom_stays_on_the_slider_grid() {
+        // An off-grid value (hand-edited file) is snapped to 0.1 by the first step.
+        let mut s = AppState { zoom: 2.04, ..AppState::default() };
+        s.step_zoom(1);
+        assert_eq!(s.zoom, 2.5);
+        for _ in 0..40 {
+            s.step_zoom(1);
+            s.step_zoom(-1);
+        }
+        assert_eq!(s.zoom, 2.5);
+    }
+
+    #[test]
+    fn step_zoom_zero_direction_does_not_move() {
+        let mut s = AppState { zoom: 3.0, ..AppState::default() };
+        s.step_zoom(0);
+        assert_eq!(s.zoom, 3.0);
     }
 
     #[test]
