@@ -75,10 +75,10 @@ Goal: something your mum can use for real in fullscreen mode, so feedback starts
 
 3.1 Prototype on a throwaway branch, not merged: a topmost, click-through window excluded from capture (WDA_EXCLUDEFROMCAPTURE) over a live DXGI capture, without AppBar or ClipCursor. The current overlay already sets these styles (ADR 0002), so start from it. Measure whether the overlay's own updates cause extra frames (a known issue on Windows 11 24H2), whether the mouse passes through, and the cost. Write results to docs/prototypes/docked-overlay.md.
 3.2 (ADR first) Docked overlay design from the prototype, superseding the AppBar docking part of ADR 0002: window styles, capture exclusion, handling extra frames, what the panel shows when the mouse is under it, panel size limits.
-3.3 Overlay docked mode on the primary monitor, top edge only.
-3.4 All four edges and the panel size setting.
-3.5 Remove AppBar docking and ClipCursor (appbar.rs, `update_clip_cursor`) and their settings.
-3.6 Tester build 2 with docked mode, tag v0.2.0. (you) Feedback into docs/FEEDBACK.md.
+3.3 Overlay docked mode on the primary monitor, top edge only (pending ADR 0007): `SetWindowPos` to `geometry::docked_rect`, no AppBar or ClipCursor for that edge; system cursor hidden while the pointer is inside the panel (`OverlayHost::set_system_cursor`); startup log of the Windows build and MPO support per output. Verify includes whether clicking the taskbar covers the panel.
+3.4 All four edges and the panel size setting, limited to 10–90% (pending ADR 0007).
+3.5 Remove AppBar docking and ClipCursor (appbar.rs, `update_clip_cursor`, `reposition_appbar`, the `ABN_POSCHANGED` path) (pending ADR 0007). `display_mode` and `panel_size` stay.
+3.6 Tester build 2 with docked mode, tag v0.2.0. (you) Before handing it over, read the Windows build and MPO lines on the tester's machine (ADR 0007). Feedback into docs/FEEDBACK.md.
 
 ## Phase 4: Caret tracking (M3)
 

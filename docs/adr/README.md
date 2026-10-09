@@ -39,3 +39,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0004 Platform seams and core boundaries (Accepted; rewritten in place for v1 by roadmap 2.1)
 - 0005 Hotkey scheme (Accepted)
 - 0006 Upscaling filter for readable text at 10x to 20x (Accepted)
+- 0007 Docked overlay (Proposed; supersedes the AppBar docking part of 0002)
