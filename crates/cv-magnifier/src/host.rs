@@ -20,9 +20,16 @@ pub trait OverlayHost: PointerSource {
     /// work-area reservation. Returns the client size in physical pixels, or (0, 0) for
     /// `Layout::Hidden`.
     ///
+    /// Leaves the system cursor hidden for `Layout::Fullscreen` and shown for every other
+    /// layout, whatever `set_system_cursor` asked for before.
+    ///
     /// May send window messages synchronously, so the backend must not call into the
     /// magnifier from inside it.
     fn apply_layout(&mut self, layout: &Layout) -> (u32, u32);
+
+    /// Shows or hides the system cursor while docked (ADR 0007: hidden while the pointer is
+    /// inside the panel). The magnifier calls it only when the answer changes.
+    fn set_system_cursor(&mut self, visible: bool);
 
     /// Handles for the wgpu surface. Valid until the host is dropped.
     fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle);

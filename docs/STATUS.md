@@ -39,6 +39,8 @@ Current roadmap:
 - 2.6 wgpu 22 to 30, naga with it (ADR 0004, branch step/2.6-wgpu-30, PR #30)
 - 2.7 eframe and egui 0.29 to 0.36.2 (ADR 0004, branch step/2.7-eframe, PR #31)
 - 3.1 Docked overlay prototype (code on branch step/3.1-overlay-prototype, never merged; results in docs/prototypes/docked-overlay.md, branch step/3.1-docked-overlay-results, PR #32)
+- 3.2 Docked overlay ADR (ADR 0007, branch step/3.2-docked-overlay-adr, PR #33)
+- 3.3 Overlay docked mode, top edge (ADR 0007, branch step/3.3-docked-overlay-top, PR #34)
 
 ## Works (a command proved it, or you verified it)
 
@@ -103,16 +105,22 @@ Current roadmap:
     - Clicks pass through.
     - In a second session you reported that all of these work; individual items were not itemised: right-click, scroll and drag under the panel; the panel never takes focus; the taskbar is reachable under a bottom panel; maximised windows keep their full size; Win+Shift+S doesn't capture the panel; exit leaves nothing behind.
   - Your verdict: "overlay is the way forward."
+- Docked overlay decided (3.2, accepted by you 2026-10-09, PR #33): ADR 0007 is Accepted. Choices: the current overlay window placed with `SetWindowPos` (`DxgiFromHwnd`, styles unchanged), no mitigation for extra frames beyond a startup log, the system cursor hidden while the pointer is inside the panel, and panel size limited to 10–90%. It supersedes the AppBar docking part of ADR 0002.
+- Overlay docked mode, top edge (3.3, approved by you 2026-10-09, PR #34):
+  - Docked Top is placed with `SetWindowPos` to `geometry::docked_rect` (cv-core, monitor origin included, clamped to the monitor). No AppBar and no `ClipCursor` on that edge, so the work area is unchanged and the mouse moves under the panel. Left, Bottom and Right still use AppBar docking (3.4 moves them).
+  - `OverlayHost::set_system_cursor(visible)`: while docked, the magnifier hides the system cursor when the raw pointer is inside the applied panel rect (`ScreenRect::contains`) and shows it when the pointer leaves, calling only on change; every layout change resets it. `WinHost` implements it with `MagShowSystemCursor`. 6 fake-host tests.
+  - `log_system_info()` at startup prints `[system] Windows <DisplayVersion> build <CurrentBuildNumber>.<UBR>` (registry; `GetVersionExW` reports 6.2 without a manifest) and one `[system] output N <device>: multiplane overlay support <bool>` line per output on the primary adapter.
+  - You ran the step's whole Verify list and reported that all of it works; individual items were not itemised. That list included whether clicking the taskbar through a 100% top panel draws the taskbar over the panel; no `HWND_TOPMOST` re-assert was added, and the result is not recorded separately. The build and MPO values printed on your machine were not recorded.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 83 tests and 1 ignored (2.7).
-  - cv-core 38: 17 in `geometry::tests`, 21 in `tests` for serde round-trips, `sanitize`, `step_zoom` and `apply`.
+- `cargo test --workspace`: passes, 95 tests and 1 ignored (3.3).
+  - cv-core 44: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
-  - cv-magnifier 35: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 21 in `magnifier::tests` for the tick with a fake host and renderer, plus the ignored GPU bench `bench_modes_4k`.
+  - cv-magnifier 41: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 27 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor), plus the ignored GPU bench `bench_modes_4k`.
   - cv-platform-win and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 
@@ -128,8 +136,8 @@ Magnifier (read from code, file paths given)
 - DXGI capture details on a real device: `DXGI_ERROR_WAIT_TIMEOUT` retry, and reconnect after errors other than a lock or UAC prompt (mode change, device removed, remote session) (crates/cv-platform-win/src/capture.rs, loop in crates/cv-magnifier/src/capture.rs). The loop's logic is unit-tested with a fake source (2.4, 2.5a). Capture itself, output switching and recovery after a lock (2.5a) are seen working.
 - Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-magnifier/src/magnifier.rs (unit-tested with a fake renderer in 2.5, not measured on a GPU). The four colour filters and the four interpolation modes are seen working.
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (cv-platform-win/src/overlay.rs)
-- `ClipCursor` to the work area every tick while docked (overlay.rs `update_clip_cursor`)
-- AppBar details on each of the four edges, and unregister on toggle-off (cv-platform-win/src/appbar.rs, overlay.rs). Docking in general is seen working; which edges you tried is not recorded.
+- `ClipCursor` to the work area every tick while docked on Left, Bottom or Right (overlay.rs `update_clip_cursor`; the top edge has no clip since 3.3)
+- AppBar details on the Left, Bottom and Right edges (the top edge is overlay-docked since 3.3), and unregister on toggle-off (cv-platform-win/src/appbar.rs, overlay.rs). Docking in general is seen working; which edges you tried is not recorded.
 - egui panel controls not yet verified: display mode and panel size beyond what docking showed: crates/app/src/app.rs. Zoom, follow speed and colour filter are seen working.
 
 Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.

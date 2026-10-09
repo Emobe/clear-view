@@ -30,6 +30,8 @@ impl Drop for OverlayGuard {
 fn main() -> eframe::Result {
     // Before any window or thread: everything below works in physical pixels.
     platform::set_dpi_awareness();
+    // Windows build and multiplane overlay support, for the docked overlay (ADR 0007).
+    platform::log_system_info();
 
     // Load before any thread starts so the TTS thread's initial volume and rate come from the file.
     let shared = cv_core::shared_from(settings::load());

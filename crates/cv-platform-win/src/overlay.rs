@@ -33,7 +33,9 @@ use windows::{
     core::{BOOL, PCWSTR, w},
 };
 
-use cv_core::{FrameState, OutputInfo, PointerSource, ScreenPoint, SharedState};
+use cv_core::{
+    Edge, FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState, geometry,
+};
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 
@@ -191,12 +193,15 @@ impl WinHost {
         Some(rect_dims(rect))
     }
 
-    /// Runs every tick: while docked the cursor is clipped to the work area, in fullscreen the
-    /// clip is released. Nothing while hidden.
+    /// Runs every tick: while docked on an AppBar edge the cursor is clipped to the work area;
+    /// in fullscreen and on the overlay top edge the clip is released, so the mouse can go
+    /// under the panel (ADR 0007). Nothing while hidden.
     fn update_clip(&self) {
         match self.applied {
             Layout::Hidden => {}
-            Layout::Fullscreen { .. } => update_clip_cursor(false),
+            Layout::Fullscreen { .. } | Layout::Docked { edge: Edge::Top, .. } => {
+                update_clip_cursor(false)
+            }
             Layout::Docked { .. } => update_clip_cursor(true),
         }
     }
@@ -230,6 +235,15 @@ impl OverlayHost for WinHost {
                 move_window(self.hwnd, rect);
                 rect_dims(rect)
             }
+            // Overlay docking (ADR 0007): the panel sits on top of the desktop at the monitor
+            // edge. No AppBar, so the work area is not changed. Top edge only until 3.4.
+            Layout::Docked { monitor, edge: Edge::Top, thickness } => {
+                self.unregister_appbar();
+                let rect = to_rect(geometry::docked_rect(monitor, Edge::Top, *thickness));
+                move_window(self.hwnd, rect);
+                rect_dims(rect)
+            }
+            // AppBar docking on the other edges until 3.4 moves them to the overlay.
             Layout::Docked { monitor, edge, thickness } => {
                 let (sw, sh) = (monitor.width as i32, monitor.height as i32);
                 let same_edge =
@@ -260,13 +274,19 @@ impl OverlayHost for WinHost {
                 let _ = ShowWindow(self.hwnd, SW_SHOW);
             }
         }
-        // The magnifier draws its own cursor only in fullscreen. No reference count, so a
-        // repeated call is harmless.
+        // Hidden in fullscreen, shown otherwise; while docked the magnifier then hides it inside
+        // the panel through `set_system_cursor`. No reference count, so a repeated call is
+        // harmless.
         let show_cursor = !matches!(layout, Layout::Fullscreen { .. });
         let _ = unsafe { MagShowSystemCursor(show_cursor) };
 
         self.applied = layout.clone();
         size
+    }
+
+    fn set_system_cursor(&mut self, visible: bool) {
+        // Best-effort, like every other `MagShowSystemCursor` call: teardown shows it again.
+        let _ = unsafe { MagShowSystemCursor(visible) };
     }
 
     fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
@@ -416,6 +436,15 @@ unsafe extern "system" fn wnd_proc(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn to_rect(r: ScreenRect) -> RECT {
+    RECT {
+        left: r.left,
+        top: r.top,
+        right: r.left + r.width as i32,
+        bottom: r.top + r.height as i32,
+    }
+}
 
 fn rect_dims(r: RECT) -> (u32, u32) {
     (
