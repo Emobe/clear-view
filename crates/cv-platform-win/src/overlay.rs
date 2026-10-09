@@ -5,6 +5,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
+        mpsc::Receiver,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -32,7 +33,8 @@ use windows::{
 };
 
 use cv_core::{
-    FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState, geometry,
+    CoreEvent, FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState,
+    geometry,
 };
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -81,16 +83,19 @@ impl OverlayHandle {
 /// Starts the render thread: it creates the overlay window and runs its message loop.
 /// It also installs a console handler so Ctrl+C and closing the console window restore the
 /// machine before the process ends.
+///
+/// `events` is the render thread's core event subscription; each tick drains it (ADR 0008).
 pub fn spawn_overlay(
     frame_state: FrameState,
     app_state: SharedState,
     outputs: Vec<OutputInfo>,
     desired_output: Arc<AtomicU32>,
+    events: Receiver<CoreEvent>,
 ) -> OverlayHandle {
     // Best-effort: with no console attached there is nothing to hook.
     let _ = unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), true) };
     let thread = std::thread::spawn(move || {
-        run_overlay(frame_state, app_state, outputs, desired_output);
+        run_overlay(frame_state, app_state, outputs, desired_output, events);
     });
     OverlayHandle { thread }
 }
@@ -222,6 +227,7 @@ fn run_overlay(
     app_state: SharedState,
     outputs: Vec<OutputInfo>,
     desired_output: Arc<AtomicU32>,
+    events: Receiver<CoreEvent>,
 ) {
     // Use primary monitor (first in list) as the starting monitor.
     let primary = outputs.first().cloned().unwrap_or(OutputInfo {
@@ -273,7 +279,7 @@ fn run_overlay(
     // SAFETY: `magnifier` is declared after `host`, so it (and its wgpu surface) is dropped
     // first; the window is destroyed in `host`'s `Drop`.
     let mut magnifier = unsafe {
-        Magnifier::new(&host, primary, outputs, app_state, frame_state, desired_output)
+        Magnifier::new(&host, primary, outputs, app_state, frame_state, desired_output, events)
     };
 
     // Cursor hiding is best-effort: a failed Mag* call leaves nothing to act on.

@@ -110,12 +110,20 @@ pub fn compute_crop(
     }
 }
 
-/// Cursor position in output-window pixels, accounting for zoom and crop.
-/// `(cx, cy)` must be in the same monitor-local space as the crop.
-pub fn cursor_in_output(cx: f32, cy: f32, crop: &Crop, win_w: u32, win_h: u32) -> (u32, u32) {
-    let x = ((cx - crop.src_x) / crop.src_w * win_w as f32).clamp(0.0, win_w as f32 - 1.0) as u32;
-    let y = ((cy - crop.src_y) / crop.src_h * win_h as f32).clamp(0.0, win_h as f32 - 1.0) as u32;
-    (x, y)
+/// Pointer position in output-window pixels, accounting for zoom and crop, or `None` when the
+/// pointer is outside the crop (not shown in the window). `(px, py)` must be in the same
+/// monitor-local space as the crop.
+pub fn pointer_in_output(
+    px: f32,
+    py: f32,
+    crop: &Crop,
+    win_w: u32,
+    win_h: u32,
+) -> Option<(u32, u32)> {
+    let x = (px - crop.src_x) / crop.src_w * win_w as f32;
+    let y = (py - crop.src_y) / crop.src_h * win_h as f32;
+    let inside = (0.0..win_w as f32).contains(&x) && (0.0..win_h as f32).contains(&y);
+    inside.then_some((x as u32, y as u32))
 }
 
 #[cfg(test)]
@@ -215,30 +223,37 @@ mod tests {
     }
 
     #[test]
-    fn cursor_centre_maps_to_window_centre() {
+    fn pointer_at_the_centre_maps_to_window_centre() {
         let c = compute_crop(960.0, 540.0, 1920, 1080, 2.0, 1920.0, 1080.0);
-        assert_eq!(cursor_in_output(960.0, 540.0, &c, 1920, 1080), (960, 540));
+        assert_eq!(pointer_in_output(960.0, 540.0, &c, 1920, 1080), Some((960, 540)));
     }
 
     #[test]
-    fn cursor_at_clamped_crop_edge_maps_to_window_edge() {
+    fn pointer_off_centre_maps_with_the_zoom() {
+        // Crop 480..1440 x 270..810 at 2x.
+        let c = compute_crop(960.0, 540.0, 1920, 1080, 2.0, 1920.0, 1080.0);
+        assert_eq!(pointer_in_output(1000.0, 500.0, &c, 1920, 1080), Some((1040, 460)));
+    }
+
+    #[test]
+    fn pointer_at_clamped_crop_corners_maps_to_window_corners() {
         let c = compute_crop(0.0, 0.0, 1920, 1080, 2.0, 1920.0, 1080.0);
-        assert_eq!(cursor_in_output(0.0, 0.0, &c, 1920, 1080), (0, 0));
+        assert_eq!(pointer_in_output(0.0, 0.0, &c, 1920, 1080), Some((0, 0)));
+        // Crop 960..1920 x 540..1080: the last monitor pixel is two output pixels in.
         let c = compute_crop(1920.0, 1080.0, 1920, 1080, 2.0, 1920.0, 1080.0);
-        assert_eq!(
-            cursor_in_output(1920.0, 1080.0, &c, 1920, 1080),
-            (1919, 1079)
-        );
+        assert_eq!(pointer_in_output(1919.0, 1079.0, &c, 1920, 1080), Some((1918, 1078)));
     }
 
     #[test]
-    fn cursor_off_crop_is_bounded_to_window() {
+    fn pointer_outside_the_crop_is_not_shown() {
+        // Crop 480..1440 x 270..810.
         let c = compute_crop(960.0, 540.0, 1920, 1080, 2.0, 1920.0, 1080.0);
-        assert_eq!(cursor_in_output(-500.0, -500.0, &c, 1920, 1080), (0, 0));
-        assert_eq!(
-            cursor_in_output(9000.0, 9000.0, &c, 1920, 1080),
-            (1919, 1079)
-        );
+        assert_eq!(pointer_in_output(479.0, 540.0, &c, 1920, 1080), None);
+        assert_eq!(pointer_in_output(1440.0, 540.0, &c, 1920, 1080), None);
+        assert_eq!(pointer_in_output(960.0, 269.0, &c, 1920, 1080), None);
+        assert_eq!(pointer_in_output(960.0, 810.0, &c, 1920, 1080), None);
+        assert_eq!(pointer_in_output(-500.0, -500.0, &c, 1920, 1080), None);
+        assert_eq!(pointer_in_output(480.0, 270.0, &c, 1920, 1080), Some((0, 0)));
     }
 
     #[test]
