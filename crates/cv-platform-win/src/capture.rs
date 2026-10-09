@@ -25,7 +25,8 @@ struct D3dCtx {
 
 pub struct Capturer {
     ctx: D3dCtx,
-    duplication: IDXGIOutputDuplication,
+    /// `None` after `recreate` released a lost duplication and could not make a new one.
+    duplication: Option<IDXGIOutputDuplication>,
     staging: ID3D11Texture2D,
     width: u32,
     height: u32,
@@ -43,16 +44,20 @@ impl Capturer {
         let ctx = create_device()?;
         let (duplication, width, height) = create_duplication(&ctx.device, output_idx)?;
         let staging = create_staging(&ctx.device, width, height)?;
-        Ok(Self { ctx, duplication, staging, width, height, output_idx })
+        Ok(Self { ctx, duplication: Some(duplication), staging, width, height, output_idx })
     }
 
     /// Returns `None` on timeout (no new frame yet), `Err` on device loss.
     fn acquire(&mut self, timeout_ms: u32) -> windows::core::Result<Option<Frame>> {
+        // No duplication: the last rebuild failed, so report it lost and let the loop retry.
+        let Some(duplication) = &self.duplication else {
+            return Err(DXGI_ERROR_ACCESS_LOST.into());
+        };
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
 
-            match self.duplication.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
+            match duplication.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
                 Ok(_) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
                 Err(e) => return Err(e),
@@ -61,7 +66,7 @@ impl Capturer {
             let texture: ID3D11Texture2D = resource.unwrap().cast()?;
             self.ctx.context.CopyResource(&self.staging, &texture);
             let data = read_staging(&self.ctx.context, &self.staging, self.width, self.height)?;
-            self.duplication.ReleaseFrame()?;
+            duplication.ReleaseFrame()?;
 
             Ok(Some(Frame { width: self.width, height: self.height, data }))
         }
@@ -71,7 +76,7 @@ impl Capturer {
     fn duplicate(&mut self, idx: u32) -> windows::core::Result<()> {
         let (duplication, width, height) = create_duplication(&self.ctx.device, idx)?;
         let staging = create_staging(&self.ctx.device, width, height)?;
-        self.duplication = duplication;
+        self.duplication = Some(duplication);
         self.staging = staging;
         self.width = width;
         self.height = height;
@@ -79,7 +84,12 @@ impl Capturer {
         Ok(())
     }
 
+    /// Rebuilds device, duplication and staging for the current output. The old duplication is
+    /// released first: after `DXGI_ERROR_ACCESS_LOST` the docs say to release it before
+    /// creating a new one, and `DuplicateOutput` fails with `E_INVALIDARG` while this process
+    /// still duplicates the output.
     fn recreate(&mut self) -> windows::core::Result<()> {
+        self.duplication = None;
         *self = Self::create(self.output_idx)?;
         Ok(())
     }
