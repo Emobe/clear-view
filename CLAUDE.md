@@ -57,6 +57,8 @@ cargo build --release
 
 When running cargo build, suppress warnings with `RUSTFLAGS="-Awarnings" cargo build` unless specifically debugging a warning. Only show errors.
 
+The tester exe is built with plain `cargo build --release` and no `RUSTFLAGS`: the variable replaces the static C runtime flag in `.cargo/config.toml`. Output is `target\release\clear-view.exe`; TESTER.md goes with it.
+
 Windows only for now. Will not compile on other platforms.
 
 ### Gate before every PR
