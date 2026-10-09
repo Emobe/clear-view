@@ -41,39 +41,13 @@ fn main() -> eframe::Result {
     // Shared signal: render thread writes desired output index; capture thread reads it.
     let desired_output = Arc::new(AtomicU32::new(0));
 
-    // Capture thread: DXGI → CPU Vec<u8> → frame_state
-    {
-        let frame_state    = frame_state.clone();
-        let desired_output = desired_output.clone();
-        std::thread::spawn(move || {
-            let mut capturer = match platform::Capturer::new() {
-                Ok(c) => c,
-                Err(e) => { eprintln!("[capture] init failed: {e}"); return; }
-            };
-            loop {
-                // Switch output if the render thread requested a different monitor.
-                let wanted = desired_output.load(Ordering::Relaxed);
-                if wanted != capturer.output_idx
-                    && let Err(e) = capturer.switch_output(wanted)
-                {
-                    eprintln!("[capture] switch_output({wanted}) failed: {e}");
-                }
-
-                match capturer.next_frame(100) {
-                    Ok(Some(frame)) => {
-                        *frame_state.lock().unwrap() = Some(Arc::new(frame));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        eprintln!("[capture] {e} — reconnecting");
-                        if capturer.reconnect().is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-    }
+    // Capture thread: the backend's source → CPU frames → frame_state. Left running; the
+    // source is created on that thread.
+    let _capture = cv_magnifier::spawn_capture(
+        platform::Capturer::new_for_output,
+        frame_state.clone(),
+        desired_output.clone(),
+    );
 
     // Renderer thread: overlay window, reads frame_state + app state.
     // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the

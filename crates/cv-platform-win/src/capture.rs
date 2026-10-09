@@ -1,4 +1,5 @@
 use cv_core::{Frame, OutputInfo};
+use cv_magnifier::{CaptureError, CaptureSource};
 use windows::{
     core::Interface,
     Win32::Graphics::{
@@ -10,7 +11,8 @@ use windows::{
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
-            IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_WAIT_TIMEOUT,
+            IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
+            DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_WAIT_TIMEOUT,
             DXGI_OUTDUPL_FRAME_INFO,
         },
     },
@@ -27,15 +29,17 @@ pub struct Capturer {
     staging: ID3D11Texture2D,
     width: u32,
     height: u32,
-    pub output_idx: u32,
+    output_idx: u32,
 }
 
 impl Capturer {
-    pub fn new() -> windows::core::Result<Self> {
-        Self::new_for_output(0)
+    /// Creates the D3D11 device and duplicates output `output_idx`. Call it on the thread that
+    /// will use the capturer (the factory passed to `cv_magnifier::spawn_capture`).
+    pub fn new_for_output(output_idx: u32) -> Result<Self, CaptureError> {
+        Self::create(output_idx).map_err(capture_error)
     }
 
-    pub fn new_for_output(output_idx: u32) -> windows::core::Result<Self> {
+    fn create(output_idx: u32) -> windows::core::Result<Self> {
         let ctx = create_device()?;
         let (duplication, width, height) = create_duplication(&ctx.device, output_idx)?;
         let staging = create_staging(&ctx.device, width, height)?;
@@ -43,7 +47,7 @@ impl Capturer {
     }
 
     /// Returns `None` on timeout (no new frame yet), `Err` on device loss.
-    pub fn next_frame(&mut self, timeout_ms: u32) -> windows::core::Result<Option<Frame>> {
+    fn acquire(&mut self, timeout_ms: u32) -> windows::core::Result<Option<Frame>> {
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
@@ -64,7 +68,7 @@ impl Capturer {
     }
 
     /// Switch to capturing a different output (monitor). Recreates duplication + staging.
-    pub fn switch_output(&mut self, idx: u32) -> windows::core::Result<()> {
+    fn duplicate(&mut self, idx: u32) -> windows::core::Result<()> {
         let (duplication, width, height) = create_duplication(&self.ctx.device, idx)?;
         let staging = create_staging(&self.ctx.device, width, height)?;
         self.duplication = duplication;
@@ -75,9 +79,33 @@ impl Capturer {
         Ok(())
     }
 
-    pub fn reconnect(&mut self) -> windows::core::Result<()> {
-        *self = Self::new_for_output(self.output_idx)?;
+    fn recreate(&mut self) -> windows::core::Result<()> {
+        *self = Self::create(self.output_idx)?;
         Ok(())
+    }
+}
+
+impl CaptureSource for Capturer {
+    fn next_frame(&mut self, timeout_ms: u32) -> Result<Option<Frame>, CaptureError> {
+        self.acquire(timeout_ms).map_err(capture_error)
+    }
+
+    fn switch_output(&mut self, idx: u32) -> Result<(), CaptureError> {
+        self.duplicate(idx).map_err(capture_error)
+    }
+
+    /// Rebuilds the device and the duplication whatever the error was.
+    fn reconnect(&mut self) -> Result<(), CaptureError> {
+        self.recreate().map_err(capture_error)
+    }
+}
+
+fn capture_error(e: windows::core::Error) -> CaptureError {
+    let message = e.to_string();
+    match e.code() {
+        DXGI_ERROR_ACCESS_LOST => CaptureError::AccessLost(message),
+        DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET => CaptureError::DeviceLost(message),
+        _ => CaptureError::Other(message),
     }
 }
 

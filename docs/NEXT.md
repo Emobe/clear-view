@@ -3,14 +3,22 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 2.4 Seam traits `PointerSource`, `OverlayHost`, `CaptureSource`; the capture loop moves from main.rs to cv-magnifier behind `CaptureSource`.
-Branch: none yet. Use step/2.4-seam-traits off master.
+Item: 2.5 `Magnifier::tick`: the per-tick logic moves out of `on_timer` behind `OverlayHost` and `Layout`, with fake-host unit tests. Stop and propose sub-items if it is bigger than one step.
+Branch: none yet. Use step/2.5-magnifier-tick off master.
 
-Notes for 2.4:
-- Read ADR 0004 (Traits and who owns which thread; How each item is checked). Behaviour must not change; the Verify list is the ADR's regression list. Names in the ADR sketch may change; the split may not.
-- After 2.3: cv-magnifier (neutral) holds gfx.rs and the shaders and exports `WgpuState` (`unsafe fn new(RawDisplayHandle, RawWindowHandle, ...)`). cv-platform-win holds capture.rs, dpi.rs, hotkey.rs, overlay.rs (the old cv-render lib.rs, 709 lines, unchanged) and appbar.rs, and depends on cv-magnifier. app calls `platform::spawn_overlay` and has no cv-magnifier dependency; add it back when the capture loop moves there.
-- The capture loop is still inline in app/src/main.rs (`platform::Capturer`, `desired_output`, `next_frame(100)`, `reconnect`). `Capturer` methods return `windows::core::Result`; `CaptureSource` needs a neutral `CaptureError` (timeout stays `Ok(None)`). Per the ADR the source is built by a factory closure inside the capture thread, so D3D11 and COM objects never cross threads. `enumerate_outputs` stays in the backend.
-- `PointerSource` goes in cv-core with `ScreenPoint`/`ScreenRect`; `OverlayHost` and `Layout` in cv-magnifier. In 2.4 they are declared and implemented; moving the per-tick logic out of `on_timer` is 2.5, not this step.
+Notes for 2.5:
+- Read ADR 0004 (Traits and who owns which thread; Roadmap 2.5; How each item is checked). Behaviour must not change; the Verify list is the ADR's regression list. Fake-host tests cover: enable and disable, mode change, panel size, monitor switch and uniform-write caching.
+- After 2.4:
+  - cv-core has `ScreenPoint`, `ScreenRect` and `PointerSource`.
+  - cv-magnifier has `CaptureSource`, `CaptureError` and `spawn_capture` (capture.rs, 10 tests), plus `Layout` and `OverlayHost` in host.rs. These two are declared only: nothing implements `OverlayHost` yet.
+  - cv-platform-win has `CursorPointer` (pointer.rs), which `on_timer` reads.
+- The work: `on_timer` (cv-platform-win/src/overlay.rs) still mixes transitions (AppBar register and unregister, `move_window`, `ShowWindow`, `MagShowSystemCursor`), monitor follow, `ClipCursor`, lerp, crop, upload and uniform caching.
+  - The Windows `OverlayHost` gets `apply_layout`, built from the transition block, and `raw_handles`. `Magnifier::tick` gets the rest.
+  - The host's state (`appbar_active`, the applied layout, `callback_msg`) must not be borrowed from `WIN_DATA` while `SetWindowPos` can re-enter `wnd_proc`.
+  - The AppBar `ABN_POSCHANGED` path calls `Magnifier::resized`.
+- `desired_output` is written by the render thread on a monitor switch and read by the capture loop. Keep that contract.
+- Finding 15: a failed pointer read gives (0, 0). Fix it here (keep the last position) only if you approve it as part of 2.5; otherwise leave the behaviour.
+- This is the riskiest Phase 2 item. If the plan does not fit one PR, propose 2.5a, 2.5b and so on instead.
 - `windows` must stay out of every crate but cv-platform-win and cv-tts: `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
 
 What comes next:
