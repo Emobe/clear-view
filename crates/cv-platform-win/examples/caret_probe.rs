@@ -2,12 +2,14 @@
 //!
 //! Once a second, logs the caret rectangle from each source Windows offers for the foreground
 //! window: `GetGUIThreadInfo` (gui), the MSAA caret object (msaa) and UI Automation text patterns
-//! (uia). Rectangles are physical virtual-screen pixels, like every coordinate in the app, so
-//! put the mouse tip on the caret and compare with `pointer`. 4.2 runs it across the app list and
-//! records which sources are right in docs/prototypes/caret-sources.md.
+//! (uia). Rectangles are physical virtual-screen pixels, like every coordinate in the app. Each
+//! source's rectangle is also outlined on screen: red gui, green msaa, blue uia, each a little
+//! further out so overlapping outlines stay visible. 4.2 runs it across the app list and records
+//! which sources are right in docs/prototypes/caret-sources.md.
 //!
 //! Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the
-//! output). Ctrl+C stops it; it changes nothing system-wide, so there is nothing to restore.
+//! output). Ctrl+C stops it and the outlines go with the process; it changes nothing
+//! system-wide, so there is nothing to restore.
 
 fn main() {
     #[cfg(windows)]
@@ -16,6 +18,7 @@ fn main() {
 
 #[cfg(windows)]
 mod probe {
+    use super::outline;
     use std::{
         ffi::c_void,
         mem::size_of,
@@ -82,9 +85,13 @@ mod probe {
                 }
             };
 
+        // The outline window lives on its own thread: a UIA thread must not own windows
+        // (ADR 0003).
+        outline::spawn();
+
         println!(
             "caret probe: one block a second, rects are x,y wxh in physical screen pixels. \
-             Ctrl+C to stop."
+             Outlines: red gui, green msaa, blue uia. Ctrl+C to stop."
         );
         let start = Instant::now();
         loop {
@@ -114,7 +121,7 @@ mod probe {
 
         let t = Instant::now();
         let info = gui_thread_info(tid);
-        let gui = gui_line(&info);
+        let gui = gui_reading(&info);
         print_source("gui", &gui, t);
 
         // The caret object belongs to the window with keyboard focus.
@@ -123,17 +130,35 @@ mod probe {
             _ => fg,
         };
         let t = Instant::now();
-        let msaa = msaa_line(focus);
+        let msaa = msaa_reading(focus);
         print_source("msaa", &msaa, t);
 
         let t = Instant::now();
-        let uia = uia_line(uia);
+        let uia = uia_reading(uia);
         print_source("uia", &uia, t);
+
+        outline::show([gui.rect, msaa.rect, uia.rect]);
     }
 
-    fn print_source(name: &str, line: &str, started: Instant) {
+    /// What one source reported: the log text and the rectangle to outline, if any.
+    struct Reading {
+        text: String,
+        rect: Option<ScreenRect>,
+    }
+
+    impl Reading {
+        fn found(rect: ScreenRect, details: String) -> Self {
+            Self { text: format!("{}  {details}", fmt_rect(rect)), rect: Some(rect) }
+        }
+
+        fn missing(text: impl Into<String>) -> Self {
+            Self { text: text.into(), rect: None }
+        }
+    }
+
+    fn print_source(name: &str, reading: &Reading, started: Instant) {
         let ms = started.elapsed().as_secs_f64() * 1000.0;
-        println!("  {name:<5} {line}   {ms:.1} ms");
+        println!("  {name:<5} {}   {ms:.1} ms", reading.text);
     }
 
     // ── GetGUIThreadInfo ─────────────────────────────────────────────────────────
@@ -149,19 +174,19 @@ mod probe {
 
     /// `rcCaret` is in client coordinates of `hwndCaret`, logical for that window's DPI mode
     /// (Microsoft docs), so the window's DPI and awareness are printed with it.
-    fn gui_line(info: &Result<GUITHREADINFO>) -> String {
+    fn gui_reading(info: &Result<GUITHREADINFO>) -> Reading {
         let info = match info {
             Ok(info) => info,
-            Err(e) => return describe(e),
+            Err(e) => return Reading::missing(describe(e)),
         };
         let hwnd = info.hwndCaret;
         if hwnd.is_invalid() {
-            return "none (no caret window)".into();
+            return Reading::missing("none (no caret window)");
         }
         let rc = info.rcCaret;
         let mut origin = POINT { x: rc.left, y: rc.top };
         if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
-            return format!("error ClientToScreen failed  hwnd {}", hex(hwnd));
+            return Reading::missing(format!("error ClientToScreen failed  hwnd {}", hex(hwnd)));
         }
         let rect = ScreenRect {
             left: origin.x,
@@ -174,25 +199,21 @@ mod probe {
         } else {
             "not blinking"
         };
-        format!(
-            "{}  hwnd {} {}  {}  {}",
-            fmt_rect(rect),
-            hex(hwnd),
-            class_name(hwnd),
-            blinking,
-            dpi_info(hwnd)
+        Reading::found(
+            rect,
+            format!("hwnd {} {}  {}  {}", hex(hwnd), class_name(hwnd), blinking, dpi_info(hwnd)),
         )
     }
 
     // ── MSAA caret object ────────────────────────────────────────────────────────
 
-    fn msaa_line(target: HWND) -> String {
+    fn msaa_reading(target: HWND) -> Reading {
         if target.is_invalid() {
-            return "none (no focus window)".into();
+            return Reading::missing("none (no focus window)");
         }
         let acc = match caret_object(target) {
             Ok(acc) => acc,
-            Err(e) => return format!("{}  hwnd {}", describe(&e), hex(target)),
+            Err(e) => return Reading::missing(format!("{}  hwnd {}", describe(&e), hex(target))),
         };
         let mut child = VARIANT::default();
         // SAFETY: a VT_I4 VARIANT holding CHILDID_SELF; the union field written matches `vt`.
@@ -203,9 +224,10 @@ mod probe {
         }
         let (mut left, mut top, mut width, mut height) = (0, 0, 0, 0);
         match unsafe { acc.accLocation(&mut left, &mut top, &mut width, &mut height, &child) } {
-            Ok(()) if width == 0 && height == 0 => {
-                format!("none (empty location {left},{top})  hwnd {}", hex(target))
-            }
+            Ok(()) if width == 0 && height == 0 => Reading::missing(format!(
+                "none (empty location {left},{top})  hwnd {}",
+                hex(target)
+            )),
             Ok(()) => {
                 let rect = ScreenRect {
                     left,
@@ -213,9 +235,9 @@ mod probe {
                     width: width.max(0) as u32,
                     height: height.max(0) as u32,
                 };
-                format!("{}  hwnd {}", fmt_rect(rect), hex(target))
+                Reading::found(rect, format!("hwnd {}", hex(target)))
             }
-            Err(e) => format!("{}  hwnd {}", describe(&e), hex(target)),
+            Err(e) => Reading::missing(format!("{}  hwnd {}", describe(&e), hex(target))),
         }
     }
 
@@ -233,18 +255,18 @@ mod probe {
 
     // ── UI Automation ────────────────────────────────────────────────────────────
 
-    fn uia_line(uia: Option<&IUIAutomation>) -> String {
+    fn uia_reading(uia: Option<&IUIAutomation>) -> Reading {
         let Some(uia) = uia else {
-            return "none (UI Automation unavailable)".into();
+            return Reading::missing("none (UI Automation unavailable)");
         };
         let element = match unsafe { uia.GetFocusedElement() } {
             Ok(element) => element,
-            Err(e) => return format!("{} (GetFocusedElement)", describe(&e)),
+            Err(e) => return Reading::missing(format!("{} (GetFocusedElement)", describe(&e))),
         };
         let about = element_info(&element);
         let (range, how) = match caret_range(&element) {
             Ok(found) => found,
-            Err(msg) => return format!("{msg}  {about}"),
+            Err(msg) => return Reading::missing(format!("{msg}  {about}")),
         };
         match range_rect(&range) {
             Ok(Some((rect, count, expanded))) => {
@@ -255,10 +277,15 @@ mod probe {
                 if count > 1 {
                     notes.push_str(&format!(" ({count} rects, first shown)"));
                 }
-                format!("{}  {how}{notes}  {about}", fmt_rect(rect))
+                Reading::found(rect, format!("{how}{notes}  {about}"))
             }
-            Ok(None) => format!("none (no rectangle: off-screen or hidden)  {how}  {about}"),
-            Err(e) => format!("{} (GetBoundingRectangles)  {how}  {about}", describe(&e)),
+            Ok(None) => Reading::missing(format!(
+                "none (no rectangle: off-screen or hidden)  {how}  {about}"
+            )),
+            Err(e) => Reading::missing(format!(
+                "{} (GetBoundingRectangles)  {how}  {about}",
+                describe(&e)
+            )),
         }
     }
 
@@ -422,5 +449,184 @@ mod probe {
         let mut buf = [0u16; 256];
         let len = unsafe { GetClassNameW(hwnd, &mut buf) }.max(0) as usize;
         String::from_utf16_lossy(&buf[..len])
+    }
+}
+
+/// On-screen outlines of the latest readings: one click-through, topmost window over the whole
+/// virtual screen, black made transparent with a colour key, never activated. It runs its own
+/// thread and message loop; the probe thread hands it rectangles and posts a redraw.
+#[cfg(windows)]
+mod outline {
+    use std::{
+        ffi::c_void,
+        mem::size_of,
+        sync::{
+            Mutex,
+            atomic::{AtomicIsize, Ordering},
+        },
+        thread,
+    };
+
+    use cv_core::ScreenRect;
+    use windows::{
+        Win32::{
+            Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+            Graphics::Gdi::{
+                BLACK_BRUSH, BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+                FrameRect, GetStockObject, HBRUSH, HGDIOBJ, InvalidateRect, PAINTSTRUCT,
+            },
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetSystemMetrics,
+                HTTRANSPARENT, LWA_COLORKEY, MSG, PostMessageW, RegisterClassExW,
+                SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                SW_SHOWNOACTIVATE, SetLayeredWindowAttributes, ShowWindow, TranslateMessage,
+                WM_APP, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+            },
+        },
+        core::w,
+    };
+
+    /// gui, msaa, uia, in the order `show` takes them. COLORREF is 0x00BBGGRR.
+    const COLOURS: [COLORREF; 3] =
+        [COLORREF(0x0000_00FF), COLORREF(0x0000_FF00), COLORREF(0x00FF_0000)];
+    /// Gap between a rectangle and its outline, larger per source so coinciding rectangles still
+    /// show all three outlines.
+    const GAPS: [i32; 3] = [2, 5, 8];
+    const THICKNESS: i32 = 2;
+    const WM_REDRAW: u32 = WM_APP + 1;
+
+    static RECTS: Mutex<[Option<ScreenRect>; 3]> = Mutex::new([None; 3]);
+    /// The outline window as an integer, so the probe thread can post to it. 0 until created.
+    static WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+    pub fn spawn() {
+        thread::spawn(run);
+    }
+
+    /// Replaces the outlined rectangles (gui, msaa, uia) and asks the window to redraw.
+    pub fn show(rects: [Option<ScreenRect>; 3]) {
+        if let Ok(mut current) = RECTS.lock() {
+            *current = rects;
+        }
+        let raw = WINDOW.load(Ordering::SeqCst);
+        if raw != 0 {
+            let hwnd = HWND(raw as *mut c_void);
+            let _ = unsafe { PostMessageW(Some(hwnd), WM_REDRAW, WPARAM(0), LPARAM(0)) };
+        }
+    }
+
+    fn run() {
+        let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
+            eprintln!("[probe] no module handle; outlines off");
+            return;
+        };
+        let hinstance: HINSTANCE = module.into();
+        let class = w!("clear_view_caret_probe_outline");
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: hinstance,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        unsafe { RegisterClassExW(&wc) };
+
+        let (left, top, width, height) = virtual_screen();
+        let created = unsafe {
+            CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+                    | WS_EX_TOOLWINDOW,
+                class,
+                w!("caret probe outlines"),
+                WS_POPUP,
+                left,
+                top,
+                width,
+                height,
+                None,
+                None,
+                Some(hinstance),
+                None,
+            )
+        };
+        let hwnd = match created {
+            Ok(hwnd) => hwnd,
+            Err(e) => {
+                eprintln!("[probe] outline window failed: {e}; outlines off");
+                return;
+            }
+        };
+        // Black pixels are see-through; everything drawn in colour shows.
+        let _ = unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_COLORKEY) };
+        WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+
+        let mut msg = MSG::default();
+        while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    fn virtual_screen() -> (i32, i32, i32, i32) {
+        unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        }
+    }
+
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_REDRAW => {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                LRESULT(0)
+            }
+            WM_PAINT => {
+                paint(hwnd);
+                LRESULT(0)
+            }
+            WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+            _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+    }
+
+    fn paint(hwnd: HWND) {
+        let rects = RECTS.lock().map(|r| *r).unwrap_or([None; 3]);
+        let (origin_x, origin_y, _, _) = virtual_screen();
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+        // Clear to the colour key, then draw each outline `THICKNESS` frames thick.
+        unsafe { FillRect(hdc, &ps.rcPaint, HBRUSH(GetStockObject(BLACK_BRUSH).0)) };
+        for ((rect, colour), gap) in rects.iter().zip(COLOURS).zip(GAPS) {
+            let Some(r) = rect else {
+                continue;
+            };
+            let brush = unsafe { CreateSolidBrush(colour) };
+            for step in 0..THICKNESS {
+                let pad = gap + step;
+                let frame = RECT {
+                    left: r.left - origin_x - pad,
+                    top: r.top - origin_y - pad,
+                    right: r.left - origin_x + r.width as i32 + pad,
+                    bottom: r.top - origin_y + r.height as i32 + pad,
+                };
+                unsafe { FrameRect(hdc, &frame, brush) };
+            }
+            let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+        }
+        let _ = unsafe { EndPaint(hwnd, &ps) };
     }
 }
