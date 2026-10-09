@@ -9,8 +9,8 @@ use cv_platform_win as platform;
 #[cfg(not(windows))]
 compile_error!("clear-view has a platform backend for Windows only");
 
-/// Stops the render thread when dropped, so a panic in `main` still restores the work area,
-/// system cursor and cursor clip.
+/// Stops the render thread when dropped, so a panic in `main` still shows the system cursor and
+/// removes the overlay window.
 struct OverlayGuard(Option<platform::OverlayHandle>);
 
 impl OverlayGuard {
@@ -114,7 +114,7 @@ fn main() -> eframe::Result {
         Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint, hotkey_failures)))),
     );
 
-    // Before the other threads stop, so the work area, cursor and clip are back first.
+    // Before the other threads stop, so the system cursor is back first.
     overlay.shutdown();
 
     #[cfg(feature = "tts")]

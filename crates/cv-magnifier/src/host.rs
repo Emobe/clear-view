@@ -1,5 +1,5 @@
 //! The overlay window as the magnifier sees it (ADR 0004). The magnifier says what the window
-//! should be; the backend decides how (AppBar, cursor clip and cursor hiding stay inside it).
+//! should be; the backend decides how (window placement and cursor hiding stay inside it).
 
 use cv_core::{Edge, OutputInfo, PointerSource};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -16,8 +16,8 @@ pub enum Layout {
 /// The window the magnifier draws into. The backend owns it, its thread and its loop, and
 /// calls the magnifier on each tick.
 pub trait OverlayHost: PointerSource {
-    /// Makes the window match `layout`: size, position, visibility, system cursor and any
-    /// work-area reservation. Returns the client size in physical pixels, or (0, 0) for
+    /// Makes the window match `layout`: size, position, visibility and system cursor.
+    /// Returns the client size in physical pixels, or (0, 0) for
     /// `Layout::Hidden`.
     ///
     /// Leaves the system cursor hidden for `Layout::Fullscreen` and shown for every other

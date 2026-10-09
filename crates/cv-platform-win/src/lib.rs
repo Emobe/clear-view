@@ -1,10 +1,9 @@
 //! Windows backend (ADR 0004): DXGI capture, the pointer, DPI awareness, global hotkeys, the
-//! startup system log and the overlay window (its thread and loop, overlay and AppBar docking,
-//! cursor clip and hiding, clean exit).
+//! startup system log and the overlay window (its thread and loop, fullscreen and docked
+//! placement, cursor hiding, clean exit).
 //! Empty on other targets, so a `--workspace` build elsewhere still resolves.
 #![cfg(windows)]
 
-mod appbar;
 mod capture;
 mod dpi;
 mod hotkey;

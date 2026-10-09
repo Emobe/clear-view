@@ -63,12 +63,6 @@ impl Magnifier {
     pub fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
         self.view.tick(host, now);
     }
-
-    /// The OS moved or resized the window outside `apply_layout` (the AppBar `ABN_POSCHANGED`
-    /// path today). Must not be called from inside a `tick`.
-    pub fn resized(&mut self, width: u32, height: u32) {
-        self.view.resized(width, height);
-    }
 }
 
 /// What the tick needs from the GPU. `WgpuState` in the app, a recording fake in tests.
@@ -223,10 +217,6 @@ impl<R: Renderer> View<R> {
             host.set_system_cursor(!inside);
             self.cursor_hidden_in_panel = inside;
         }
-    }
-
-    fn resized(&mut self, width: u32, height: u32) {
-        self.renderer.resize(width, height);
     }
 
     /// Switches the active monitor to the one under the pointer, if that changed.
@@ -779,13 +769,6 @@ mod tests {
         rig.step();
         let (_, gpu) = rig.step();
         assert_eq!(gpu, [Gpu::Render, Gpu::Resize(1920, 540)]);
-    }
-
-    #[test]
-    fn resized_reaches_the_renderer() {
-        let mut rig = Rig::new();
-        rig.view.resized(800, 600);
-        assert_eq!(rig.view.renderer.calls, [Gpu::Resize(800, 600)]);
     }
 
     #[test]

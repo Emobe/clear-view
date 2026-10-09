@@ -74,7 +74,7 @@ cargo test --workspace
 ## Crate structure
 
 - `cv-core`: shared types (Frame, AppState, SharedState, DisplayMode, ColorFilter, Interpolation, the hotkey `Action` and `AppState::apply`) and pure view math in `geometry` (crop, zoom, lerp, cursor mapping) with unit tests. Platform-neutral; keep it that way.
-- `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings, and the overlay (overlay.rs: window, render thread and loop, cursor clip and hiding, clean exit; appbar.rs). Starts with `#![cfg(windows)]`.
+- `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings, and the overlay (overlay.rs: window, render thread and loop, fullscreen and docked placement, cursor hiding, clean exit). Starts with `#![cfg(windows)]`.
 - `cv-magnifier`: the platform-neutral magnifier. `Magnifier::tick` (magnifier.rs: pointer follow, layout decisions, lerp, crop, upload and uniform caching, unit-tested with a fake host and renderer); the `OverlayHost`/`Layout` and `CaptureSource` seams and the capture loop; wgpu pipeline (gfx.rs, shader.wgsl, clean_edge.wgsl), which takes raw display and window handles. No `windows` dependency.
 - `cv-tts`: reader thread (SAPI, UIA). Built only with the `tts` feature.
 - `app`: main.rs wiring, egui settings panel, settings persistence. Picks the backend with `#[cfg(windows)] use cv_platform_win as platform;` and has no `windows` dependency.
@@ -87,7 +87,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 
 - **Main thread**: eframe (egui settings panel), always on top. No polling: the panel repaints on input, or when another thread calls `request_repaint()` through `app::RepaintSlot`. Any thread that changes state the panel shows must call it. Each frame the panel clones `AppState` under a read lock and writes back only the fields it changed (app.rs `apply_changes`).
 - **Capture thread**: DXGI Desktop Duplication to D3D11 staging texture to CPU BGRA8, stored in `Arc<Mutex<Option<Arc<Frame>>>>`. Switches monitor when the render thread changes `desired_output`.
-- **Render thread**: owned by cv-platform-win. Creates the overlay window; its message loop runs `Magnifier::tick` on each 16 ms timer, passing `WinHost` (the `OverlayHost`: window placement, AppBar, cursor hiding, cursor clip). `wnd_proc` borrows no state: `ABN_POSCHANGED` sets a flag the loop handles before the next tick, because the magnifier must not be called from inside its own `apply_layout`.
+- **Render thread**: owned by cv-platform-win. Creates the overlay window; its message loop runs `Magnifier::tick` on each 16 ms timer, passing `WinHost` (the `OverlayHost`: window placement and cursor hiding). The loop runs the tick itself on `WM_TIMER`; `wnd_proc` borrows no state, and the magnifier must never be called from inside its own `apply_layout`.
 - **Hotkey thread**: spawned by cv-platform-win. `RegisterHotKey` (Ctrl+Alt+Shift+Z toggle, +Up and +Down zoom; no Win-key combos, the shell owns them) reports each press as an `Action`; app applies it with `AppState::apply` and wakes the panel.
 - **TTS thread**: only with the `tts` feature. Owns all COM, UIA and SAPI state (MTA). See docs/later/tts-plan.md and ADR 0003.
 
@@ -99,8 +99,8 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **Smooth follow**: frame-rate-independent lerp in `cv-core::geometry`, `alpha = 1.0 - (1.0 - smooth_speed).powf(dt * 60.0)`.
 - **Interpolation**: bilinear or bicubic (Catmull-Rom) in the shader. Colour filters (none, inverted, greyscale, greyscale+inverted) are shader-level.
 - **Cursor**: system cursor hidden in fullscreen; a software circle is drawn in the shader at the cursor position in output pixel space. Cursor and frame coordinates must be in the same space before any layout math.
-- **Docked panel**: SHAppBarMessage (ABM_NEW, ABM_QUERYPOS, ABM_SETPOS, ABM_WINDOWPOSCHANGED, ABM_REMOVE) on any of four edges. Work area shifts to fit. AppBar released on toggle off. There is no exit cleanup yet: the AppBar, system cursor and cursor clip are not explicitly restored when the app closes (STATUS Finding 9, roadmap 1.1). Panel size is a percentage of the screen dimension. AppBar docking is to be replaced by overlay docking (Phase 3).
-- **Display modes**: fullscreen or docked (top, bottom, left, right). Switching is immediate. Ctrl+Alt+Shift+Z toggles on and off in all modes and restores the work area when hidden.
+- **Docked panel** (ADR 0007): the same overlay window, placed with `SetWindowPos` to `geometry::docked_rect` on any of four edges, on top of the desktop. No AppBar and no `ClipCursor`: the work area is never changed and the mouse moves under the panel, which shows that area magnified. The system cursor is hidden while the pointer is inside the panel (`OverlayHost::set_system_cursor`). Panel size is 10–90% of the monitor dimension it spans. Exit (window close, Ctrl+C, console close, panic) shows the system cursor again and destroys the window; there is no work area or clip to restore.
+- **Display modes**: fullscreen or docked (top, bottom, left, right). Switching is immediate. Ctrl+Alt+Shift+Z toggles on and off in all modes and shows the system cursor when hidden.
 - **windows crate**: version 0.62. `D3D11CreateDevice` software param is `HMODULE::default()`, not `None`.
 - **Rust 2024 edition**: needs explicit `unsafe {}` blocks inside `unsafe fn` bodies.
 
