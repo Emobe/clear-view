@@ -2,11 +2,18 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: ready
+State: in review
 Item: 4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet.
-ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Accepted by you 2026-10-09 (PR #39). Run `/step 4.4`. It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change. 4.3 goes in the STATUS Done list when you say "I approve".
+Branch: step/4.4-caret-source (PR open). Waiting for you to run the Verify list in the PR and say "I approve"; then 4.4 (and 4.3, also still waiting) go in the STATUS Done list, and this file moves to 4.5.
+ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Accepted by you 2026-10-09 (PR #39). It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change.
 
-Notes for 4.4 (from ADR 0008's recommendation; if you change the ADR, the ADR wins):
+What 4.4 built, for 4.5 and 4.6:
+- cv-core `events`: `CoreEvent::{CaretMoved, CaretLost}`, `CaretSource::{Msaa, Uia, Gui, FocusRect}` (`name()` for logs), `AppId { pid, exe }`, `EventHub` (`subscribe`, `publish`, `subscribers`).
+- cv-platform-win `spawn_caret_source(Arc<EventHub>) -> CaretHandle` (`shutdown`). app creates the hub in main.rs and holds it as `events`; nothing subscribes yet. 4.6 subscribes for the render thread.
+- The focus rectangle is used only when the focused control has a caret but gave no position (a UIA text element without a caret rect, or a caret window with an empty rect). Any other focused control gives no caret (focus tracking is not in v1).
+- `cargo run -p cv-platform-win --example caret_events` prints every event and outlines its rect (yellow = focus rect). The outline code is shared with the probe in examples/common/outline.rs.
+
+Notes for 4.4 as planned (from ADR 0008's recommendation; if you change the ADR, the ADR wins):
 - cv-core: `#[non_exhaustive] CoreEvent { CaretMoved { at, rect, source, app }, CaretLost { at, app } }`, `CaretSource { Msaa, Uia, Gui, FocusRect }`, `AppId { pid, exe }`, and a fan-out hub over `std::sync::mpsc` (`subscribe`, `publish` drops closed receivers). Unit tests. No new dependency.
 - cv-platform-win: `spawn_caret_source(hub)` with a `shutdown` handle (`PostThreadMessageW(WM_QUIT)`, join, unhook). MTA first; `CUIAutomation8` with `ConnectionTimeout` and `TransactionTimeout` lowered to a few hundred ms (log the value). No window, no UIA event handlers. Message loop via `MsgWaitForMultipleObjectsEx`.
 - Wake: out-of-context WinEvents with `WINEVENT_SKIPOWNPROCESS` for foreground, focus and caret show, hide and location change (`OBJID_CARET`). Poll at 20 Hz only while the last answer came from uia or the focus rectangle, until focus or foreground changes.
