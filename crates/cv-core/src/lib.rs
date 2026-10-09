@@ -158,6 +158,24 @@ impl AppState {
     }
 }
 
+/// What a hotkey asks for. The platform backend maps keys to these; `AppState::apply` does them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Toggle,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl AppState {
+    pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::Toggle => self.enabled = !self.enabled,
+            Action::ZoomIn => self.step_zoom(1),
+            Action::ZoomOut => self.step_zoom(-1),
+        }
+    }
+}
+
 pub type SharedState = Arc<RwLock<AppState>>;
 pub type FrameState = Arc<Mutex<Option<Arc<Frame>>>>;
 
@@ -376,6 +394,59 @@ mod tests {
         let mut s = AppState { zoom: 3.0, ..AppState::default() };
         s.step_zoom(0);
         assert_eq!(s.zoom, 3.0);
+    }
+
+    #[test]
+    fn apply_toggle_flips_enabled_and_back() {
+        let mut s = AppState::default();
+        assert!(!s.enabled);
+        s.apply(Action::Toggle);
+        assert!(s.enabled);
+        s.apply(Action::Toggle);
+        assert!(!s.enabled);
+    }
+
+    #[test]
+    fn apply_zoom_matches_step_zoom() {
+        for z in [ZOOM_MIN, 2.0, ZOOM_COARSE_FROM, 4.3, 10.0, ZOOM_MAX] {
+            let mut by_action = AppState { zoom: z, ..AppState::default() };
+            let mut by_step = by_action.clone();
+            by_action.apply(Action::ZoomIn);
+            by_step.step_zoom(1);
+            assert_eq!(by_action.zoom, by_step.zoom, "in from {z}");
+
+            let mut by_action = AppState { zoom: z, ..AppState::default() };
+            let mut by_step = by_action.clone();
+            by_action.apply(Action::ZoomOut);
+            by_step.step_zoom(-1);
+            assert_eq!(by_action.zoom, by_step.zoom, "out from {z}");
+        }
+    }
+
+    #[test]
+    fn apply_zoom_clamps_at_both_ends() {
+        let mut s = AppState { zoom: ZOOM_MAX, ..AppState::default() };
+        s.apply(Action::ZoomIn);
+        assert_eq!(s.zoom, ZOOM_MAX);
+        s.zoom = ZOOM_MIN;
+        s.apply(Action::ZoomOut);
+        assert_eq!(s.zoom, ZOOM_MIN);
+    }
+
+    #[test]
+    fn apply_touches_only_its_own_field() {
+        let before = AppState { enabled: false, zoom: 4.5, ..non_default() };
+
+        let mut s = before.clone();
+        s.apply(Action::Toggle);
+        assert_eq!(s, AppState { enabled: true, ..before.clone() });
+
+        for a in [Action::ZoomIn, Action::ZoomOut] {
+            let mut s = before.clone();
+            s.apply(a);
+            assert_ne!(s.zoom, before.zoom, "{a:?}");
+            assert_eq!(s, AppState { zoom: s.zoom, ..before.clone() }, "{a:?}");
+        }
     }
 
     #[test]

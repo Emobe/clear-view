@@ -77,15 +77,14 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
- "cv-capture",
  "cv-core",
+ "cv-platform-win",
  "cv-render",
  "cv-tts",
  "dirs",
  "eframe",
  "egui",
  "serde_json",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -455,20 +454,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "cv-capture"
-version = "0.1.0"
-dependencies = [
- "cv-core",
- "windows 0.62.2",
-]
-
-[[package]]
 name = "cv-core"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cv-platform-win"
+version = "0.1.0"
+dependencies = [
+ "cv-core",
+ "windows 0.62.2",
 ]
 
 [[package]]
