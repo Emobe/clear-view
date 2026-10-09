@@ -1,10 +1,10 @@
 //! Caret probe (roadmap 4.1). A dev tool for measuring caret sources; not shipped.
 //!
-//! Once a second, logs the caret rectangle from each source Windows offers for the foreground
+//! Logs, once a second, the caret rectangle from each source Windows offers for the foreground
 //! window: `GetGUIThreadInfo` (gui), the MSAA caret object (msaa) and UI Automation text patterns
-//! (uia). Rectangles are physical virtual-screen pixels, like every coordinate in the app. Each
-//! source's rectangle is also outlined on screen: red gui, green msaa, blue uia, each a little
-//! further out so overlapping outlines stay visible. 4.2 runs it across the app list and records
+//! (uia). Rectangles are physical virtual-screen pixels, like every coordinate in the app. The
+//! sources are read 10 times a second and each one's rectangle is outlined on screen: red gui,
+//! green msaa, blue uia, each a little further out so overlapping outlines stay visible. 4.2 runs it across the app list and records
 //! which sources are right in docs/prototypes/caret-sources.md.
 //!
 //! Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the
@@ -66,7 +66,10 @@ mod probe {
         core::{BOOL, Error, Interface, PWSTR, Result},
     };
 
-    const INTERVAL: Duration = Duration::from_secs(1);
+    /// How often the sources are read and the outlines redrawn.
+    const SAMPLE_EVERY: Duration = Duration::from_millis(100);
+    /// How often a block is printed, so the log stays readable.
+    const PRINT_EVERY: Duration = Duration::from_secs(1);
 
     pub fn run() {
         // Physical pixels everywhere, as in the app (a `[dpi]` line here means they aren't).
@@ -94,35 +97,44 @@ mod probe {
              Outlines: red gui, green msaa, blue uia. Ctrl+C to stop."
         );
         let start = Instant::now();
+        let mut last_print: Option<Instant> = None;
         loop {
-            sample(uia.as_ref(), start);
-            thread::sleep(INTERVAL);
+            let now = Instant::now();
+            let print = last_print.is_none_or(|t| now.duration_since(t) >= PRINT_EVERY);
+            if print {
+                last_print = Some(now);
+            }
+            sample(uia.as_ref(), start, print);
+            thread::sleep(SAMPLE_EVERY.saturating_sub(now.elapsed()));
         }
     }
 
-    /// One block: the foreground app and pointer, then one line per source with its cost.
-    fn sample(uia: Option<&IUIAutomation>, start: Instant) {
+    /// Reads every source and updates the outlines. With `print`, also logs a block: the
+    /// foreground app and pointer, then one line per source with its cost.
+    fn sample(uia: Option<&IUIAutomation>, start: Instant, print: bool) {
         let fg = unsafe { GetForegroundWindow() };
         let mut pid = 0;
         let tid = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
-        let mut pt = POINT::default();
-        let pointer = match unsafe { GetCursorPos(&mut pt) } {
-            Ok(()) => format!("{},{}", pt.x, pt.y),
-            Err(_) => "?".into(),
-        };
-        println!(
-            "[{:>4}s] fg {} \"{}\" pid {}   pointer {}",
-            start.elapsed().as_secs(),
-            process_name(pid),
-            window_text(fg),
-            pid,
-            pointer
-        );
+        if print {
+            let mut pt = POINT::default();
+            let pointer = match unsafe { GetCursorPos(&mut pt) } {
+                Ok(()) => format!("{},{}", pt.x, pt.y),
+                Err(_) => "?".into(),
+            };
+            println!(
+                "[{:>4}s] fg {} \"{}\" pid {}   pointer {}",
+                start.elapsed().as_secs(),
+                process_name(pid),
+                window_text(fg),
+                pid,
+                pointer
+            );
+        }
 
         let t = Instant::now();
         let info = gui_thread_info(tid);
         let gui = gui_reading(&info);
-        print_source("gui", &gui, t);
+        let gui_ms = ms_since(t);
 
         // The caret object belongs to the window with keyboard focus.
         let focus = match &info {
@@ -131,13 +143,23 @@ mod probe {
         };
         let t = Instant::now();
         let msaa = msaa_reading(focus);
-        print_source("msaa", &msaa, t);
+        let msaa_ms = ms_since(t);
 
         let t = Instant::now();
         let uia = uia_reading(uia);
-        print_source("uia", &uia, t);
+        let uia_ms = ms_since(t);
 
         outline::show([gui.rect, msaa.rect, uia.rect]);
+
+        if print {
+            print_source("gui", &gui, gui_ms);
+            print_source("msaa", &msaa, msaa_ms);
+            print_source("uia", &uia, uia_ms);
+        }
+    }
+
+    fn ms_since(started: Instant) -> f64 {
+        started.elapsed().as_secs_f64() * 1000.0
     }
 
     /// What one source reported: the log text and the rectangle to outline, if any.
@@ -156,8 +178,7 @@ mod probe {
         }
     }
 
-    fn print_source(name: &str, reading: &Reading, started: Instant) {
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
+    fn print_source(name: &str, reading: &Reading, ms: f64) {
         println!("  {name:<5} {}   {ms:.1} ms", reading.text);
     }
 
@@ -454,7 +475,8 @@ mod probe {
 
 /// On-screen outlines of the latest readings: one click-through, topmost window over the whole
 /// virtual screen, black made transparent with a colour key, never activated. It runs its own
-/// thread and message loop; the probe thread hands it rectangles and posts a redraw.
+/// thread and message loop; the probe thread hands it rectangles and posts a redraw when they
+/// change.
 #[cfg(windows)]
 mod outline {
     use std::{
@@ -505,11 +527,17 @@ mod outline {
         thread::spawn(run);
     }
 
-    /// Replaces the outlined rectangles (gui, msaa, uia) and asks the window to redraw.
+    /// Replaces the outlined rectangles (gui, msaa, uia) and asks the window to redraw, unless
+    /// nothing moved: a redraw clears the whole virtual screen.
     pub fn show(rects: [Option<ScreenRect>; 3]) {
-        if let Ok(mut current) = RECTS.lock() {
-            *current = rects;
+        let Ok(mut current) = RECTS.lock() else {
+            return;
+        };
+        if *current == rects {
+            return;
         }
+        *current = rects;
+        drop(current);
         let raw = WINDOW.load(Ordering::SeqCst);
         if raw != 0 {
             let hwnd = HWND(raw as *mut c_void);
