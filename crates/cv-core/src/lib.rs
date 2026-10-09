@@ -63,9 +63,13 @@ pub enum DisplayMode {
 }
 
 pub const ZOOM_MIN: f32 = 1.0;
-pub const ZOOM_MAX: f32 = 10.0;
-/// Hotkey zoom step. Placeholder until roadmap 1.4 decides the real step.
-pub const ZOOM_STEP: f32 = 0.5;
+pub const ZOOM_MAX: f32 = 20.0;
+/// Hotkey zoom step below `ZOOM_COARSE_FROM`.
+pub const ZOOM_STEP_FINE: f32 = 0.5;
+/// Hotkey zoom step from `ZOOM_COARSE_FROM` up.
+pub const ZOOM_STEP_COARSE: f32 = 1.0;
+/// Zoom at which the hotkey step changes from fine to coarse.
+pub const ZOOM_COARSE_FROM: f32 = 4.0;
 
 /// Persisted to settings.json except `enabled`, which always starts false.
 /// `#[serde(default)]` lets a file written by an older version load: missing fields take defaults.
@@ -126,10 +130,17 @@ impl AppState {
         self.tts_rate = self.tts_rate.clamp(-10, 10);
     }
 
-    /// Moves zoom one `ZOOM_STEP` in (`direction` > 0) or out (< 0), clamped to the zoom range
+    /// Moves zoom one step in (`direction` > 0) or out (< 0), clamped to the zoom range
     /// and rounded to the slider's 0.1 grid so repeated presses do not drift.
+    ///
+    /// The step is `ZOOM_STEP_FINE` below `ZOOM_COARSE_FROM` and `ZOOM_STEP_COARSE` from there
+    /// up. Stepping out from exactly `ZOOM_COARSE_FROM` uses the fine step, so in and out
+    /// presses retrace the same values.
     pub fn step_zoom(&mut self, direction: i32) {
-        let z = self.zoom + ZOOM_STEP * direction.signum() as f32;
+        let dir = direction.signum() as f32;
+        let coarse = if dir > 0.0 { self.zoom >= ZOOM_COARSE_FROM } else { self.zoom > ZOOM_COARSE_FROM };
+        let step = if coarse { ZOOM_STEP_COARSE } else { ZOOM_STEP_FINE };
+        let z = self.zoom + step * dir;
         self.zoom = ((z * 10.0).round() / 10.0).clamp(ZOOM_MIN, ZOOM_MAX);
     }
 }
@@ -254,7 +265,7 @@ mod tests {
             ..AppState::default()
         };
         s.sanitize();
-        assert_eq!(s.zoom, 10.0);
+        assert_eq!(s.zoom, 20.0);
         assert_eq!(s.smooth_speed, 0.01);
         assert_eq!(s.panel_size, 1);
         assert_eq!(s.tts_volume, 100);
@@ -271,9 +282,47 @@ mod tests {
     fn step_zoom_moves_one_step() {
         let mut s = AppState { zoom: 2.0, ..AppState::default() };
         s.step_zoom(1);
-        assert_eq!(s.zoom, 2.0 + ZOOM_STEP);
+        assert_eq!(s.zoom, 2.0 + ZOOM_STEP_FINE);
         s.step_zoom(-1);
         assert_eq!(s.zoom, 2.0);
+
+        s.zoom = 10.0;
+        s.step_zoom(1);
+        assert_eq!(s.zoom, 10.0 + ZOOM_STEP_COARSE);
+        s.step_zoom(-1);
+        assert_eq!(s.zoom, 10.0);
+    }
+
+    #[test]
+    fn step_zoom_changes_size_at_the_boundary_and_retraces() {
+        let mut s = AppState { zoom: ZOOM_MIN, ..AppState::default() };
+        let mut up = vec![s.zoom];
+        while s.zoom < ZOOM_MAX {
+            s.step_zoom(1);
+            up.push(s.zoom);
+        }
+        // 1.0, 1.5 ... 4.0 (fine), then 5.0 ... 20.0 (coarse).
+        assert_eq!(up.len(), 1 + 6 + 16);
+        assert_eq!(up[6], ZOOM_COARSE_FROM);
+        assert_eq!(up[7], ZOOM_COARSE_FROM + ZOOM_STEP_COARSE);
+
+        let mut down = vec![s.zoom];
+        while s.zoom > ZOOM_MIN {
+            s.step_zoom(-1);
+            down.push(s.zoom);
+        }
+        down.reverse();
+        assert_eq!(up, down);
+    }
+
+    #[test]
+    fn step_zoom_off_whole_number_above_the_boundary_stays_on_grid() {
+        let mut s = AppState { zoom: 4.3, ..AppState::default() };
+        s.step_zoom(1);
+        assert_eq!(s.zoom, 5.3);
+        s.zoom = 4.3;
+        s.step_zoom(-1);
+        assert_eq!(s.zoom, 3.3);
     }
 
     #[test]
@@ -317,6 +366,15 @@ mod tests {
         s.sanitize();
         assert_eq!(s.zoom, AppState::default().zoom);
         assert_eq!(s.smooth_speed, AppState::default().smooth_speed);
+    }
+
+    #[test]
+    fn sanitize_keeps_zoom_between_old_and_new_maximum() {
+        for z in [1.0, 6.0, 10.0, 10.5, 15.0, 20.0] {
+            let mut s = AppState { zoom: z, ..AppState::default() };
+            s.sanitize();
+            assert_eq!(s.zoom, z);
+        }
     }
 
     #[test]

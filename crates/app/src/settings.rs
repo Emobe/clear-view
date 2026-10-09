@@ -184,7 +184,7 @@ mod tests {
         let dir = TempDir::new("clamp");
         std::fs::write(dir.file(), r#"{"zoom": 99, "panel_size": 0}"#).unwrap();
         let s = load_from(&dir.file());
-        assert_eq!(s.zoom, 10.0);
+        assert_eq!(s.zoom, 20.0);
         assert_eq!(s.panel_size, 1);
     }
 
