@@ -1,0 +1,4 @@
+# Link the C runtime into the exe so it runs on a machine without the VC++ redistributable.
+# A RUSTFLAGS environment variable replaces this, so build the tester exe without one.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

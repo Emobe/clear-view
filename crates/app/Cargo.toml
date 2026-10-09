@@ -3,6 +3,11 @@ name = "app"
 version = "0.1.0"
 edition = "2024"
 
+# The exe the tester runs, and the name Task Manager shows.
+[[bin]]
+name = "clear-view"
+path = "src/main.rs"
+
 [dependencies]
 cv-core = { path = "../cv-core" }
 cv-capture = { path = "../cv-capture" }
