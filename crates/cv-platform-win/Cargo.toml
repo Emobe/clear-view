@@ -10,3 +10,13 @@ cv-core           = { path = "../cv-core" }
 cv-magnifier      = { path = "../cv-magnifier" }
 windows           = { workspace = true }
 raw-window-handle = { workspace = true }
+
+# Only for examples/caret_probe.rs (roadmap 4.1), a dev tool that is not shipped. Dev-dependency
+# features are not unified into normal builds (resolver 2), so the app does not compile these.
+[dev-dependencies]
+windows = { workspace = true, features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }

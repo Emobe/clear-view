@@ -1,0 +1,426 @@
+//! Caret probe (roadmap 4.1). A dev tool for measuring caret sources; not shipped.
+//!
+//! Once a second, logs the caret rectangle from each source Windows offers for the foreground
+//! window: `GetGUIThreadInfo` (gui), the MSAA caret object (msaa) and UI Automation text patterns
+//! (uia). Rectangles are physical virtual-screen pixels, like every coordinate in the app, so
+//! put the mouse tip on the caret and compare with `pointer`. 4.2 runs it across the app list and
+//! records which sources are right in docs/prototypes/caret-sources.md.
+//!
+//! Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the
+//! output). Ctrl+C stops it; it changes nothing system-wide, so there is nothing to restore.
+
+fn main() {
+    #[cfg(windows)]
+    probe::run();
+}
+
+#[cfg(windows)]
+mod probe {
+    use std::{
+        ffi::c_void,
+        mem::size_of,
+        ptr, thread,
+        time::{Duration, Instant},
+    };
+
+    use cv_core::ScreenRect;
+    use windows::{
+        Win32::{
+            Foundation::{CloseHandle, HWND, POINT},
+            Graphics::Gdi::ClientToScreen,
+            System::{
+                Com::{
+                    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+                    SAFEARRAY,
+                },
+                Ole::{SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound},
+                Threading::{
+                    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+                    QueryFullProcessImageNameW,
+                },
+                Variant::{VARIANT, VT_I4},
+            },
+            UI::{
+                Accessibility::{
+                    AccessibleObjectFromWindow, CUIAutomation8, IAccessible, IUIAutomation,
+                    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextPattern2,
+                    IUIAutomationTextRange, TextUnit_Character, UIA_TextPattern2Id,
+                    UIA_TextPatternId,
+                },
+                HiDpi::{
+                    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    DPI_AWARENESS_PER_MONITOR_AWARE, DPI_AWARENESS_SYSTEM_AWARE,
+                    DPI_AWARENESS_UNAWARE, GetAwarenessFromDpiAwarenessContext, GetDpiForWindow,
+                    GetWindowDpiAwarenessContext,
+                },
+                WindowsAndMessaging::{
+                    CHILDID_SELF, GUI_CARETBLINKING, GUITHREADINFO, GetClassNameW, GetCursorPos,
+                    GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW,
+                    GetWindowThreadProcessId, OBJID_CARET,
+                },
+            },
+        },
+        core::{BOOL, Error, Interface, PWSTR, Result},
+    };
+
+    const INTERVAL: Duration = Duration::from_secs(1);
+
+    pub fn run() {
+        // Physical pixels everywhere, as in the app (a `[dpi]` line here means they aren't).
+        cv_platform_win::set_dpi_awareness();
+
+        // ADR 0003's rules for UIA: MTA first, on a thread that owns no window.
+        if let Err(e) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
+            eprintln!("[probe] CoInitializeEx failed: {}", describe(&e));
+        }
+        let uia: Option<IUIAutomation> =
+            match unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) } {
+                Ok(uia) => Some(uia),
+                Err(e) => {
+                    eprintln!("[probe] CUIAutomation8 unavailable: {}", describe(&e));
+                    None
+                }
+            };
+
+        println!(
+            "caret probe: one block a second, rects are x,y wxh in physical screen pixels. \
+             Ctrl+C to stop."
+        );
+        let start = Instant::now();
+        loop {
+            sample(uia.as_ref(), start);
+            thread::sleep(INTERVAL);
+        }
+    }
+
+    /// One block: the foreground app and pointer, then one line per source with its cost.
+    fn sample(uia: Option<&IUIAutomation>, start: Instant) {
+        let fg = unsafe { GetForegroundWindow() };
+        let mut pid = 0;
+        let tid = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
+        let mut pt = POINT::default();
+        let pointer = match unsafe { GetCursorPos(&mut pt) } {
+            Ok(()) => format!("{},{}", pt.x, pt.y),
+            Err(_) => "?".into(),
+        };
+        println!(
+            "[{:>4}s] fg {} \"{}\" pid {}   pointer {}",
+            start.elapsed().as_secs(),
+            process_name(pid),
+            window_text(fg),
+            pid,
+            pointer
+        );
+
+        let t = Instant::now();
+        let info = gui_thread_info(tid);
+        let gui = gui_line(&info);
+        print_source("gui", &gui, t);
+
+        // The caret object belongs to the window with keyboard focus.
+        let focus = match &info {
+            Ok(info) if !info.hwndFocus.is_invalid() => info.hwndFocus,
+            _ => fg,
+        };
+        let t = Instant::now();
+        let msaa = msaa_line(focus);
+        print_source("msaa", &msaa, t);
+
+        let t = Instant::now();
+        let uia = uia_line(uia);
+        print_source("uia", &uia, t);
+    }
+
+    fn print_source(name: &str, line: &str, started: Instant) {
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        println!("  {name:<5} {line}   {ms:.1} ms");
+    }
+
+    // ── GetGUIThreadInfo ─────────────────────────────────────────────────────────
+
+    fn gui_thread_info(tid: u32) -> Result<GUITHREADINFO> {
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe { GetGUIThreadInfo(tid, &mut info) }?;
+        Ok(info)
+    }
+
+    /// `rcCaret` is in client coordinates of `hwndCaret`, logical for that window's DPI mode
+    /// (Microsoft docs), so the window's DPI and awareness are printed with it.
+    fn gui_line(info: &Result<GUITHREADINFO>) -> String {
+        let info = match info {
+            Ok(info) => info,
+            Err(e) => return describe(e),
+        };
+        let hwnd = info.hwndCaret;
+        if hwnd.is_invalid() {
+            return "none (no caret window)".into();
+        }
+        let rc = info.rcCaret;
+        let mut origin = POINT { x: rc.left, y: rc.top };
+        if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+            return format!("error ClientToScreen failed  hwnd {}", hex(hwnd));
+        }
+        let rect = ScreenRect {
+            left: origin.x,
+            top: origin.y,
+            width: (rc.right - rc.left).max(0) as u32,
+            height: (rc.bottom - rc.top).max(0) as u32,
+        };
+        let blinking = if info.flags.0 & GUI_CARETBLINKING.0 != 0 {
+            "blinking"
+        } else {
+            "not blinking"
+        };
+        format!(
+            "{}  hwnd {} {}  {}  {}",
+            fmt_rect(rect),
+            hex(hwnd),
+            class_name(hwnd),
+            blinking,
+            dpi_info(hwnd)
+        )
+    }
+
+    // ── MSAA caret object ────────────────────────────────────────────────────────
+
+    fn msaa_line(target: HWND) -> String {
+        if target.is_invalid() {
+            return "none (no focus window)".into();
+        }
+        let acc = match caret_object(target) {
+            Ok(acc) => acc,
+            Err(e) => return format!("{}  hwnd {}", describe(&e), hex(target)),
+        };
+        let mut child = VARIANT::default();
+        // SAFETY: a VT_I4 VARIANT holding CHILDID_SELF; the union field written matches `vt`.
+        unsafe {
+            let v = &mut *child.Anonymous.Anonymous;
+            v.vt = VT_I4;
+            v.Anonymous.lVal = CHILDID_SELF as i32;
+        }
+        let (mut left, mut top, mut width, mut height) = (0, 0, 0, 0);
+        match unsafe { acc.accLocation(&mut left, &mut top, &mut width, &mut height, &child) } {
+            Ok(()) if width == 0 && height == 0 => {
+                format!("none (empty location {left},{top})  hwnd {}", hex(target))
+            }
+            Ok(()) => {
+                let rect = ScreenRect {
+                    left,
+                    top,
+                    width: width.max(0) as u32,
+                    height: height.max(0) as u32,
+                };
+                format!("{}  hwnd {}", fmt_rect(rect), hex(target))
+            }
+            Err(e) => format!("{}  hwnd {}", describe(&e), hex(target)),
+        }
+    }
+
+    /// The docs say to pass NULL for the caret object, but that only finds a caret on the
+    /// calling thread; out of process, clients pass the focus window.
+    fn caret_object(hwnd: HWND) -> Result<IAccessible> {
+        let mut raw: *mut c_void = ptr::null_mut();
+        unsafe { AccessibleObjectFromWindow(hwnd, OBJID_CARET.0 as u32, &IAccessible::IID, &mut raw) }?;
+        if raw.is_null() {
+            return Err(Error::empty());
+        }
+        // SAFETY: on success `raw` is an owned IAccessible pointer.
+        Ok(unsafe { IAccessible::from_raw(raw) })
+    }
+
+    // ── UI Automation ────────────────────────────────────────────────────────────
+
+    fn uia_line(uia: Option<&IUIAutomation>) -> String {
+        let Some(uia) = uia else {
+            return "none (UI Automation unavailable)".into();
+        };
+        let element = match unsafe { uia.GetFocusedElement() } {
+            Ok(element) => element,
+            Err(e) => return format!("{} (GetFocusedElement)", describe(&e)),
+        };
+        let about = element_info(&element);
+        let (range, how) = match caret_range(&element) {
+            Ok(found) => found,
+            Err(msg) => return format!("{msg}  {about}"),
+        };
+        match range_rect(&range) {
+            Ok(Some((rect, count, expanded))) => {
+                let mut notes = String::new();
+                if expanded {
+                    notes.push_str(" (expanded to char)");
+                }
+                if count > 1 {
+                    notes.push_str(&format!(" ({count} rects, first shown)"));
+                }
+                format!("{}  {how}{notes}  {about}", fmt_rect(rect))
+            }
+            Ok(None) => format!("none (no rectangle: off-screen or hidden)  {how}  {about}"),
+            Err(e) => format!("{} (GetBoundingRectangles)  {how}  {about}", describe(&e)),
+        }
+    }
+
+    /// TextPattern2's caret range first; TextPattern's first selection range otherwise.
+    fn caret_range(
+        element: &IUIAutomationElement,
+    ) -> std::result::Result<(IUIAutomationTextRange, String), String> {
+        if let Ok(pattern) =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) }
+        {
+            let mut active = BOOL(0);
+            return match unsafe { pattern.GetCaretRange(&mut active) } {
+                Ok(range) => {
+                    let state = if active.as_bool() { "active" } else { "inactive" };
+                    Ok((range, format!("TextPattern2.GetCaretRange {state}")))
+                }
+                Err(e) => Err(format!("{} (TextPattern2.GetCaretRange)", describe(&e))),
+            };
+        }
+        if let Ok(pattern) =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
+        {
+            let ranges = unsafe { pattern.GetSelection() }
+                .map_err(|e| format!("{} (TextPattern.GetSelection)", describe(&e)))?;
+            let count = unsafe { ranges.Length() }.unwrap_or(0);
+            if count == 0 {
+                return Err("none (TextPattern, no selection range)".into());
+            }
+            let range = unsafe { ranges.GetElement(0) }
+                .map_err(|e| format!("{} (TextPattern selection range)", describe(&e)))?;
+            return Ok((range, "TextPattern.GetSelection[0]".into()));
+        }
+        Err("none (focused element has no text pattern)".into())
+    }
+
+    /// The first bounding rectangle of `range`, how many there were, and whether the range had
+    /// to be expanded: a degenerate range has none (Microsoft docs), so measure the character at
+    /// the caret instead.
+    fn range_rect(range: &IUIAutomationTextRange) -> Result<Option<(ScreenRect, usize, bool)>> {
+        let rects = bounding_rects(range)?;
+        if let Some(first) = rects.first() {
+            return Ok(Some((*first, rects.len(), false)));
+        }
+        let wide = unsafe { range.Clone() }?;
+        unsafe { wide.ExpandToEnclosingUnit(TextUnit_Character) }?;
+        let rects = bounding_rects(&wide)?;
+        Ok(rects.first().map(|first| (*first, rects.len(), true)))
+    }
+
+    /// `GetBoundingRectangles` gives doubles, four per line of text: left, top, width, height.
+    fn bounding_rects(range: &IUIAutomationTextRange) -> Result<Vec<ScreenRect>> {
+        let array = unsafe { range.GetBoundingRectangles() }?;
+        if array.is_null() {
+            return Ok(Vec::new());
+        }
+        let values = read_doubles(array);
+        let _ = unsafe { SafeArrayDestroy(array) };
+        Ok(values?
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|r| ScreenRect {
+                left: r[0].round() as i32,
+                top: r[1].round() as i32,
+                width: r[2].max(0.0).round() as u32,
+                height: r[3].max(0.0).round() as u32,
+            })
+            .collect())
+    }
+
+    fn read_doubles(array: *const SAFEARRAY) -> Result<Vec<f64>> {
+        let lower = unsafe { SafeArrayGetLBound(array, 1) }?;
+        let upper = unsafe { SafeArrayGetUBound(array, 1) }?;
+        let mut values = Vec::new();
+        for i in lower..=upper {
+            let mut value = 0f64;
+            unsafe { SafeArrayGetElement(array, &i, &mut value as *mut f64 as *mut c_void) }?;
+            values.push(value);
+        }
+        Ok(values)
+    }
+
+    /// The UIA framework and class of the focused element, which tell app types apart for 4.3.
+    fn element_info(element: &IUIAutomationElement) -> String {
+        let framework = unsafe { element.CurrentFrameworkId() }
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| "?".into());
+        let class = unsafe { element.CurrentClassName() }
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| "?".into());
+        format!("fw {framework:?} class {class:?}")
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────────
+
+    fn fmt_rect(r: ScreenRect) -> String {
+        format!("{},{} {}x{}", r.left, r.top, r.width, r.height)
+    }
+
+    fn hex(hwnd: HWND) -> String {
+        format!("{:#x}", hwnd.0 as usize)
+    }
+
+    fn describe(e: &Error) -> String {
+        format!("error {:#010x} {}", e.code().0, e.message())
+    }
+
+    fn dpi_info(hwnd: HWND) -> String {
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let context = unsafe { GetWindowDpiAwarenessContext(hwnd) };
+        let awareness = if unsafe {
+            AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        }
+        .as_bool()
+        {
+            "per-monitor-v2"
+        } else {
+            let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(context) };
+            if awareness == DPI_AWARENESS_PER_MONITOR_AWARE {
+                "per-monitor"
+            } else if awareness == DPI_AWARENESS_SYSTEM_AWARE {
+                "system"
+            } else if awareness == DPI_AWARENESS_UNAWARE {
+                "unaware"
+            } else {
+                "unknown"
+            }
+        };
+        format!("dpi {dpi} {awareness}")
+    }
+
+    fn process_name(pid: u32) -> String {
+        let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+        else {
+            return "?".into();
+        };
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let queried = unsafe {
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
+        };
+        let _ = unsafe { CloseHandle(process) };
+        match queried {
+            Ok(()) => {
+                let path = String::from_utf16_lossy(&buf[..len as usize]);
+                path.rsplit('\\').next().unwrap_or(&path).to_string()
+            }
+            Err(_) => "?".into(),
+        }
+    }
+
+    fn window_text(hwnd: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetWindowTextW(hwnd, &mut buf) }.max(0) as usize;
+        let text = String::from_utf16_lossy(&buf[..len]);
+        // Long titles push the useful columns off screen.
+        text.chars().take(60).collect()
+    }
+
+    fn class_name(hwnd: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetClassNameW(hwnd, &mut buf) }.max(0) as usize;
+        String::from_utf16_lossy(&buf[..len])
+    }
+}

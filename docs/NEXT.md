@@ -3,10 +3,18 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.6 Tester build 2 with docked mode, tag v0.2.0 (ADR 0007).
-ADR: none needed. Run `/step 3.6`.
+Item: 4.1 Caret probe: a small dev binary that logs the caret rectangle from each available source (GetGUIThreadInfo, MSAA caret object, UIA text patterns) once a second. Not shipped.
+ADR: none for the probe itself (4.3 is the caret-sources ADR). Run `/step 4.1`.
 
-Notes for 3.6:
+On hold by your decision (2026-10-09): everything involving the tester, until you raise it: 1.8, 3.6, 4.9, 6.8, and the tester's email app in 4.2. /next skips them.
+
+Notes for 4.1:
+- Dev tool only, not part of the core and not shipped. Where it lives is a plan decision: an `examples/` binary in cv-platform-win keeps `windows` inside that crate without a new crate; a new crate would need checking against ADR 0004 and the `cargo tree -i windows@0.62.2` rule.
+- UIA and MSAA need `Win32_UI_Accessibility` and `Win32_System_Com` (cv-tts already lists them for itself). Initialise COM per ADR 0003's rules (MTA first). ADR 0003's "only the TTS thread owns UIA" applies to the app; a standalone probe does not touch that thread, and 4.3 supersedes the rule for the core.
+- Output should make 4.2 easy: one line per source per second with the source name, screen rect (physical pixels: set Per-Monitor v2 like the app) and the foreground window's process/class, so you can compare sources in Notepad, Word, Chrome, Edge and File Explorer.
+- Model: Sonnet high (CLAUDE.md model guide for /step).
+
+Held, for when you pick it up again — notes for 3.6:
 - The agent's part, like 1.7 (PR #22): plain `cargo build --release` with no `RUSTFLAGS` gives `target\release\clear-view.exe` (static CRT from `.cargo/config.toml`); update TESTER.md; tag v0.2.0. v0.1.0 is an annotated tag ("Tester build 1 (roadmap 1.7)") on bb81f33; tag the merged commit the same way only after you approve, and ask before pushing the tag.
 - TESTER.md line 29 still says "use Fullscreen. The docked modes … are old and being replaced; in them the mouse cannot reach the taskbar." That is wrong since 3.4/3.5: docking is an overlay on any edge, the desktop is not resized, the mouse moves under the panel (which shows that area magnified, cursor hidden inside it), panel size 10–90%.
 - Your part (ADR 0007): before handing the build over, run it on the tester's machine and read the `[system] Windows … build …` and `[system] output N …: multiplane overlay support …` lines. If the build is older than 26100.2314 with MPO true, or the panel causes extra frames, present-only-on-change becomes a sub-item before 3.6 is done. The step should ask you for those values and record them.
