@@ -48,15 +48,12 @@ impl WgpuState {
         tex_w: u32,
         tex_h: u32,
     ) -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12,
-            ..Default::default()
-        });
+        let instance = dx12_instance();
 
         // SAFETY: the caller of `new` keeps both handles valid for the surface's lifetime.
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: display,
+                raw_display_handle: Some(display),
                 raw_window_handle:  window,
             })
         }
@@ -67,20 +64,19 @@ impl WgpuState {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets:    false,
             })
             .await
             .expect("No DX12 adapter found");
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label:              Some("cv-magnifier"),
-                    required_features:  wgpu::Features::empty(),
-                    required_limits:    wgpu::Limits::default(),
-                    memory_hints:       wgpu::MemoryHints::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label:              Some("cv-magnifier"),
+                required_features:  wgpu::Features::empty(),
+                required_limits:    wgpu::Limits::default(),
+                memory_hints:       wgpu::MemoryHints::default(),
+                ..Default::default()
+            })
             .await
             .expect("request_device failed");
 
@@ -102,6 +98,8 @@ impl WgpuState {
             alpha_mode:                     caps.alpha_modes[0],
             view_formats:                   vec![],
             desired_maximum_frame_latency:  2,
+            // sRGB for Bgra8Unorm, as before wgpu 30 added the field.
+            color_space:                    wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
 
@@ -162,9 +160,9 @@ impl WgpuState {
         });
 
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("magnify-pl"),
-            bind_group_layouts:   &[&bgl],
-            push_constant_ranges: &[],
+            label:              Some("magnify-pl"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size:     0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -172,13 +170,13 @@ impl WgpuState {
             layout: Some(&pl),
             vertex: wgpu::VertexState {
                 module:              &shader,
-                entry_point:         "vs",
+                entry_point:         Some("vs"),
                 buffers:             &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module:      &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend:      Some(wgpu::BlendState::REPLACE),
@@ -189,8 +187,8 @@ impl WgpuState {
             primitive:     wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
-            cache:         None,
+            multiview_mask: None,
+            cache:          None,
         });
 
         (pipeline, bgl)
@@ -276,14 +274,14 @@ impl WgpuState {
     pub fn upload_frame(&self, data: &[u8], w: u32, h: u32) {
         if w != self.tex_w || h != self.tex_h { return; }
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture:   &self.frame_tex,
                 mip_level: 0,
                 origin:    wgpu::Origin3d::ZERO,
                 aspect:    wgpu::TextureAspect::All,
             },
             data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset:         0,
                 bytes_per_row:  Some(w * 4),
                 rows_per_image: None,
@@ -315,9 +313,9 @@ impl WgpuState {
     /// Returns false on surface error (caller should call resize to recover).
     pub fn render(&self) -> bool {
         let output = match self.surface.get_current_texture() {
-            Ok(o)  => o,
-            Err(e) => {
-                eprintln!("[render] surface error: {e:?}");
+            wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
+            other => {
+                eprintln!("[render] surface error: {other:?}");
                 return false;
             }
         };
@@ -326,7 +324,7 @@ impl WgpuState {
         let mut enc = self.device.create_command_encoder(&Default::default());
         encode_pass(&mut enc, &view, &self.pipeline, &self.bind_group);
         self.queue.submit([enc.finish()]);
-        output.present();
+        self.queue.present(output);
         true
     }
 }
@@ -357,6 +355,22 @@ impl Renderer for WgpuState {
     fn render(&mut self) -> bool {
         WgpuState::render(self)
     }
+}
+
+/// A DX12-only instance. FXC is set explicitly: wgpu 30's default picks DXC when
+/// `dxcompiler.dll` is on the PATH, so the compiler would differ between machines.
+fn dx12_instance() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12,
+        backend_options: wgpu::BackendOptions {
+            dx12: wgpu::Dx12BackendOptions {
+                shader_compiler: wgpu::Dx12Compiler::Fxc,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    })
 }
 
 /// The uniform buffer contents; layout matches `Uniforms` in shader.wgsl.
@@ -392,6 +406,7 @@ fn encode_pass(
         label: Some("magnify-pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
+            depth_slice:    None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -401,6 +416,7 @@ fn encode_pass(
         depth_stencil_attachment: None,
         timestamp_writes:         None,
         occlusion_query_set:      None,
+        multiview_mask:           None,
     });
     rpass.set_pipeline(pipeline);
     rpass.set_bind_group(0, bind_group, &[]);
@@ -480,14 +496,14 @@ mod tests {
         println!("{:<8} {:>5} {:>10} {:>10}", "frame", "zoom", "mode", "ms/frame");
         for (frame_name, pixels) in bench_frames(W, H) {
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture:   &frame_tex,
                     mip_level: 0,
                     origin:    wgpu::Origin3d::ZERO,
                     aspect:    wgpu::TextureAspect::All,
                 },
                 &pixels,
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(W * 4), rows_per_image: None },
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(W * 4), rows_per_image: None },
                 wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
             );
             for zoom in [10.0f32, 20.0] {
@@ -503,7 +519,7 @@ mod tests {
                         encode_pass(&mut enc, &target_view, &pipeline, &bind_group);
                         queue.submit([enc.finish()]);
                     }
-                    device.poll(wgpu::Maintain::Wait);
+                    device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
 
                     let start = Instant::now();
                     for _ in 0..FRAMES {
@@ -511,7 +527,7 @@ mod tests {
                         encode_pass(&mut enc, &target_view, &pipeline, &bind_group);
                         queue.submit([enc.finish()]);
                     }
-                    device.poll(wgpu::Maintain::Wait);
+                    device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
                     let ms = start.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
                     println!("{frame_name:<8} {zoom:>5} {mode_name:>10} {ms:>10.3}");
                 }
@@ -520,20 +536,19 @@ mod tests {
     }
 
     async fn headless_device() -> Option<(wgpu::Device, wgpu::Queue, String)> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12,
-            ..Default::default()
-        });
+        let instance = dx12_instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     None,
                 force_fallback_adapter: false,
+                apply_limit_buckets:    false,
             })
-            .await?;
+            .await
+            .ok()?;
         let name = adapter.get_info().name;
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .ok()?;
         Some((device, queue, name))
