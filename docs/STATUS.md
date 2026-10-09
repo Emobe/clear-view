@@ -23,6 +23,7 @@ Current roadmap:
 - 0.7 Update CLAUDE.md (branch step/0.7-claude-md, PR #13)
 - 0.8 Delete the merged branches (2026-10-09: every local branch merged into master deleted with `git branch -d`; GitHub branches left as they are)
 - 1.1 Clean exit (branch step/1.1-clean-exit, PR #15)
+- 1.3 Hotkeys from the ADR (branch step/1.3-hotkeys, PR #17)
 
 ## Works (a command proved it, or you verified it)
 
@@ -35,13 +36,14 @@ Current roadmap:
 - clear-view.zip no longer tracked (0.6, done by you 2026-10-09 in commit 085858e): the file is removed from the index and `.gitignore` lists `clear-view.zip`. Git history still contains it; nothing was rewritten.
 - CLAUDE.md matches the v1 roadmap (0.7, approved by you 2026-10-09): PRODUCT.md read first, speech out of scope until after v1, the Finding 8 AppBar claims corrected, the build/clippy/test gate recorded (docs-only steps skip it), stale tts-plan.md and repaint-thread references fixed.
 - Clean exit (1.1, approved by you 2026-10-09): closing the settings window, Ctrl+C in the console and closing the console window all end the process; it is gone from Task Manager each time (it shows as "app.exe"). `cargo build`, `cargo clippy --workspace --all-targets` and `cargo test --workspace` pass. You ran the step's whole Verify list (settings window close, docked edges, magnifier toggled off first, Ctrl+C and console close, and ending the process in Task Manager) and reported that every one of them works; individual items were not itemised. Killing in Task Manager therefore leaves nothing behind that you noticed, which the code cannot explain: no code runs on a kill, so Windows does the restoring.
+- Hotkeys (1.3, approved by you 2026-10-09): Ctrl+Alt+Shift+Z toggles on and off, Ctrl+Alt+Shift+Up zooms in and Ctrl+Alt+Shift+Down zooms out (ADR 0005, `RegisterHotKey`, `MOD_NOREPEAT`, registered once at startup; the thread blocks in `GetMessageW`). A binding that fails to register is logged with its error code and listed in the settings window. You ran the step's whole Verify list (toggle in fullscreen and docked with the panel focused and unfocused, zoom keys and limits, no repeat on hold, zoom saved across relaunch, idle CPU, a second copy showing the conflict line, an elevated window in the foreground, the old "Win +=" label gone, panel controls reachable with failure lines showing) and reported that all of it works; individual items were not itemised, so the elevated-window result is not recorded separately. The zoom step (`cv_core::ZOOM_STEP`, 0.5) is a placeholder until 1.4.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 37 tests. cv-core 27 (17 in `geometry::tests`, 10 in `tests` for serde round-trips and `sanitize`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`). cv-capture, cv-render and cv-tts have none.
+- `cargo test --workspace`: passes, 41 tests. cv-core 31 (17 in `geometry::tests`, 14 in `tests` for serde round-trips, `sanitize` and `step_zoom`), app 10 (6 in `settings::tests`, 4 in `app::tests` for `apply_changes`). cv-capture, cv-render and cv-tts have none.
 - The workspace has 5 crates (cv-core, cv-capture, cv-render, cv-tts, app), 2508 lines of Rust in total (counted by `wc -l` on crates/**/*.rs; the earlier figure of 2928 was not reproduced).
 
 ## Broken
@@ -73,7 +75,6 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 
 - Tests: only cv-core (geometry and state) and app (settings, panel merge). None in cv-capture, cv-render or cv-tts.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
-- Zoom in/out hotkeys: hotkey.rs registers only Ctrl+Alt+Shift+Z (`HOTKEY_ID = 1`). A failed registration only prints to stdout; the settings window does not show it.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
 - AppState fields from docs/later/tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
 - docs/later/tts-plan.md architecture stubs: no `AccessibilityBackend`, `AppContext`, `describe_element`, `TtsVerbosity`, `TtsGranularity` or `HotkeyBinding` anywhere in crates/. Hover speaks the element name directly (lib.rs:253-262).
