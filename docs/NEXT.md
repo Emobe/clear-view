@@ -3,10 +3,20 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.6 Tester build 2 with docked mode, tag v0.2.0 (ADR 0007).
-ADR: none needed. Run `/step 3.6`.
+Item: 4.2 (you) Run the probe in Notepad, Word, Chrome, Edge, File Explorer (rename and address bar) and the tester's email app. Record which sources give correct positions in docs/prototypes/caret-sources.md.
+ADR: none. When you've run it, `/step 4.2` asks whether it's done and records what you report.
 
-Notes for 3.6:
+On hold by your decision (2026-10-09): everything involving the tester, until you raise it: 1.8, 3.6, 4.9, 6.8, and the tester's email app in 4.2. /next skips them. 4.2 goes ahead without the email app; that app is added when you pick the tester work up again.
+
+Notes for 4.2:
+- Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the log). Outlines on screen: red gui (GetGUIThreadInfo), green msaa (MSAA caret object), blue uia (UI Automation). An outline sitting on the caret means that source is right; a missing outline means the source has nothing; a misplaced one means it's wrong. The console prints one block a second with each source's rect, method, the caret window's DPI and awareness, the UIA framework and class, and the cost in ms. Ctrl+C stops it.
+- Already seen while testing 4.1 (PR #37): Notepad shows all three sources on the caret. Windows Terminal shows only uia (it draws its own caret).
+- Per app, worth writing down for 4.3: which colours sit on the caret, which are missing or off, and whether `uia` says `TextPattern2.GetCaretRange` or falls back to `TextPattern.GetSelection`. Also the cost in ms, and anything odd at line ends or empty lines (`expanded to char`).
+- Optional for 4.3's elevated-window question: an admin Notepad or Task Manager in front.
+- docs/prototypes/caret-sources.md does not exist yet; `/step 4.2` writes it from what you report.
+- Then: 4.3 (ADR first) caret sources, with Opus high (it decides UIA ownership in the core, superseding part of ADR 0003).
+
+Held, for when you pick it up again — notes for 3.6:
 - The agent's part, like 1.7 (PR #22): plain `cargo build --release` with no `RUSTFLAGS` gives `target\release\clear-view.exe` (static CRT from `.cargo/config.toml`); update TESTER.md; tag v0.2.0. v0.1.0 is an annotated tag ("Tester build 1 (roadmap 1.7)") on bb81f33; tag the merged commit the same way only after you approve, and ask before pushing the tag.
 - TESTER.md line 29 still says "use Fullscreen. The docked modes … are old and being replaced; in them the mouse cannot reach the taskbar." That is wrong since 3.4/3.5: docking is an overlay on any edge, the desktop is not resized, the mouse moves under the panel (which shows that area magnified, cursor hidden inside it), panel size 10–90%.
 - Your part (ADR 0007): before handing the build over, run it on the tester's machine and read the `[system] Windows … build …` and `[system] output N …: multiplane overlay support …` lines. If the build is older than 26100.2314 with MPO true, or the panel causes extra frames, present-only-on-change becomes a sub-item before 3.6 is done. The step should ask you for those values and record them.
@@ -15,6 +25,7 @@ Notes for 3.6:
 
 What comes next:
 - 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
+- 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Its extra `windows` features are dev-dependencies, so the app doesn't compile them.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
@@ -30,7 +41,7 @@ Still true:
 - Not an option in code: the native Windows Magnifier and the Magnification API for zooming or smoothing (your decision). `MagShowSystemCursor` for cursor hiding stays.
 - Screenshots of the magnifier don't show the zoomed view (the overlay is excluded from capture). To compare filters by eye, run an ordinary unzoomed screenshot through the shader offscreen (docs/later/text-smoothing.md).
 - Jitter: none noticeable at high zoom in 1.5. You expect it may show with caret tracking (Phase 4). Unconfirmed candidates if it does: the 16 ms `SetTimer` (cv-platform-win/src/overlay.rs `TICK_MS`) against 60 Hz vsync, `dt` measured at timer time not present time.
-- Finding 12 (mouse cannot reach the taskbar) is resolved by 3.4. Finding 13 is ignored by your decision.
+- Finding 12 (mouse cannot reach the taskbar) is resolved by 3.4. Finding 13 is ignored by your decision; 4.1 found its likely cause (a topmost window covering the monitor drops the taskbar), see STATUS.
 - Panel size is 10–90% (`cv_core::PANEL_SIZE_MIN`, `PANEL_SIZE_MAX`, ADR 0007); the numbers can change in a step without a new ADR.
 - Work in roadmap order.
 - Old 2.3 (TTS toggles) is dropped; its patch is in docs/archive/. Do not bring it back.
