@@ -2,17 +2,18 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: ready
+State: built, awaiting your test
 Item: 1.6 Display scaling: cursor circle and view line up at 100%, 125% and 150%. Fix if not.
-Branch: none yet. Create step/1.6-<short-name> off master after PR #20 (1.5) is merged.
+Branch: step/1.6-display-scaling
 
-Before 1.6: merge PR #20 (step/1.5-readability) yourself. 1.5 is approved and recorded in STATUS.
-
-Where to start:
-- Cursor and view math are in cv-core/src/geometry.rs (`to_monitor_local`, `compute_crop`, `cursor_in_output`); the render thread reads the cursor with `GetCursorPos` (cv-render/src/lib.rs `on_timer`) and monitor rects from the capture outputs (`OutputInfo`).
-- Check what DPI awareness the process declares (no manifest exists, STATUS Missing) and what that means for `GetCursorPos`, DXGI output coordinates and window rects. Check the current Microsoft docs first, per the roadmap rules.
-- STATUS "Needs your run" still has: cursor circle lines up at 100%, 125%, 150% (confirmed on your current scaling only).
+What 1.6 found and did:
+- The process already sets Per-Monitor v2 as the first line of `main` (app/src/main.rs), before winit, which sets the same value and fails harmlessly. In PMv2, `GetCursorPos`, DXGI `DesktopCoordinates`, the duplicated frame, `SPI_GETWORKAREA` and window rects are all physical pixels, so no conversion is needed and none was added.
+- The only change: the effective awareness is checked after the call, and `[dpi] process is not Per-Monitor v2 DPI aware ...` is printed to stderr if it isn't, instead of failing silently.
+- If your test shows misalignment, the cause is still to be found; resume on this branch.
+- The circle radius is fixed in physical pixels, so it looks smaller at 150%. That is size, not alignment: 6.1/6.2.
 - Mixed scaling across monitors is 5.3, not 1.6.
+
+After you approve 1.6: record it in STATUS (Done, Works, tick the "Needs your run" scaling line), then the next item is 1.7 Tester build.
 
 Still true:
 - Interpolation default is Bicubic (your choice in 1.5). Modes: Bilinear 0, Bicubic 1, Sharp 2; the shader.wgsl header, `as_u32` and gfx.rs `write_uniforms` comment must agree. `cargo test` validates shader.wgsl.

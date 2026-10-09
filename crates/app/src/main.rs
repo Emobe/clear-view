@@ -5,7 +5,8 @@ mod settings;
 use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU32, Ordering}};
 
 use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 
 /// Stops the render thread when dropped, so a panic in `main` still restores the work area,
@@ -27,8 +28,22 @@ impl Drop for OverlayGuard {
 }
 
 fn main() -> eframe::Result {
+    // Per-Monitor v2 makes the cursor, monitor rects, captured frames and window rects all
+    // physical pixels. The call fails if awareness is already set, so check what took effect:
+    // anything else means Windows scales some of those values and the view and circle drift.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if !AreDpiAwarenessContextsEqual(
+            GetThreadDpiAwarenessContext(),
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+        .as_bool()
+        {
+            eprintln!(
+                "[dpi] process is not Per-Monitor v2 DPI aware; the view and cursor circle \
+                 may not line up at display scaling above 100%"
+            );
+        }
     }
 
     // Load before any thread starts so the TTS thread's initial volume and rate come from the file.
