@@ -1,9 +1,4 @@
-use std::num::NonZeroIsize;
-
-use raw_window_handle::{
-    RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
-};
-use windows::Win32::Foundation::HWND;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 /// shader.wgsl with the cleanEdge port (MIT, see clean_edge.wgsl) appended. WGSL has no `#include`.
 const SHADER: &str = concat!(include_str!("shader.wgsl"), "\n", include_str!("clean_edge.wgsl"));
@@ -29,22 +24,38 @@ pub struct WgpuState {
 }
 
 impl WgpuState {
-    pub fn new(hwnd: HWND, win_w: u32, win_h: u32, tex_w: u32, tex_h: u32) -> Self {
-        pollster::block_on(Self::init(hwnd, win_w, win_h, tex_w, tex_h))
+    /// # Safety
+    /// `display` and `window` must be valid, and must stay valid until this `WgpuState` is
+    /// dropped (wgpu `SurfaceTargetUnsafe::RawHandle`).
+    pub unsafe fn new(
+        display: RawDisplayHandle,
+        window: RawWindowHandle,
+        win_w: u32,
+        win_h: u32,
+        tex_w: u32,
+        tex_h: u32,
+    ) -> Self {
+        pollster::block_on(Self::init(display, window, win_w, win_h, tex_w, tex_h))
     }
 
-    async fn init(hwnd: HWND, win_w: u32, win_h: u32, tex_w: u32, tex_h: u32) -> Self {
+    async fn init(
+        display: RawDisplayHandle,
+        window: RawWindowHandle,
+        win_w: u32,
+        win_h: u32,
+        tex_w: u32,
+        tex_h: u32,
+    ) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12,
             ..Default::default()
         });
 
+        // SAFETY: the caller of `new` keeps both handles valid for the surface's lifetime.
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
-                raw_window_handle:  RawWindowHandle::Win32(
-                    Win32WindowHandle::new(NonZeroIsize::new(hwnd.0 as isize).unwrap())
-                ),
+                raw_display_handle: display,
+                raw_window_handle:  window,
             })
         }
         .expect("create_surface_unsafe failed");
@@ -61,7 +72,7 @@ impl WgpuState {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label:              Some("cv-render"),
+                    label:              Some("cv-magnifier"),
                     required_features:  wgpu::Features::empty(),
                     required_limits:    wgpu::Limits::default(),
                     memory_hints:       wgpu::MemoryHints::default(),
@@ -396,7 +407,7 @@ mod tests {
 
     /// GPU cost of each interpolation mode at 3840x2160 (roadmap 1.9). Needs a GPU, so it is
     /// ignored by `cargo test`. Run with
-    /// `cargo test --release -p cv-render bench_modes_4k -- --ignored --nocapture`.
+    /// `cargo test --release -p cv-magnifier bench_modes_4k -- --ignored --nocapture`.
     ///
     /// Wall-clock time over many submitted frames, so it compares modes on one GPU rather than
     /// giving absolute GPU time. cleanEdge branches on content, so three frames are used:

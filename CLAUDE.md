@@ -74,12 +74,12 @@ cargo test --workspace
 ## Crate structure
 
 - `cv-core`: shared types (Frame, AppState, SharedState, DisplayMode, ColorFilter, Interpolation, the hotkey `Action` and `AppState::apply`) and pure view math in `geometry` (crop, zoom, lerp, cursor mapping) with unit tests. Platform-neutral; keep it that way.
-- `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings. Starts with `#![cfg(windows)]`.
-- `cv-render`: wgpu pipeline (gfx.rs, shader.wgsl), overlay window, AppBar, cursor handling. Its Win32 parts move to cv-platform-win in roadmap 2.3.
+- `cv-platform-win`: the Windows backend (ADR 0004). DXGI Desktop Duplication capture (staging texture, CPU readback), DPI awareness, the hotkey thread and its `RegisterHotKey` bindings, and the overlay (overlay.rs: window, render thread and loop, cursor clip and hiding, clean exit; appbar.rs). Starts with `#![cfg(windows)]`.
+- `cv-magnifier`: the platform-neutral magnifier. wgpu pipeline (gfx.rs, shader.wgsl, clean_edge.wgsl); `WgpuState::new` takes raw display and window handles. No `windows` dependency.
 - `cv-tts`: reader thread (SAPI, UIA). Built only with the `tts` feature.
 - `app`: main.rs wiring, egui settings panel, settings persistence. Picks the backend with `#[cfg(windows)] use cv_platform_win as platform;` and has no `windows` dependency.
 
-Only cv-platform-win, cv-render (until 2.3) and parked cv-tts may depend on `windows`. Check with `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
+Only cv-platform-win and parked cv-tts may depend on `windows`. Check with `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
 
 ## Architecture
 
