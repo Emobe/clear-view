@@ -2,28 +2,18 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: in review
-Item: 4.4 Core: caret source for Windows per the ADR, emitting caret-moved events with a screen rectangle. No magnifier change yet.
-Branch: step/4.4-caret-source (PR open). Waiting for you to run the Verify list in the PR and say "I approve"; then 4.4 (and 4.3, also still waiting) go in the STATUS Done list, and this file moves to 4.5.
-ADR: docs/adr/0008-caret-sources.md (roadmap 4.3), Accepted by you 2026-10-09 (PR #39). It supersedes ADR 0003's "only the TTS thread adds or removes UIA handlers" rule; ADR 0003's own Status line is yours to change.
+State: ready
+Item: 4.5 Tracking policy as pure logic in cv-core with unit tests: follow the caret while typing, return to the mouse when it moves past a threshold, smoothing between targets. Input is `CaretMoved` and `CaretLost`; the policy decides what part of a `FocusRect` to show (pending ADR 0008).
+ADR: docs/adr/0008-caret-sources.md, Accepted. Run `/step 4.5`. No new ADR expected: ADR 0008 sets the inputs; thresholds and timings are the step's to pick and record in the PR. If the policy needs a decision the ADR does not cover (for example a rule that depends on the app), stop and go to /adr.
+Model: Sonnet high (CLAUDE.md model guide for /step).
 
-What 4.4 built, for 4.5 and 4.6:
-- cv-core `events`: `CoreEvent::{CaretMoved, CaretLost}`, `CaretSource::{Msaa, Uia, Gui, FocusRect}` (`name()` for logs), `AppId { pid, exe }`, `EventHub` (`subscribe`, `publish`, `subscribers`).
-- cv-platform-win `spawn_caret_source(Arc<EventHub>) -> CaretHandle` (`shutdown`). app creates the hub in main.rs and holds it as `events`; nothing subscribes yet. 4.6 subscribes for the render thread.
-- The focus rectangle is used only when the focused control has a caret but gave no position (a UIA text element without a caret rect, or a caret window with an empty rect). Any other focused control gives no caret (focus tracking is not in v1).
-- `cargo run -p cv-platform-win --example caret_events` prints every event and outlines its rect (yellow = focus rect). The outline code is shared with the probe in examples/common/outline.rs.
-
-Notes for 4.4 as planned (from ADR 0008's recommendation; if you change the ADR, the ADR wins):
-- cv-core: `#[non_exhaustive] CoreEvent { CaretMoved { at, rect, source, app }, CaretLost { at, app } }`, `CaretSource { Msaa, Uia, Gui, FocusRect }`, `AppId { pid, exe }`, and a fan-out hub over `std::sync::mpsc` (`subscribe`, `publish` drops closed receivers). Unit tests. No new dependency.
-- cv-platform-win: `spawn_caret_source(hub)` with a `shutdown` handle (`PostThreadMessageW(WM_QUIT)`, join, unhook). MTA first; `CUIAutomation8` with `ConnectionTimeout` and `TransactionTimeout` lowered to a few hundred ms (log the value). No window, no UIA event handlers. Message loop via `MsgWaitForMultipleObjectsEx`.
-- Wake: out-of-context WinEvents with `WINEVENT_SKIPOWNPROCESS` for foreground, focus and caret show, hide and location change (`OBJID_CARET`). Poll at 20 Hz only while the last answer came from uia or the focus rectangle, until focus or foreground changes.
-- Chain, first non-empty wins: msaa (`OBJID_CARET` on `hwndFocus`, `accLocation`) → uia (`GetFocusedElement`, `TextPattern2.GetCaretRange`, else `GetSelection()[0]`, expanded to a character when empty) → gui (`rcCaret`, converted to physical with `LogicalToPhysicalPointForPerMonitorDPI` on `hwndCaret`) → focus rectangle (the focused element's UIA `BoundingRectangle`, else the `hwndFocus` window rect). The probe (cv-platform-win/examples/caret_probe.rs) has working code for the first three.
-- Events only on change. `[caret]` log lines on source changes and `[caret] no source in <exe>` once per foreground change.
-- The UIA and MSAA `windows` features (`Win32_UI_Accessibility`, `Win32_System_Com`, `Win32_System_Ole`, `Win32_System_Variant`) move from cv-platform-win's dev-dependencies to normal ones. `windows` still only in cv-platform-win and cv-tts.
-- No magnifier change in 4.4. app spawns the thread and shuts it down with the overlay; something must hold a receiver or log the events so you can see them (a `[caret]` log is enough).
-- Verify: each 4.2 app with the log on; Notepad and Explorer rename at 150% with an outline of the reported rect (reuse the probe's outline code in a dev-only form); exit paths leave nothing behind.
-- If the step is bigger than one PR, split (for example hub and types first, then the thread) and propose sub-items here.
-- Model: Sonnet high (CLAUDE.md model guide for /step).
+What 4.4 built (PR #40, approved 2026-10-09), for 4.5 and 4.6:
+- cv-core `events`: `CoreEvent::{CaretMoved { at, rect, source, app }, CaretLost { at, app }}` (`#[non_exhaustive]`), `CaretSource::{Msaa, Uia, Gui, FocusRect}` (`name()` for logs), `AppId { pid, exe }`, `EventHub` (`subscribe`, `publish`, `subscribers`). `rect` is physical virtual-screen pixels, like `ScreenPoint`.
+- Events come only on change. A caret rect is a few pixels wide; uia gives the character at the caret (wider). `FocusRect` can be a whole text box (Explorer address bar and search box).
+- cv-platform-win `spawn_caret_source(Arc<EventHub>) -> CaretHandle`. app creates the hub in main.rs as `events`; nothing subscribes yet. 4.6 subscribes for the render thread and drains it with `try_recv` at the start of each tick (ADR 0008).
+- The pointer stays sampled per tick through `PointerSource` (ADR 0004), not sent as an event. Smooth follow is `geometry::lerp_toward` with `smooth_speed` (cv-core); the policy should feed a target into that, not replace it.
+- 4.5 is pure cv-core logic with unit tests only; no thread, no magnifier wiring (that is 4.6 and 4.7). Its Verify list is therefore mostly the tests plus "nothing changed" by hand.
+- `cargo run -p cv-platform-win --example caret_events` prints every event and outlines its rect (yellow = focus rect).
 
 4.2a (you) can run any time before 4.8: the caret probe in desktop Word and in Chrome if installed (ROADMAP 4.2a).
 
@@ -38,9 +28,10 @@ Held, for when you pick it up again — notes for 3.6:
 
 What comes next:
 - 3.5 (PR #36) finished ADR 0007: no AppBar, no `ClipCursor` anywhere (exit included), `Magnifier::resized` gone.
-- 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Its extra `windows` features are dev-dependencies, so the app doesn't compile them.
+- 4.1 (PR #37) added the caret probe, cv-platform-win/examples/caret_probe.rs. Since 4.4 its `windows` features are normal ones (the caret thread needs them).
 - 4.2 (you) measured the caret sources; results in docs/prototypes/caret-sources.md.
 - 4.3 wrote ADR 0008 (Accepted) from those results; 4.4 to 4.8 build it.
+- 4.4 (PR #40) built the caret thread and the core events; nothing consumes them yet.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.

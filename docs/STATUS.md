@@ -45,6 +45,8 @@ Current roadmap:
 - 3.5 Remove AppBar docking and ClipCursor (ADR 0007, branch step/3.5-remove-appbar, PR #36)
 - 4.1 Caret probe (branch step/4.1-caret-probe, PR #37)
 - 4.2 Caret sources measured (you; results in docs/prototypes/caret-sources.md, branch step/4.2-caret-sources)
+- 4.3 Caret sources ADR (ADR 0008, branch step/4.3-caret-sources-adr, PR #39)
+- 4.4 Core caret source for Windows (ADR 0008, branch step/4.4-caret-source, PR #40)
 
 ## Works (a command proved it, or you verified it)
 
@@ -146,17 +148,27 @@ Current roadmap:
   - File Explorer address bar and search box (XAML `TextBox`): none. uia finds an active caret range but gives no rectangle, even mid-text.
   - LibreOffice: none.
   - Not measured: Word and Chrome (not installed), the tester's email app (on hold), elevated windows.
+- Caret sources decided (4.3, accepted by you 2026-10-09, PR #39): ADR 0008 is Accepted. Choices: one core caret thread in cv-platform-win (MTA, no window, lowered UIA timeouts), woken by WinEvents with a 20 Hz poll only where no event covers the caret, one fixed chain msaa → uia → gui → focus rectangle, and in elevated windows without UIAccess a fall back to the mouse. It supersedes ADR 0003's rule that only the TTS thread adds or removes UIA handlers (ADR 0003's Status line is yours to change). It added 4.2a (you: Word and Chrome).
+- Core caret source for Windows (4.4, approved by you 2026-10-09, PR #40):
+  - cv-core `events`: `CoreEvent { CaretMoved, CaretLost }` (`#[non_exhaustive]`), `CaretSource { Msaa, Uia, Gui, FocusRect }`, `AppId { pid, exe }` and `EventHub`, a fan-out over unbounded `std::sync::mpsc` (`subscribe`, `publish` drops closed receivers). 6 tests.
+  - cv-platform-win `spawn_caret_source(Arc<EventHub>) -> CaretHandle`: MTA COM, no window, no UIA event handlers, `CUIAutomation8` with connection and transaction timeouts of 500 ms (logged at startup). Out-of-context WinEvents (foreground, focus, caret show, hide and move; own process skipped) wake one read of the chain. A 20 Hz poll runs after uia or the focus rectangle answered, until focus or foreground changes. gui is converted to physical pixels in the caret window's DPI context.
+  - The focus rectangle is used only when the focused control has a caret but gave no position (a UIA text element without a caret rect, or a caret window with an empty rect); other focused controls give no caret. With the app's own window in the foreground no source is read.
+  - Events only on change. `[caret] <source> in <exe>` on a source change and `[caret] no source in <exe>` at most once per foreground change. The pure logic is caret/tracker.rs with 14 tests.
+  - app creates the hub, starts the thread and stops it after the overlay (`PostThreadMessageW(WM_QUIT)`, unhook, join with a 1 s deadline). Nothing subscribes yet; the magnifier is unchanged.
+  - The UIA and MSAA `windows` features are in the workspace list now, so the app compiles them. `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1` is unchanged.
+  - Dev example `cargo run -p cv-platform-win --example caret_events` prints each event and outlines its rect; the outline code is shared with the probe (examples/common/outline.rs).
+  - You ran the step's Verify list (the log line per app: Notepad, Explorer rename, address bar and search box, Edge or Brave, Terminal, LibreOffice; the settings panel with a text field focused; outlines at 150% in Notepad, Explorer rename and Edge; the three exit paths) and reported that it works; individual items were not itemised. So the Terminal poll CPU cost is not recorded, and no msaa or uia offset at 150% was reported, so no conversion was added for them.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 96 tests and 1 ignored (3.5).
-  - cv-core 44: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`.
+- `cargo test --workspace`: passes, 116 tests and 1 ignored (4.4).
+  - cv-core 50: 21 in `geometry::tests` (including `docked_rect`), 23 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`, 6 in `events::tests` for the hub.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
   - cv-magnifier 42: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 28 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge), plus the ignored GPU bench `bench_modes_4k`.
-  - cv-platform-win and cv-tts have none.
+  - cv-platform-win 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls). cv-tts has none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 
 ## Broken
@@ -183,7 +195,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 
 ## Missing
 
-- Tests: none in cv-platform-win or cv-tts. cv-core (geometry and state), app (settings, panel merge) and cv-magnifier (shader checks, capture loop, tick) have them.
+- Tests: none in cv-tts, and in cv-platform-win only for the caret tracker's pure logic. cv-core (geometry, state, event hub), app (settings, panel merge) and cv-magnifier (shader checks, capture loop, tick) have them.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
 - AppState fields from docs/later/tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
