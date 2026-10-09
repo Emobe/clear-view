@@ -2,12 +2,13 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-State: ready
+State: awaiting-test
 Item: 1.4 Zoom range 1x to 20x
-Branch: none yet. Branch from master after PR #17 (step/1.3-hotkeys) is merged.
+Branch: step/1.4-zoom-range (built, gate passed, PR open, not merged)
 Notes:
-- 1.2 and 1.3 are approved and recorded as done.
-- 1.4: `cv_core::ZOOM_MAX` is 10.0 and `ZOOM_STEP` is a placeholder 0.5 (crates/cv-core/src/lib.rs). `sanitize`, the panel slider and `AppState::step_zoom` all use these constants. The step also has to decide the hotkey zoom step and record it in the PR (the slider is `step_by(0.1)`; `step_zoom` rounds to that grid). Check whether a settings file saved with zoom 10 or lower still loads (it will; only the upper bound moves).
+- Waiting for you to run the Verify list in the PR, say "I approve", and merge. Only then does 1.4 go in STATUS "Done"/"Works" and does this file move to 1.5.
+- Built: `ZOOM_MAX` 20. Hotkey zoom step is two-tier: `ZOOM_STEP_FINE` 0.5 below `ZOOM_COARSE_FROM` (4x), `ZOOM_STEP_COARSE` 1.0 from 4x up; stepping out from exactly 4.0 uses the fine step so in/out retrace. Results stay on the slider's 0.1 grid. `ZOOM_STEP` is gone.
+- Next item after approval: 1.5 Readability at 10x and above (you judge bilinear vs bicubic and smooth-follow shimmer at high zoom; the agent fixes what you find). 20x is now reachable, so test there too.
 - Open: Finding 12 (mouse cannot reach the taskbar, seen while testing 1.1, not caused by it) is not on the roadmap. Tell me where it goes; the likely place is with docking (Finding 11, roadmap 3.5) unless it shows in fullscreen too.
 - `cargo build` and `cargo clippy --workspace --all-targets` are at 0 warnings, also with `--features app/tts`. Keep them there. Docs-only steps skip the gate.
 - The panel repaints only on input or when another thread calls `request_repaint()` through `app::RepaintSlot`. The panel writes back only fields it changed (app.rs `apply_changes`); a new `AppState` field the panel edits must be added to that macro list.
