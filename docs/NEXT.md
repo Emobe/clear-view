@@ -3,17 +3,22 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 4.5 Tracking policy as pure logic in cv-core with unit tests: follow the caret while typing, return to the mouse when it moves past a threshold, smoothing between targets. Input is `CaretMoved` and `CaretLost`; the policy decides what part of a `FocusRect` to show (pending ADR 0008).
-ADR: docs/adr/0008-caret-sources.md, Accepted. Run `/step 4.5`. No new ADR expected: ADR 0008 sets the inputs; thresholds and timings are the step's to pick and record in the PR. If the policy needs a decision the ADR does not cover (for example a rule that depends on the app), stop and go to /adr.
+Item: 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
+ADR: docs/adr/0008-caret-sources.md, Accepted. Run `/step 4.6`. No new ADR expected; if wiring needs a decision the ADR does not cover, stop and go to /adr.
 Model: Sonnet high (CLAUDE.md model guide for /step).
 
-What 4.4 built (PR #40, approved 2026-10-09), for 4.5 and 4.6:
-- cv-core `events`: `CoreEvent::{CaretMoved { at, rect, source, app }, CaretLost { at, app }}` (`#[non_exhaustive]`), `CaretSource::{Msaa, Uia, Gui, FocusRect}` (`name()` for logs), `AppId { pid, exe }`, `EventHub` (`subscribe`, `publish`, `subscribers`). `rect` is physical virtual-screen pixels, like `ScreenPoint`.
-- Events come only on change. A caret rect is a few pixels wide; uia gives the character at the caret (wider). `FocusRect` can be a whole text box (Explorer address bar and search box).
-- cv-platform-win `spawn_caret_source(Arc<EventHub>) -> CaretHandle`. app creates the hub in main.rs as `events`; nothing subscribes yet. 4.6 subscribes for the render thread and drains it with `try_recv` at the start of each tick (ADR 0008).
-- The pointer stays sampled per tick through `PointerSource` (ADR 0004), not sent as an event. Smooth follow is `geometry::lerp_toward` with `smooth_speed` (cv-core); the policy should feed a target into that, not replace it.
-- 4.5 is pure cv-core logic with unit tests only; no thread, no magnifier wiring (that is 4.6 and 4.7). Its Verify list is therefore mostly the tests plus "nothing changed" by hand.
-- `cargo run -p cv-platform-win --example caret_events` prints every event and outlines its rect (yellow = focus rect).
+What 4.5 built (PR #41, approved 2026-10-09), for 4.6 and 4.7:
+- cv-core `tracking`: `Tracker::update(now, pointer, events, view) -> (f32, f32)`, once per tick; `Tracker::following() -> Following { Pointer, Caret }`. Re-exported from `cv_core`. `view` is the magnified area in screen pixels (window size / zoom). The return value is the virtual-screen point to ease toward: feed it to `geometry::lerp_toward` in place of `self.pointer` in `View::draw` (cv-magnifier/src/magnifier.rs); keep `smooth_speed`.
+- Rules and values (starting points; 4.8 tunes them): caret takes the view only after the pointer has been still 250 ms (`POINTER_QUIET`, jitter ≤ 2 px); pointer takes it back past 24 px (`POINTER_RETURN_PX`); caret margin 0.2 per side (`CARET_MARGIN`, 0.5 = always centre); `FocusRect` centred if it fits, else its left/top edge shown; `CaretLost` holds the view.
+- `update` reads the pointer before the events. Pass the events drained this tick in order (`rx.try_iter()`); don't split them across calls.
+
+Notes for 4.6:
+- Subscribe a receiver from the hub (`events` in main.rs) for the render thread and pass it into `spawn_overlay` / the magnifier; drain with `try_recv` at the start of each tick (ADR 0008).
+- The active monitor should follow the target, not the raw pointer: `follow_pointer` uses `self.pointer` today, so a caret on another monitor would not switch capture.
+- The software cursor circle stays on the pointer, not the target.
+- Decide whether the tracker runs while the magnifier is disabled (events still need draining so the channel does not grow).
+- Fullscreen only; docked is 4.7 (its system-cursor hiding stays pointer-based).
+- Verify by hand: Notepad, Explorer rename, address bar (focus rect), Edge or Brave, Terminal at 10x: typing follows, a mouse move returns, drag-selecting does not fight the mouse.
 
 4.2a (you) can run any time before 4.8: the caret probe in desktop Word and in Chrome if installed (ROADMAP 4.2a).
 
@@ -32,6 +37,7 @@ What comes next:
 - 4.2 (you) measured the caret sources; results in docs/prototypes/caret-sources.md.
 - 4.3 wrote ADR 0008 (Accepted) from those results; 4.4 to 4.8 build it.
 - 4.4 (PR #40) built the caret thread and the core events; nothing consumes them yet.
+- 4.5 (PR #41) added the tracking policy (cv-core `tracking`); not wired yet.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 - Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
