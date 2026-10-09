@@ -34,6 +34,7 @@ Current roadmap:
 - 2.2 cv-platform-win backend crate (ADR 0004, branch step/2.2-platform-win, PR #25)
 - 2.3 Portable renderer (ADR 0004, branch step/2.3-portable-renderer, PR #26)
 - 2.4 Seam traits; capture loop moves to cv-magnifier (ADR 0004, branch step/2.4-seam-traits, PR #27)
+- 2.5 `Magnifier::tick`; per-tick logic moves out of `on_timer` (ADR 0004, branch step/2.5-magnifier-tick, PR #28)
 
 ## Works (a command proved it, or you verified it)
 
@@ -63,19 +64,24 @@ Current roadmap:
   - cv-platform-win's `Capturer` implements `CaptureSource`. Every error still rebuilds device and duplication through `reconnect`.
   - `CursorPointer` (`GetCursorPos`) implements `PointerSource` and is what `on_timer` reads; a failed read still gives (0, 0) (Finding 15).
   - app depends on cv-magnifier again.
-  - You tested it and reported that it works; individual Verify items were not itemised, so the lock/unlock reconnect check is not recorded separately.
+  - You tested it and reported that it works; individual Verify items were not itemised, so the lock/unlock reconnect check is not recorded separately. (Testing 2.5 later showed that capture does not survive a lock: Finding 16.)
+- `Magnifier::tick` (2.5, approved by you 2026-10-09):
+  - cv-magnifier/src/magnifier.rs holds the per-tick logic that was in `on_timer`: pointer follow, layout decisions, lerp, crop, frame upload and uniform caching. `Magnifier` (`new`, `tick`, `resized`) wraps a private `View` over a crate-private `Renderer` trait that `WgpuState` implements; 21 unit tests use a fake host and renderer. `WgpuState` is no longer exported.
+  - cv-platform-win's `WinHost` implements `OverlayHost` (AppBar, window placement, `ShowWindow`, `MagShowSystemCursor`) and clips the cursor each tick while docked. The message loop runs the tick on WM_TIMER; `WIN_DATA` is gone and `wnd_proc` borrows nothing. `ABN_POSCHANGED` sets a flag the loop handles before the next tick. Teardown runs from `WinHost`'s `Drop`, after the magnifier and its surface are dropped. A `GetMessageW` return of -1 now ends the loop.
+  - Finding 15 fix: a failed pointer read keeps the last position.
+  - You ran the step's Verify list and reported that everything works except the unlock check: unlocking with fullscreen on showed a black view (Finding 16, not caused by 2.5, roadmap 2.5a). That check also covered Finding 15, so the Finding 15 fix is not yet seen working by hand.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 60 tests and 1 ignored (2.4).
+- `cargo test --workspace`: passes, 81 tests and 1 ignored (2.5).
   - cv-core 38: 17 in `geometry::tests`, 21 in `tests` for serde round-trips, `sanitize`, `step_zoom` and `apply`.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
-  - cv-magnifier 12: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 10 in `capture::tests` for the capture loop with a scripted fake source, plus the ignored GPU bench `bench_modes_4k`.
+  - cv-magnifier 33: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 10 in `capture::tests` for the capture loop with a scripted fake source, 21 in `magnifier::tests` for the tick with a fake host and renderer, plus the ignored GPU bench `bench_modes_4k`.
   - cv-platform-win and cv-tts have none.
-- The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 3684 lines of Rust in total (`wc -l crates/*/src/*.rs`, 2.4).
+- The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4221 lines of Rust in total (`wc -l crates/*/src/*.rs`, 2.5).
 
 ## Broken
 
@@ -87,7 +93,7 @@ Code is present and builds; you have not verified the behaviour. Anything you di
 
 Magnifier (read from code, file paths given)
 - DXGI capture details on a real device: `DXGI_ERROR_WAIT_TIMEOUT` retry and reconnect on error (crates/cv-platform-win/src/capture.rs, loop in crates/cv-magnifier/src/capture.rs). The loop's logic is unit-tested with a fake source (2.4). Capture itself and output switching are seen working.
-- Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-platform-win/src/overlay.rs, crates/cv-magnifier/src/gfx.rs. The four colour filters and the three interpolation modes are seen working (1.5).
+- Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-magnifier/src/magnifier.rs (unit-tested with a fake renderer in 2.5, not measured on a GPU). The four colour filters and the four interpolation modes are seen working.
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (cv-platform-win/src/overlay.rs)
 - `ClipCursor` to the work area every tick while docked (overlay.rs `update_clip_cursor`)
 - AppBar details on each of the four edges, and unregister on toggle-off (cv-platform-win/src/appbar.rs, overlay.rs). Docking in general is seen working; which edges you tried is not recorded.
@@ -104,7 +110,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 
 ## Missing
 
-- Tests: only cv-core (geometry and state) and app (settings, panel merge). None in cv-platform-win or cv-tts; cv-magnifier has only the shader checks.
+- Tests: none in cv-platform-win or cv-tts. cv-core (geometry and state), app (settings, panel merge) and cv-magnifier (shader checks, capture loop, tick) have them.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
 - Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
 - AppState fields from docs/later/tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
@@ -117,7 +123,7 @@ Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify li
 2. **The repaint thread's stated cause was wrong. Resolved by 0.3.** The old comment said the write lock from `update()` "is never released"; the guard drops when the `CentralPanel::show` closure returns. It also said `request_repaint_after` inside `update()` is dropped as stale. In eframe 0.29.1 the pass-number check runs when the `RequestRepaint` event arrives, not when the delay ends, so it is accepted. The thread and the polling are removed. The real cause of speech stopping with the panel unfocused (if there was one) is still unproven; speech is parked.
 3. **`update()` took `state.write()` every frame. Resolved by 0.4.** The panel now snapshots under a read lock, edits a local copy and writes back only changed fields (app.rs `apply_changes`). Side effect from egui 0.29.1: `Slider` re-applies `step_by` rounding every frame, so an off-grid value from a hand-edited settings file is snapped and saved once.
 4. **Capture allocates a full frame per captured frame.** `read_staging` does `vec![0u8; w*h*4]` and a row copy each time (cv-platform-win/src/capture.rs:188-213): about 14.7 MB at 1440p, 33 MB at 4K. Performance is unmeasured.
-5. **Platform code is not isolated.** crates/cv-render/src/lib.rs mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform write caching. The pure crop, zoom, lerp and cursor-mapping math moved to cv-core::geometry in old 2.1. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut. ADR 0004 is Accepted (2.1); the split is roadmap 2.2 to 2.5. After 2.3: gfx.rs takes raw handles and lives in cv-magnifier; the mixed file is now cv-platform-win/src/overlay.rs, still mixed until 2.5 untangles `on_timer`. After 2.4: the capture loop is in cv-magnifier behind `CaptureSource`, and the seam traits exist; `OverlayHost` has no implementation yet.
+5. **Platform code is not isolated.** crates/cv-render/src/lib.rs mixes the Win32 window, AppBar callback, ClipCursor, Mag cursor, monitor switching and timer with uniform write caching. The pure crop, zoom, lerp and cursor-mapping math moved to cv-core::geometry in old 2.1. Correction to the old claim: gfx.rs is not fully portable, because `WgpuState::new` takes a Win32 `HWND` and builds a `Win32WindowHandle` (gfx.rs:3-6, 28-42). shader.wgsl is portable. cv-core imports only `parking_lot` and `std`. This is the seam ADR 0004 must cut. ADR 0004 is Accepted (2.1); the split is roadmap 2.2 to 2.5. After 2.3: gfx.rs takes raw handles and lives in cv-magnifier; the mixed file is now cv-platform-win/src/overlay.rs, still mixed until 2.5 untangles `on_timer`. After 2.4: the capture loop is in cv-magnifier behind `CaptureSource`, and the seam traits exist. Resolved by 2.5: `on_timer` is gone; the per-tick logic is `Magnifier::tick` in cv-magnifier, and overlay.rs keeps only the Win32 side (`WinHost`, the loop, teardown).
 6. **`shaders/magnify.hlsl` was referenced by nothing** (no match in .rs, .toml or .wgsl). Resolved by old 1.1: moved to docs/archive/magnify.hlsl.
 7. **Old dependencies.** Cargo.toml pins wgpu 22 and egui/eframe 0.29. The upgrade touches the same code as the platform split, so it needs a decision in an ADR. Decided by ADR 0004 (2.1): after the refactor, before 3.1, as roadmap 2.6 (wgpu 30) and 2.7 (eframe 0.36, needs Rust 1.95; local toolchain is 1.93.1).
 8. **Docs.** Old 1.1 moved PLAN.md, PHASE2PLAN.md, handoff.md and shaders/magnify.hlsl to docs/archive/ (merged). tts-plan.md now lives in docs/later/ (roadmap 0.1) and deliberately has no stage checkboxes; completion is recorded in the Done list above. Two CLAUDE.md claims do not match the code: it lists `ABM_ACTIVATE`, but appbar.rs sends ABM_NEW, QUERYPOS, SETPOS, WINDOWPOSCHANGED and REMOVE only; and it says the AppBar is released "on app exit" (see 9). Both fixed in CLAUDE.md by 0.7.
