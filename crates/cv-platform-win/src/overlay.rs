@@ -19,7 +19,7 @@ use windows::{
             Magnification::{MagInitialize, MagShowSystemCursor, MagUninitialize},
             WindowsAndMessaging::{
                 ClipCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-                GetCursorPos, GetMessageW, HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA,
+                GetMessageW, HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA,
                 LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
                 RegisterWindowMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
                 SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
@@ -34,13 +34,14 @@ use windows::{
 };
 
 use cv_core::{
-    ColorFilter, DisplayMode, Edge, Frame, FrameState, Interpolation, OutputInfo, SharedState,
+    ColorFilter, DisplayMode, Edge, Frame, FrameState, Interpolation, OutputInfo, PointerSource,
+    ScreenPoint, SharedState,
 };
 use cv_core::geometry::{self, panel_pct_to_px, window_dims};
 use cv_magnifier::WgpuState;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 
-use crate::appbar;
+use crate::{appbar, pointer::CursorPointer};
 
 struct WindowData {
     wgpu: WgpuState,
@@ -538,10 +539,8 @@ fn on_timer(hwnd: HWND) {
         return;
     }
 
-    let mut cursor = windows::Win32::Foundation::POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut cursor);
-    }
+    // A failed read gives (0, 0), as before the pointer moved behind `PointerSource`.
+    let cursor = CursorPointer.position().unwrap_or(ScreenPoint { x: 0, y: 0 });
 
     // ── Monitor follow: collect switch rect before taking the main borrow ───
     // We compute the move rect here (outside WIN_DATA borrow) so that

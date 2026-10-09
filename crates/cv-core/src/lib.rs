@@ -187,8 +187,30 @@ pub fn shared_from(state: AppState) -> SharedState {
     Arc::new(RwLock::new(state))
 }
 
+/// A point in physical pixels on the virtual screen (all monitors, primary at the origin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// A rectangle in physical pixels on the virtual screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenRect {
+    pub left: i32,
+    pub top: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where the pointer is (ADR 0004). Sampled when needed, not sent as events.
+pub trait PointerSource {
+    /// `None` when the platform cannot say, for example while another desktop has input.
+    fn position(&self) -> Option<ScreenPoint>;
+}
+
 /// Information about a single DXGI output (monitor).
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputInfo {
     /// Zero-based DXGI output index on the primary adapter.
     pub idx: u32,
