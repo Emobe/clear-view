@@ -1,7 +1,11 @@
 use std::sync::{Arc, OnceLock};
 
-use cv_core::{AppState, ColorFilter, DisplayMode, Edge, Interpolation, SharedState};
+use cv_core::{
+    AppState, ColorFilter, DisplayMode, Edge, Interpolation, SharedState, ZOOM_MAX, ZOOM_MIN,
+};
 use eframe::egui;
+
+use crate::hotkey::{HotkeyFailures, TOGGLE_LABEL};
 
 /// Filled with the egui context once the window exists. Threads that change state the panel
 /// shows (the hotkey thread flips `enabled`) call `request_repaint()` on it afterwards.
@@ -9,14 +13,20 @@ pub type RepaintSlot = Arc<OnceLock<egui::Context>>;
 
 pub struct ClearViewApp {
     state: SharedState,
+    hotkey_failures: HotkeyFailures,
 }
 
 impl ClearViewApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, state: SharedState, repaint: RepaintSlot) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        state: SharedState,
+        repaint: RepaintSlot,
+        hotkey_failures: HotkeyFailures,
+    ) -> Self {
         // egui only repaints on input or an explicit request, so the panel does not poll.
         // Anything that changes displayed state from another thread must wake it via `repaint`.
         let _ = repaint.set(cc.egui_ctx.clone());
-        Self { state }
+        Self { state, hotkey_failures }
     }
 }
 
@@ -38,14 +48,21 @@ impl eframe::App for ClearViewApp {
                 if ui.button(label).clicked() {
                     s.enabled = !s.enabled;
                 }
-                ui.label("  (Win += to toggle)");
+                ui.label(format!("  ({TOGGLE_LABEL} to toggle)"));
             });
+
+            // Set once at startup by the hotkey thread; a lock failure just hides the lines.
+            if let Ok(failures) = self.hotkey_failures.lock() {
+                for line in failures.iter() {
+                    ui.colored_label(egui::Color32::LIGHT_RED, format!("Hotkey {line}"));
+                }
+            }
 
             ui.add_space(8.0);
 
             // Zoom slider
             ui.add(
-                egui::Slider::new(&mut s.zoom, 1.0..=10.0)
+                egui::Slider::new(&mut s.zoom, ZOOM_MIN..=ZOOM_MAX)
                     .step_by(0.1)
                     .text("Zoom"),
             );

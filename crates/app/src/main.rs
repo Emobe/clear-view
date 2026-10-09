@@ -85,14 +85,16 @@ fn main() -> eframe::Result {
         desired_output.clone(),
     )));
 
-    // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled, shows/hides overlay
-    // The panel does not poll, so the thread wakes it after a toggle.
+    // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.
+    // The panel does not poll, so the thread wakes it after a change or a failed registration.
     let repaint: app::RepaintSlot = Arc::new(OnceLock::new());
+    let hotkey_failures: hotkey::HotkeyFailures = Arc::new(Mutex::new(Vec::new()));
     {
         let state = shared.clone();
         let repaint = repaint.clone();
+        let failures = hotkey_failures.clone();
         std::thread::spawn(move || {
-            hotkey::hotkey_loop(state, move || {
+            hotkey::hotkey_loop(state, failures, move || {
                 if let Some(ctx) = repaint.get() {
                     ctx.request_repaint();
                 }
@@ -121,7 +123,7 @@ fn main() -> eframe::Result {
                 .with_always_on_top(),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint)))),
+        Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint, hotkey_failures)))),
     );
 
     // Before the other threads stop, so the work area, cursor and clip are back first.
