@@ -214,7 +214,7 @@ mod tests {
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 20,
             color_filter: ColorFilter::Inverted,
-            interpolation: Interpolation::Bicubic,
+            interpolation: Interpolation::Sharp,
             tts_rate: 3,
             ..before.clone()
         };
