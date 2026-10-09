@@ -3,23 +3,26 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 3.1 Prototype on a throwaway branch, not merged: a topmost, click-through window excluded from capture (WDA_EXCLUDEFROMCAPTURE) over a live DXGI capture, without AppBar or ClipCursor. Measure extra frames caused by the overlay's own updates (Windows 11 24H2), mouse pass-through and cost. Results to docs/prototypes/docked-overlay.md.
-Branch: none yet. Use step/3.1-overlay-prototype off master for the prototype code (never merged). Only docs/prototypes/docked-overlay.md goes to master, on its own branch and PR.
+Item: 3.2 (ADR first) Docked overlay design from the prototype, superseding the AppBar docking part of ADR 0002: window styles, capture exclusion, handling extra frames, what the panel shows when the mouse is under it, panel size limits.
+Branch: none yet. Run `/adr 3.2`; it writes the ADR on its own branch. No code until you accept it.
 
-Notes for 3.1:
-- Phase 2 is finished. The current overlay already sets WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_LAYERED and WDA_EXCLUDEFROMCAPTURE (ADR 0002), so start from cv-platform-win/src/overlay.rs and `WinHost`.
-- Docked placement is `Layout` in cv-magnifier and `WinHost` (AppBar, `update_clip_cursor`) in cv-platform-win. The prototype replaces only the backend side; `Magnifier::tick` should not need to change.
-- Your docked-mode requirements are in STATUS Finding 11: desktop stays at 100%, panel on top, mouse can move under the panel and the panel shows that area magnified. Finding 12 (mouse can't reach the taskbar) goes away with ClipCursor.
-- Extra frames: count `AcquireNextFrame` successes per second with the mouse still, overlay shown vs hidden, and compare. That is the 24H2 issue the 3.2 ADR has to answer.
-- wgpu 27+ has DirectComposition swapchains (`Dx12SwapchainKind::DxgiFromVisual`); worth trying in the prototype (ADR 0004).
-- The output is measurements and a recommendation for the 3.2 ADR, not shippable code.
+Notes for 3.2:
+- Read docs/prototypes/docked-overlay.md first. Its "Recommendation for the 3.2 ADR" section is the starting point, and your verdict is "overlay is the way forward".
+- Prototype result on your machine: the current overlay window and styles (topmost, `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED`, `WDA_EXCLUDEFROMCAPTURE`), placed with `SetWindowPos` at the monitor edge, no AppBar, no `ClipCursor`. No extra frames, clicks pass through, the taskbar is reachable, the desktop stays at 100%, the panel follows the pointer under itself. You verified it all by hand (STATUS Works, 3.1).
+- Questions the ADR still has to settle:
+  - The 24H2 extra-frame issue was MPO-only and fixed in build 26100.2314; your outputs have no MPO, so the tester's build and MPO support are unchecked. The prototype showed that filtering frames by dirty rects inside the panel is unsafe (a video under the panel produces them); presenting only on change is the fallback.
+  - The system cursor shows on top of the panel at its real position while the pointer is under the panel: keep it, hide it, or draw it differently?
+  - Panel size limits: not measured.
+  - DirectComposition (`DxgiFromVisual`) gave no measured benefit; the prototype recommends staying on `DxgiFromHwnd`.
+- The change is backend-only inside `WinHost::apply_layout` (ADR 0004); 3.3 to 3.5 build it, 3.5 deletes appbar.rs and `update_clip_cursor`.
+- Model: Opus high (window host at the platform seam, supersedes part of ADR 0002).
 
-After 2.7 (done):
-- eframe and egui 0.36.2, glow, default features off. `App::ui(ui)` replaces `App::update(ctx)`; the panel is `CentralPanel::default().show(ui, …)`. Pinned to 0.36.2 for the busy-loop fix (egui PR #8398).
-- Toolchain is Rust 1.99.0.
+After 3.1 (done):
+- step/3.1-overlay-prototype holds the prototype code (73bdf0a). It is never merged; keep it for reference until 3.3 is done.
+- Side finding: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
 
 What comes next:
-- 3.2 (ADR first) uses the 3.1 results.
+- 3.3 to 3.5 build the ADR from 3.2.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
 
