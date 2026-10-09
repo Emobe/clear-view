@@ -3,15 +3,17 @@
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
 State: ready
-Item: 2.2 cv-platform-win: new crate absorbing cv-capture unchanged; DPI awareness and `RegisterHotKey` move in from app; the hotkey `Action` and its effect on `AppState` move to cv-core with tests; app drops its `windows` dependency.
-Branch: none yet. Use step/2.2-platform-win off master.
+Item: 2.3 Portable renderer: gfx.rs takes raw display and window handles instead of `HWND`; the Win32 overlay (window, loop, AppBar, cursor clip, cursor hiding, clean exit) and appbar.rs move to cv-platform-win; cv-render drops `windows` and is renamed cv-magnifier.
+Branch: none yet. Use step/2.3-portable-renderer off master.
 
-Before anything: merge PR #24 (step/2.1-platform-seams-adr) yourself. 2.1 is approved and recorded in STATUS; ADR 0004 is Accepted.
+Before anything: merge PR #25 (step/2.2-platform-win) yourself. 2.2 is approved and recorded in STATUS.
 
-Notes for 2.2:
-- Read ADR 0004 (Decision: Crates, Traits and who owns which thread, How each item is checked). 2.2 is the first of five moves (2.2 to 2.5) and must not change behaviour; its Verify list is the regression list in the ADR.
-- cv-platform-win starts with `#![cfg(windows)]`; app depends on it under `[target.'cfg(windows)'.dependencies]` and uses `#[cfg(windows)] use cv_platform_win as platform;` with a `compile_error!` on other targets.
-- In 2.2 cv-render still has its own `windows` dependency; that goes in 2.3. After 2.2, `cargo tree -i windows` should list cv-platform-win, cv-render and cv-tts, not app or cv-capture (which no longer exists).
+Notes for 2.3:
+- Read ADR 0004 (Crates; Traits and who owns which thread; How each item is checked). Behaviour must not change; the Verify list is the ADR's regression list.
+- After 2.2: cv-platform-win (`#![cfg(windows)]`) has capture.rs, dpi.rs and hotkey.rs; app reaches it as `platform::` and has no `windows` dependency. cv-render (lib.rs 699 lines, appbar.rs, gfx.rs) is the last crate besides cv-tts that depends on `windows`.
+- After 2.3, cv-platform-win depends on cv-magnifier (ADR 0004 crate table), app calls `platform::spawn_overlay(...)` and gets the same `OverlayHandle`, and `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1` lists only cv-platform-win and cv-tts.
+- The traits (`OverlayHost`, `CaptureSource`) are 2.4 and the `Magnifier::tick` untangling is 2.5: in 2.3 the overlay code moves as it is. If moving lib.rs plus the rename is too big for one PR, stop and propose sub-items.
+- The `bench_modes_4k` command below changes package name with the rename (`-p cv-magnifier`).
 
 What comes next:
 - 2.7 needs Rust 1.95 or newer for eframe 0.36; the local toolchain is 1.93.1. Update it (`rustup update stable`) before that step.
