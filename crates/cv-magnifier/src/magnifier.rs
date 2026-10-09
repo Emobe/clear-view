@@ -11,7 +11,8 @@ use std::{
 };
 
 use cv_core::{
-    AppState, DisplayMode, Edge, Frame, FrameState, OutputInfo, ScreenPoint, SharedState,
+    AppState, DisplayMode, Edge, Frame, FrameState, OutputInfo, ScreenPoint, ScreenRect,
+    SharedState,
     geometry::{self, panel_pct_to_px, window_dims},
 };
 
@@ -125,6 +126,12 @@ struct View<R> {
     /// Time of the last enabled tick; smoothing measures `dt` from it.
     last_tick: Instant,
     applied: Applied,
+    /// The docked panel's rect as last applied, `None` unless docked. Kept from the layout
+    /// rather than recomputed, because a monitor switch while docked does not move the panel.
+    panel: Option<ScreenRect>,
+    /// True while `set_system_cursor(false)` is in force because the pointer is inside the
+    /// panel. `apply_layout` resets the cursor, so this is cleared with every layout change.
+    cursor_hidden_in_panel: bool,
     last_frame: Option<Arc<Frame>>,
     last_uniforms: Option<Uniforms>,
 }
@@ -155,6 +162,8 @@ impl<R: Renderer> View<R> {
             pointer: centre,
             last_tick: now,
             applied: Applied::Hidden,
+            panel: None,
+            cursor_hidden_in_panel: false,
             last_frame: None,
             last_uniforms: None,
         }
@@ -181,15 +190,38 @@ impl<R: Renderer> View<R> {
             }
         };
         if want != self.applied {
-            let (w, h) = host.apply_layout(&self.layout_for(want));
+            let layout = self.layout_for(want);
+            let (w, h) = host.apply_layout(&layout);
             if want != Applied::Hidden {
                 self.renderer.resize(w, h);
             }
             self.applied = want;
+            self.panel = match &layout {
+                Layout::Docked { monitor, edge, thickness } => {
+                    Some(geometry::docked_rect(monitor, *edge, *thickness))
+                }
+                Layout::Hidden | Layout::Fullscreen { .. } => None,
+            };
+            self.cursor_hidden_in_panel = false;
         }
 
         if state.enabled {
+            self.update_system_cursor(host);
             self.draw(&state, frame, now);
+        }
+    }
+
+    /// While docked, hides the system cursor when the pointer is inside the panel and shows it
+    /// when it leaves (ADR 0007); the circle marks the pointer in the magnified view. Calls the
+    /// host only on a change. Fullscreen hiding is `apply_layout`'s job.
+    fn update_system_cursor(&mut self, host: &mut impl OverlayHost) {
+        let Some(panel) = self.panel else {
+            return;
+        };
+        let inside = panel.contains(self.pointer);
+        if inside != self.cursor_hidden_in_panel {
+            host.set_system_cursor(!inside);
+            self.cursor_hidden_in_panel = inside;
         }
     }
 
@@ -328,10 +360,12 @@ mod tests {
         }
     }
 
-    /// Records each layout and answers with the size the window would get.
+    /// Records each layout and system cursor call, and answers with the size the window would
+    /// get.
     struct FakeHost {
         pointer: Option<ScreenPoint>,
         layouts: Vec<Layout>,
+        cursor: Vec<bool>,
     }
 
     impl PointerSource for FakeHost {
@@ -353,6 +387,10 @@ mod tests {
                     (*thickness, monitor.height)
                 }
             }
+        }
+
+        fn set_system_cursor(&mut self, visible: bool) {
+            self.cursor.push(visible);
         }
 
         fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
@@ -396,7 +434,11 @@ mod tests {
                 desired.clone(),
                 now,
             );
-            let host = FakeHost { pointer: Some(ScreenPoint { x: 960, y: 540 }), layouts: Vec::new() };
+            let host = FakeHost {
+                pointer: Some(ScreenPoint { x: 960, y: 540 }),
+                layouts: Vec::new(),
+                cursor: Vec::new(),
+            };
             Self { view, host, state, frames, desired, now }
         }
 
@@ -417,6 +459,24 @@ mod tests {
         fn step(&mut self) -> (Vec<Layout>, Vec<Gpu>) {
             self.tick();
             (std::mem::take(&mut self.host.layouts), std::mem::take(&mut self.view.renderer.calls))
+        }
+
+        /// Ticks and returns the system cursor calls made during it.
+        fn cursor_step(&mut self) -> Vec<bool> {
+            self.tick();
+            std::mem::take(&mut self.host.cursor)
+        }
+
+        /// Docked on the top edge at 25% (1920x270 on the primary), enabled, one tick taken.
+        fn docked_top(&mut self) {
+            self.set(|s| {
+                s.display_mode = DisplayMode::Docked(Edge::Top);
+                s.panel_size = 25;
+                s.enabled = true;
+            });
+            self.tick();
+            self.host.layouts.clear();
+            self.host.cursor.clear();
         }
 
         fn publish_frame(&self) -> Arc<Frame> {
@@ -736,6 +796,110 @@ mod tests {
         let (_, gpu) = rig.step();
         assert_eq!((rig.view.smooth_x, rig.view.smooth_y), (500.0, 400.0));
         assert_eq!(uniform_writes(&gpu), 0);
+    }
+
+    #[test]
+    fn docked_hides_the_cursor_inside_the_panel_and_shows_it_outside() {
+        let mut rig = Rig::new();
+        rig.docked_top(); // pointer at (960, 540): below the 270 px panel
+        assert!(rig.cursor_step().is_empty());
+
+        rig.point_at(100, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+        assert!(rig.cursor_step().is_empty());
+        rig.point_at(1919, 269); // last pixel inside
+        assert!(rig.cursor_step().is_empty());
+
+        rig.point_at(1919, 270); // first row below
+        assert_eq!(rig.cursor_step(), [true]);
+        assert!(rig.cursor_step().is_empty());
+    }
+
+    #[test]
+    fn enabling_docked_with_the_pointer_inside_hides_it_in_the_same_tick() {
+        let mut rig = Rig::new();
+        rig.point_at(100, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_size = 25;
+            s.enabled = true;
+        });
+        rig.tick();
+        assert_eq!(rig.host.layouts, [docked(primary(), Edge::Top, 270)]);
+        assert_eq!(std::mem::take(&mut rig.host.cursor), [false]);
+        // Hidden after the layout, so the next tick has nothing to undo.
+        assert!(rig.cursor_step().is_empty());
+    }
+
+    #[test]
+    fn fullscreen_and_disabled_never_set_the_cursor() {
+        let mut rig = Rig::new();
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_size = 25;
+        });
+        rig.point_at(100, 100);
+        assert!(rig.cursor_step().is_empty()); // disabled
+
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Fullscreen;
+            s.enabled = true;
+        });
+        for (x, y) in [(100, 100), (960, 540), (100, 100)] {
+            rig.point_at(x, y);
+            assert!(rig.cursor_step().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_layout_change_inside_the_panel_hides_the_cursor_again() {
+        let mut rig = Rig::new();
+        rig.docked_top();
+        rig.point_at(100, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+
+        // Toggle off: `apply_layout(Hidden)` shows the cursor; the magnifier says nothing.
+        rig.set(|s| s.enabled = false);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Hidden]);
+        assert!(std::mem::take(&mut rig.host.cursor).is_empty());
+
+        // Back on: the layout showed it again, so it is hidden again.
+        rig.set(|s| s.enabled = true);
+        assert_eq!(rig.cursor_step(), [false]);
+
+        // Fullscreen: `apply_layout` hides it; back to docked: hidden again by the magnifier.
+        rig.set(|s| s.display_mode = DisplayMode::Fullscreen);
+        assert!(rig.cursor_step().is_empty());
+        rig.set(|s| s.display_mode = DisplayMode::Docked(Edge::Top));
+        assert_eq!(rig.cursor_step(), [false]);
+
+        // Panel size change re-applies the layout.
+        rig.set(|s| s.panel_size = 30);
+        assert_eq!(rig.cursor_step(), [false]);
+    }
+
+    #[test]
+    fn docked_hit_test_uses_the_applied_panel_after_a_monitor_switch() {
+        let mut rig = Rig::new();
+        rig.docked_top();
+        // Top of the second monitor: inside a panel there, but the panel stayed on the primary.
+        rig.point_at(2000, 100);
+        assert!(rig.cursor_step().is_empty());
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+
+        rig.point_at(100, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+    }
+
+    #[test]
+    fn unreadable_pointer_inside_the_panel_keeps_the_cursor_hidden() {
+        let mut rig = Rig::new();
+        rig.docked_top();
+        rig.point_at(100, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+        rig.host.pointer = None;
+        assert!(rig.cursor_step().is_empty());
     }
 
     #[test]

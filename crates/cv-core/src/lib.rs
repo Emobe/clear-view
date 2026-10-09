@@ -203,6 +203,19 @@ pub struct ScreenRect {
     pub height: u32,
 }
 
+impl ScreenRect {
+    /// Whether `p` lies inside. Left and top edges are inclusive, right and bottom exclusive,
+    /// as in `geometry::output_at`.
+    pub fn contains(&self, p: ScreenPoint) -> bool {
+        let (x, y) = (i64::from(p.x), i64::from(p.y));
+        let (left, top) = (i64::from(self.left), i64::from(self.top));
+        x >= left
+            && x < left + i64::from(self.width)
+            && y >= top
+            && y < top + i64::from(self.height)
+    }
+}
+
 /// Where the pointer is (ADR 0004). Sampled when needed, not sent as events.
 pub trait PointerSource {
     /// `None` when the platform cannot say, for example while another desktop has input.
@@ -469,6 +482,25 @@ mod tests {
             assert_ne!(s.zoom, before.zoom, "{a:?}");
             assert_eq!(s, AppState { zoom: s.zoom, ..before.clone() }, "{a:?}");
         }
+    }
+
+    #[test]
+    fn screen_rect_contains_is_inclusive_left_top_exclusive_right_bottom() {
+        let r = ScreenRect { left: -100, top: 50, width: 200, height: 10 };
+        let p = |x, y| ScreenPoint { x, y };
+        assert!(r.contains(p(-100, 50)));
+        assert!(r.contains(p(99, 59)));
+        assert!(r.contains(p(0, 55)));
+        assert!(!r.contains(p(100, 55)));
+        assert!(!r.contains(p(0, 60)));
+        assert!(!r.contains(p(-101, 55)));
+        assert!(!r.contains(p(0, 49)));
+    }
+
+    #[test]
+    fn empty_screen_rect_contains_nothing() {
+        let r = ScreenRect { left: 0, top: 0, width: 0, height: 0 };
+        assert!(!r.contains(ScreenPoint { x: 0, y: 0 }));
     }
 
     #[test]

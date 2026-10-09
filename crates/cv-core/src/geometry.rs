@@ -1,7 +1,7 @@
 //! Pure view math: smoothing, crop and zoom, cursor mapping, panel sizing.
 //! No platform types; the render loop feeds in plain numbers.
 
-use crate::{DisplayMode, Edge, OutputInfo};
+use crate::{DisplayMode, Edge, OutputInfo, ScreenRect};
 
 /// Frame-rate-independent lerp factor for one tick of `dt` seconds.
 /// `smooth_speed` is the per-tick factor at a logical 60 Hz.
@@ -29,6 +29,25 @@ pub fn output_at(outputs: &[OutputInfo], x: i32, y: i32) -> Option<&OutputInfo> 
 /// Convert a panel_size percentage (1-100) to pixels along the given screen dimension.
 pub fn panel_pct_to_px(pct: u32, dim: i32) -> i32 {
     (dim * pct as i32 / 100).max(1)
+}
+
+/// The docked panel on `edge` of `monitor`, `thickness` physical pixels across the edge
+/// (clamped to the monitor), in virtual-screen pixels with the monitor origin included
+/// (ADR 0007). Also the rect the system cursor is hidden inside.
+pub fn docked_rect(monitor: &OutputInfo, edge: Edge, thickness: u32) -> ScreenRect {
+    let (left, top, w, h) = (monitor.left, monitor.top, monitor.width, monitor.height);
+    match edge {
+        Edge::Top => ScreenRect { left, top, width: w, height: thickness.min(h) },
+        Edge::Bottom => {
+            let t = thickness.min(h);
+            ScreenRect { left, top: top + (h - t) as i32, width: w, height: t }
+        }
+        Edge::Left => ScreenRect { left, top, width: thickness.min(w), height: h },
+        Edge::Right => {
+            let t = thickness.min(w);
+            ScreenRect { left: left + (w - t) as i32, top, width: t, height: h }
+        }
+    }
 }
 
 /// Overlay window size for a display mode on a `sw` x `sh` monitor.
@@ -247,6 +266,54 @@ mod tests {
         assert_eq!(panel_pct_to_px(100, 1920), 1920);
         assert_eq!(panel_pct_to_px(1, 50), 1);
         assert_eq!(panel_pct_to_px(0, 1080), 1);
+    }
+
+    fn rect(left: i32, top: i32, width: u32, height: u32) -> ScreenRect {
+        ScreenRect { left, top, width, height }
+    }
+
+    #[test]
+    fn docked_rect_on_each_edge_of_the_primary() {
+        let m = out(0, 0, 0, 1920, 1080);
+        assert_eq!(docked_rect(&m, Edge::Top, 270), rect(0, 0, 1920, 270));
+        assert_eq!(docked_rect(&m, Edge::Bottom, 270), rect(0, 810, 1920, 270));
+        assert_eq!(docked_rect(&m, Edge::Left, 480), rect(0, 0, 480, 1080));
+        assert_eq!(docked_rect(&m, Edge::Right, 480), rect(1440, 0, 480, 1080));
+    }
+
+    #[test]
+    fn docked_rect_includes_the_monitor_origin() {
+        let m = out(1, -1280, -200, 1280, 1024);
+        assert_eq!(docked_rect(&m, Edge::Top, 100), rect(-1280, -200, 1280, 100));
+        assert_eq!(docked_rect(&m, Edge::Bottom, 100), rect(-1280, 724, 1280, 100));
+        assert_eq!(docked_rect(&m, Edge::Left, 100), rect(-1280, -200, 100, 1024));
+        assert_eq!(docked_rect(&m, Edge::Right, 100), rect(-100, -200, 100, 1024));
+    }
+
+    #[test]
+    fn docked_rect_is_clamped_to_the_monitor() {
+        let m = out(0, 0, 0, 1920, 1080);
+        assert_eq!(docked_rect(&m, Edge::Top, 5000), rect(0, 0, 1920, 1080));
+        assert_eq!(docked_rect(&m, Edge::Bottom, 5000), rect(0, 0, 1920, 1080));
+        assert_eq!(docked_rect(&m, Edge::Left, 5000), rect(0, 0, 1920, 1080));
+        assert_eq!(docked_rect(&m, Edge::Right, 5000), rect(0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn docked_rect_matches_window_dims() {
+        let m = out(0, 0, 0, 1920, 1080);
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            let dim = match edge {
+                Edge::Top | Edge::Bottom => 1080,
+                Edge::Left | Edge::Right => 1920,
+            };
+            let r = docked_rect(&m, edge, panel_pct_to_px(30, dim) as u32);
+            assert_eq!(
+                (r.width, r.height),
+                window_dims(DisplayMode::Docked(edge), 30, 1920, 1080),
+                "{edge:?}"
+            );
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use windows::{
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
-            IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
+            IDXGIAdapter, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
             DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_WAIT_TIMEOUT,
             DXGI_OUTDUPL_FRAME_INFO,
         },
@@ -164,6 +164,13 @@ pub fn enumerate_outputs() -> Vec<OutputInfo> {
         }
         result
     }
+}
+
+/// The adapter capture uses: the one `D3D11CreateDevice` picks by default (the primary).
+pub(crate) fn primary_adapter() -> windows::core::Result<IDXGIAdapter> {
+    let ctx = create_device()?;
+    let dxgi: IDXGIDevice = ctx.device.cast()?;
+    unsafe { dxgi.GetAdapter() }
 }
 
 fn create_device() -> windows::core::Result<D3dCtx> {
