@@ -469,8 +469,13 @@ mod tests {
 
         /// Docked on the top edge at 25% (1920x270 on the primary), enabled, one tick taken.
         fn docked_top(&mut self) {
+            self.docked_on(Edge::Top);
+        }
+
+        /// Docked on `edge` at 25% of the primary, enabled, one tick taken.
+        fn docked_on(&mut self, edge: Edge) {
             self.set(|s| {
-                s.display_mode = DisplayMode::Docked(Edge::Top);
+                s.display_mode = DisplayMode::Docked(edge);
                 s.panel_size = 25;
                 s.enabled = true;
             });
@@ -813,6 +818,44 @@ mod tests {
         rig.point_at(1919, 270); // first row below
         assert_eq!(rig.cursor_step(), [true]);
         assert!(rig.cursor_step().is_empty());
+    }
+
+    #[test]
+    fn every_other_edge_hides_the_cursor_inside_its_panel_and_shows_it_outside() {
+        // 25% of 1920x1080: bottom rows 810..1080, left columns 0..480, right columns 1440..1920.
+        // Each: two pixels on the inner boundary of the panel, then the first one outside.
+        let cases = [
+            (Edge::Bottom, [(0, 810), (1919, 1079)], (0, 809)),
+            (Edge::Left, [(0, 0), (479, 1079)], (480, 0)),
+            (Edge::Right, [(1440, 0), (1919, 1079)], (1439, 1079)),
+        ];
+        for (edge, inside, outside) in cases {
+            let mut rig = Rig::new();
+            rig.docked_on(edge); // pointer at (960, 540): outside every one of these panels
+            assert!(rig.cursor_step().is_empty(), "{edge:?}");
+
+            rig.point_at(inside[0].0, inside[0].1);
+            assert_eq!(rig.cursor_step(), [false], "{edge:?} enter");
+            rig.point_at(inside[1].0, inside[1].1);
+            assert!(rig.cursor_step().is_empty(), "{edge:?} still inside");
+
+            rig.point_at(outside.0, outside.1);
+            assert_eq!(rig.cursor_step(), [true], "{edge:?} leave");
+            assert!(rig.cursor_step().is_empty(), "{edge:?} stays shown");
+        }
+    }
+
+    #[test]
+    fn switching_edges_with_the_pointer_inside_both_panels_hides_it_again() {
+        let mut rig = Rig::new();
+        rig.docked_on(Edge::Left);
+        rig.point_at(100, 100); // inside the left and the top panel at 25%
+        assert_eq!(rig.cursor_step(), [false]);
+
+        // The new layout shows the cursor, so the magnifier hides it again in the same tick.
+        rig.set(|s| s.display_mode = DisplayMode::Docked(Edge::Top));
+        assert_eq!(rig.cursor_step(), [false]);
+        assert_eq!(rig.host.layouts, [docked(primary(), Edge::Top, 270)]);
     }
 
     #[test]

@@ -34,7 +34,7 @@ use windows::{
 };
 
 use cv_core::{
-    Edge, FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState, geometry,
+    FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState, geometry,
 };
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
@@ -159,6 +159,7 @@ fn teardown(hwnd: HWND, appbar_active: bool) {
 /// and destroys the window.
 struct WinHost {
     hwnd: HWND,
+    #[allow(dead_code)] // only AppBar registration read it; removed in 3.5
     callback_msg: u32,
     /// What `apply_layout` last made the window.
     applied: Layout,
@@ -193,16 +194,12 @@ impl WinHost {
         Some(rect_dims(rect))
     }
 
-    /// Runs every tick: while docked on an AppBar edge the cursor is clipped to the work area;
-    /// in fullscreen and on the overlay top edge the clip is released, so the mouse can go
-    /// under the panel (ADR 0007). Nothing while hidden.
+    /// Runs every tick: in fullscreen and on every docked edge the clip is released, so the
+    /// mouse can go under the panel (ADR 0007). Nothing while hidden.
     fn update_clip(&self) {
         match self.applied {
             Layout::Hidden => {}
-            Layout::Fullscreen { .. } | Layout::Docked { edge: Edge::Top, .. } => {
-                update_clip_cursor(false)
-            }
-            Layout::Docked { .. } => update_clip_cursor(true),
+            Layout::Fullscreen { .. } | Layout::Docked { .. } => update_clip_cursor(false),
         }
     }
 }
@@ -236,34 +233,10 @@ impl OverlayHost for WinHost {
                 rect_dims(rect)
             }
             // Overlay docking (ADR 0007): the panel sits on top of the desktop at the monitor
-            // edge. No AppBar, so the work area is not changed. Top edge only until 3.4.
-            Layout::Docked { monitor, edge: Edge::Top, thickness } => {
-                self.unregister_appbar();
-                let rect = to_rect(geometry::docked_rect(monitor, Edge::Top, *thickness));
-                move_window(self.hwnd, rect);
-                rect_dims(rect)
-            }
-            // AppBar docking on the other edges until 3.4 moves them to the overlay.
+            // edge. No AppBar, so the work area is not changed.
             Layout::Docked { monitor, edge, thickness } => {
-                let (sw, sh) = (monitor.width as i32, monitor.height as i32);
-                let same_edge =
-                    matches!(&self.applied, Layout::Docked { edge: e, .. } if e == edge);
-                let rect = if self.appbar_active && same_edge {
-                    // Panel size change: the registration stays.
-                    appbar::reposition(self.hwnd, *edge, *thickness as i32, sw, sh)
-                } else {
-                    self.unregister_appbar();
-                    let rect = appbar::register(
-                        self.hwnd,
-                        *edge,
-                        *thickness as i32,
-                        sw,
-                        sh,
-                        self.callback_msg,
-                    );
-                    self.appbar_active = true;
-                    rect
-                };
+                self.unregister_appbar();
+                let rect = to_rect(geometry::docked_rect(monitor, *edge, *thickness));
                 move_window(self.hwnd, rect);
                 rect_dims(rect)
             }
