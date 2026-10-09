@@ -38,3 +38,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0003 Single TTS thread with UIA and SAPI (Accepted)
 - 0004 Platform abstraction for Windows, X11 and Wayland (Proposed)
 - 0005 Hotkey scheme (Proposed)
+- 0006 Upscaling filter for readable text at 10x to 20x (Proposed)
