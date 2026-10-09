@@ -27,6 +27,23 @@ impl Drop for OverlayGuard {
     }
 }
 
+/// Stops the caret thread when dropped, so a panic in `main` still unhooks it.
+struct CaretGuard(Option<platform::CaretHandle>);
+
+impl CaretGuard {
+    fn shutdown(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.shutdown();
+        }
+    }
+}
+
+impl Drop for CaretGuard {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 fn main() -> eframe::Result {
     // Before any window or thread: everything below works in physical pixels.
     platform::set_dpi_awareness();
@@ -60,6 +77,11 @@ fn main() -> eframe::Result {
         outputs,
         desired_output.clone(),
     )));
+
+    // Core events (ADR 0008). The caret thread publishes caret moves here and logs `[caret]`
+    // lines; nothing subscribes until the tracking policy is wired in (4.6).
+    let events = Arc::new(cv_core::EventHub::new());
+    let mut caret = CaretGuard(Some(platform::spawn_caret_source(events.clone())));
 
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.
     // The panel does not poll, so the thread wakes it after a change or a failed registration.
@@ -116,6 +138,7 @@ fn main() -> eframe::Result {
 
     // Before the other threads stop, so the system cursor is back first.
     overlay.shutdown();
+    caret.shutdown();
 
     #[cfg(feature = "tts")]
     {

@@ -1,4 +1,7 @@
+pub mod events;
 pub mod geometry;
+
+pub use events::{AppId, CaretSource, CoreEvent, EventHub};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
