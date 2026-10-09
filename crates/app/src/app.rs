@@ -112,11 +112,22 @@ impl eframe::App for ClearViewApp {
 
             // Interpolation selector
             ui.label("Interpolation");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut s.interpolation, Interpolation::Bilinear, "Bilinear");
-                ui.radio_value(&mut s.interpolation, Interpolation::Bicubic,  "Bicubic");
-                ui.radio_value(&mut s.interpolation, Interpolation::Sharp,    "Sharp");
+            ui.horizontal_wrapped(|ui| {
+                ui.radio_value(&mut s.interpolation, Interpolation::Bilinear,  "Bilinear");
+                ui.radio_value(&mut s.interpolation, Interpolation::Bicubic,   "Bicubic");
+                ui.radio_value(&mut s.interpolation, Interpolation::Sharp,     "Sharp");
+                ui.radio_value(&mut s.interpolation, Interpolation::CleanEdge, "Smooth edges");
             });
+
+            // cleanEdge similarity threshold — only shown for that mode
+            if s.interpolation == Interpolation::CleanEdge {
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Slider::new(&mut s.edge_threshold, 0.0..=1.0)
+                        .step_by(0.01)
+                        .text("Edge threshold"),
+                );
+            }
 
             #[cfg(feature = "tts")]
             {
@@ -172,6 +183,7 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         zoom,
         smooth_speed,
         interpolation,
+        edge_threshold,
         display_mode,
         panel_size,
         color_filter,
@@ -214,7 +226,8 @@ mod tests {
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 20,
             color_filter: ColorFilter::Inverted,
-            interpolation: Interpolation::Sharp,
+            interpolation: Interpolation::CleanEdge,
+            edge_threshold: 0.4,
             tts_rate: 3,
             ..before.clone()
         };

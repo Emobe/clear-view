@@ -1,16 +1,24 @@
-// Uniforms — 32 bytes (crop 16 bytes + color_mode 4 bytes + interp_mode 4 bytes + cursor 8 bytes).
-// color_mode:  0=None, 1=Inverted, 2=Greyscale, 3=GreyscaleInverted
-// interp_mode: 0=Bilinear, 1=Bicubic (Catmull-Rom), 2=Sharp bilinear
-// cursor_x/y:  software cursor position in output window pixels
+// Uniforms — 48 bytes (crop 16 bytes + color_mode 4 bytes + interp_mode 4 bytes + cursor 8 bytes
+// + edge_threshold 4 bytes + 12 bytes padding to a 16-byte multiple).
+// color_mode:     0=None, 1=Inverted, 2=Greyscale, 3=GreyscaleInverted
+// interp_mode:    0=Bilinear, 1=Bicubic (Catmull-Rom), 2=Sharp bilinear, 3=cleanEdge
+// cursor_x/y:     software cursor position in output window pixels
+// edge_threshold: cleanEdge colour similarity threshold (0–1), used by interp_mode 3 only
+//
+// gfx.rs appends clean_edge.wgsl to this file before compiling, which defines sample_clean_edge.
 struct Uniforms {
-    src_x:       f32,
-    src_y:       f32,
-    src_w:       f32,
-    src_h:       f32,
-    color_mode:  u32,
-    interp_mode: u32,
-    cursor_x:    u32,
-    cursor_y:    u32,
+    src_x:          f32,
+    src_y:          f32,
+    src_w:          f32,
+    src_h:          f32,
+    color_mode:     u32,
+    interp_mode:    u32,
+    cursor_x:       u32,
+    cursor_y:       u32,
+    edge_threshold: f32,
+    _pad0:          f32,
+    _pad1:          f32,
+    _pad2:          f32,
 }
 
 @group(0) @binding(0) var<uniform> u:          Uniforms;
@@ -104,6 +112,8 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         col = sample_bicubic(uv);
     } else if u.interp_mode == 2u {
         col = sample_sharp(texel, dims, scale);
+    } else if u.interp_mode == 3u {
+        col = sample_clean_edge(texel, dims);
     } else {
         col = textureSample(frame_tex, frame_samp, uv);
     }
