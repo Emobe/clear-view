@@ -42,6 +42,7 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, Wi
 use crate::{
     capture::try_enumerate_outputs,
     display::DisplayWatch,
+    perf::PerfReporter,
     pointer::CursorPointer,
     sysinfo::log_outputs,
 };
@@ -305,6 +306,9 @@ fn run_overlay(
 
     unsafe { SetTimer(Some(hwnd), TIMER_ID, TICK_MS, None) };
 
+    // The `[perf]` line, only with CV_PERF=1 (roadmap 5.5a).
+    let mut perf_line = PerfReporter::new(Instant::now());
+
     // The loop runs the tick itself rather than dispatching WM_TIMER to `wnd_proc`, so the host
     // and magnifier are plain locals and `wnd_proc` never touches them.
     let mut msg = MSG::default();
@@ -327,6 +331,9 @@ fn run_overlay(
                 refresh_outputs(&mut magnifier, &mut known, &mut watch, now);
             }
             magnifier.tick(&mut host, now);
+            if let Some(line) = &mut perf_line {
+                line.poll(now);
+            }
             continue;
         }
         unsafe {

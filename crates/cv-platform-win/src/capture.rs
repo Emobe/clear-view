@@ -1,5 +1,5 @@
 use cv_core::{Frame, OutputInfo};
-use cv_magnifier::{CaptureError, CaptureSource};
+use cv_magnifier::{CaptureError, CaptureSource, perf};
 use windows::{
     core::Interface,
     Win32::Graphics::{
@@ -63,9 +63,14 @@ impl Capturer {
                 Err(e) => return Err(e),
             }
 
+            // Zero means only the pointer changed (DXGI_OUTDUPL_FRAME_INFO); the copy below is
+            // made all the same (STATUS Finding 4), and 5.5a counts the two apart.
+            let image = info.LastPresentTime != 0;
+            let timer = perf::start();
             let texture: ID3D11Texture2D = resource.unwrap().cast()?;
             self.ctx.context.CopyResource(&self.staging, &texture);
             let data = read_staging(&self.ctx.context, &self.staging, self.width, self.height)?;
+            perf::captured(timer, image);
             duplication.ReleaseFrame()?;
 
             Ok(Some(Frame { width: self.width, height: self.height, data }))
@@ -273,5 +278,67 @@ fn read_staging(
 
         ctx.Unmap(staging, 0);
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT;
+
+    /// Cost of the capture copy at 3840x2160 (roadmap 5.5a): the same `CopyResource`, `Map` and
+    /// row copy `acquire` does for every frame, from a GPU texture of the desktop's format. Needs
+    /// a D3D11 adapter and no monitor, so it is ignored by `cargo test`. Run with
+    /// `cargo test --release -p cv-platform-win bench_readback_4k -- --ignored --nocapture`,
+    /// with the GPU idle.
+    #[test]
+    #[ignore]
+    fn bench_readback_4k() {
+        const W: u32 = 3840;
+        const H: u32 = 2160;
+        const FRAMES: u32 = 100;
+
+        let ctx = create_device().expect("D3D11 device");
+        let staging = create_staging(&ctx.device, W, H).expect("staging texture");
+        let source = {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: W,
+                Height: H,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_DEFAULT,
+                ..Default::default()
+            };
+            let mut tex = None;
+            unsafe { ctx.device.CreateTexture2D(&desc, None, Some(&mut tex)) }.expect("source texture");
+            tex.unwrap()
+        };
+
+        let one = || {
+            unsafe { ctx.context.CopyResource(&staging, &source) };
+            read_staging(&ctx.context, &staging, W, H).expect("read_staging")
+        };
+        for _ in 0..5 {
+            one();
+        }
+
+        let (mut total, mut max) = (Duration::ZERO, Duration::ZERO);
+        for _ in 0..FRAMES {
+            let t = Instant::now();
+            let frame = one();
+            let d = t.elapsed();
+            assert_eq!(frame.len(), (W * H * 4) as usize);
+            total += d;
+            max = max.max(d);
+        }
+        println!("{W}x{H} frame, {} MB", W * H * 4 / 1_000_000);
+        println!(
+            "CopyResource + Map + row copy: avg {:.2} ms, max {:.2} ms",
+            total.as_secs_f64() * 1000.0 / FRAMES as f64,
+            max.as_secs_f64() * 1000.0,
+        );
     }
 }

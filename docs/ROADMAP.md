@@ -101,8 +101,10 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 5.2 Implement 5.1 (Findings 10 and 18). Decided in 5.1: by default the panel stays on the primary monitor and shows whichever monitor the target (pointer or caret) is on; a saved setting, off by default, moves the panel to the target's monitor instead (same edge, same percentage of that monitor). No ADR: no monitor identity is saved, and `Layout::Docked` already names the monitor.
 5.3 Mixed display scaling across monitors.
 5.4 Monitors connected or disconnected while running (pending ADR 0009): the overlay's `WM_DISPLAYCHANGE` sets a flag, the backend's loop re-enumerates and calls `Magnifier::outputs_changed` when the list differs (once more about 1 s after the last message); the magnifier re-picks the active and primary monitors, rewrites `desired_output`, recreates the frame texture and re-applies the layout; `switch_output` never uses a stale factory. Fake-host tests for removal, primary change, addition and resolution change. Verify includes whether `WM_DISPLAYCHANGE` arrives for a plain plug and unplug.
-5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you.
-5.6 Fix what 5.5 finds. Likely the per-frame allocation in capture (Finding 4).
+5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you. Split on 2026-10-10 because the owner cannot run the app for now:
+5.5a Measuring tools: an opt-in `[perf]` line (`CV_PERF=1`), `scripts/perf-sample.ps1` for CPU and GPU, and two ignored headless 4K benches (capture copy, GPU upload). Method and matrix in docs/prototypes/performance.md.
+5.5b (you) Run the matrix from docs/prototypes/performance.md and send the numbers (4K needs the desktop at 3840x2160, for example NVIDIA DSR). Thresholds are set with you then.
+5.6 Fix what 5.5b finds. Likely the per-frame allocation in capture (Finding 4).
 
 ## Phase 6: v1 (M5)
 

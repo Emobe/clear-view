@@ -20,6 +20,7 @@ use cv_core::{
 use crate::{
     gfx::WgpuState,
     host::{Layout, OverlayHost},
+    perf,
 };
 
 /// The magnifier for one overlay window: smoothing, the active monitor, the applied layout and
@@ -57,7 +58,9 @@ impl Magnifier {
     /// One tick: drain the core events, pick the target (pointer or caret, by the tracking
     /// policy), apply any layout change through `host`, then draw.
     pub fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
+        let timer = perf::start();
         self.view.tick(host, now);
+        perf::ticked(timer);
     }
 
     /// The set of monitors changed (plugged, unplugged, new resolution, another primary): the
@@ -387,7 +390,9 @@ impl<R: Renderer> View<R> {
         if let Some(frame) = &frame {
             let new_frame = self.last_frame.as_ref().is_none_or(|last| !Arc::ptr_eq(last, frame));
             if new_frame {
+                let timer = perf::start();
                 self.renderer.upload_frame(&frame.data, frame.width, frame.height);
+                perf::uploaded(timer);
                 self.last_frame = Some(Arc::clone(frame));
             }
         }
@@ -410,7 +415,9 @@ impl<R: Renderer> View<R> {
             self.last_uniforms = Some(uniforms);
         }
 
-        if !self.renderer.render() {
+        if self.renderer.render() {
+            perf::rendered();
+        } else {
             // Surface lost or outdated: reconfigure to recover.
             self.renderer.resize(win_w, win_h);
         }
