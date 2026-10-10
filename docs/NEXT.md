@@ -6,20 +6,22 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test.
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it once PR #47 is merged: ADR 0009 (Accepted), from /adr 5.4.
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-Notes for 5.4 (monitors connected or disconnected while running), read from code, not run:
-- Outputs are enumerated once at startup (app main.rs `platform::enumerate_outputs()`, DXGI `EnumOutputs` on the primary adapter) and the list is handed to `spawn_overlay` and `Magnifier::new`. Nothing re-enumerates, so a monitor plugged in later is never captured, and an unplugged one stays in the list (`geometry::primary_output`, `follow_pointer` and the docked panel all read it).
-- Capture is addressed by DXGI output index (`desired_output`, `Capturer::switch_output`). Indices can shift when a monitor goes away, so a stale index may capture the wrong monitor or fail. A hot-plug shows up in capture as `DXGI_ERROR_ACCESS_LOST` (or a mode change); `run_capture` retries `reconnect` every 250 ms since 2.5a, which never succeeds for an output that is gone.
-- Re-enumerating needs the magnifier (platform-neutral) to get a new output list from the backend. That is a new seam call (`OverlayHost`, `CaptureSource` or a new trait) and a change to ADR 0004's boundaries, so check ADR 0004 first; if it doesn't cover it, stop and go to /adr. A Windows signal to start from: `WM_DISPLAYCHANGE` to the overlay window.
-- You cannot test at the moment: the step can still code and unit-test whatever it finds (fake host and capture source exist), and leave the by-hand checks (plug and unplug in fullscreen and docked, primary unplugged, panel follows on and off) in its Verify list.
-
-State: ready
+State: blocked-on-adr
 Item: 5.4 Monitors connected or disconnected while running. Branch step/5.4-<name> from the integration branch.
-ADR: possibly. Not marked ADR first, but re-enumerating outputs likely adds a call across the ADR 0004 seam; the step checks ADR 0004 first and goes to /adr if it is not covered.
+ADR: 0009 Monitors connected or disconnected while running (docs/adr/0009-display-changes.md), Accepted by you 2026-10-10 as recommended. 5.4 resumes with `/step 5.4`.
 Model: Sonnet high (CLAUDE.md model guide for /step).
+
+Notes for 5.4 (ADR 0009 as accepted: option 1, addressing A):
+- Backend: `wnd_proc` sets an atomic flag on `WM_DISPLAYCHANGE`; the loop in `run_overlay` sees it before the next tick, runs `enumerate_outputs()`, and on a changed list reprints the `[system] output N` lines (reuse sysinfo.rs `log_outputs`) and calls `magnifier.outputs_changed(list)`. Re-check about 1 s after the last message. Never call the magnifier from inside `apply_layout`.
+- `Capturer::duplicate` (switch) reuses its old device; make it check `IDXGIFactory1::IsCurrent` and rebuild the device when stale. `recreate` already builds a new one.
+- Magnifier (`View::outputs_changed`): replace `outputs`, recompute `primary`, re-pick `active` from the target (primary centre if the target is on no monitor), always rewrite `desired_output`, always recreate the frame texture and clear `last_frame`, and reset `applied` so the layout is applied again. `Applied` compares indices only, so without the reset a monitor that keeps its index but changes rect is never re-placed.
+- Side fix that comes with it: a resolution change on the active monitor freezes the view today (`upload_frame` drops frames of another size; the texture is resized only on an index change).
+- First thing to check by hand: whether `WM_DISPLAYCHANGE` arrives for a plug or unplug that keeps the resolution (undocumented). If it doesn't, stop and record it here; another signal is an ADR change.
+- You cannot test right now: code and unit-test it with the fake host and renderer, and leave the plug and unplug checks in the Verify list (ADR 0009 lists them).
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
 What 4.5 built (PR #41, approved 2026-10-09), for 4.6 and 4.7:
