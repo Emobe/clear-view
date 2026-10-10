@@ -333,7 +333,9 @@ unsafe extern "system" fn wnd_proc(
         // Sent when the window lands on a monitor with other scaling (fullscreen, or a docked
         // panel that follows the target, roadmap 5.2). The suggested rect in lParam is the old
         // size scaled for the new DPI; the magnifier places the window in physical pixels and
-        // already gave it the right rect, so the suggestion is ignored. Mixed scaling is 5.3.
+        // already gave it the right rect, so the suggestion is ignored. The window is resized
+        // only if this handler calls `SetWindowPos` with it (Microsoft docs, WM_DPICHANGED), so
+        // `WM_GETDPISCALEDSIZE`, which only changes that suggestion, needs no handler (5.3).
         WM_DPICHANGED => LRESULT(0),
         // The message loop runs the tick; nothing to do if a timer message is dispatched.
         WM_TIMER => LRESULT(0),

@@ -6,6 +6,7 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
+- 5.3 mixed display scaling across monitors (branch step/5.3-mixed-scaling): no alignment fix needed; the startup log gives each output's scale and rect; Finding 19 (msaa in DPI-unaware apps) left for a by-hand check
 Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10) and 5.2 (PR #45, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
 
 What 5.2 built (STATUS "Works" has the full list): the docked panel stays on the primary (`geometry::primary_output`, the output at (0, 0), else the start monitor); `AppState::panel_follows_monitor` moves it to the target's monitor; the view is sized from the panel's own monitor (`View::panel_monitor`); `compute_crop` keeps the window's shape when the window is larger than the frame; the overlay returns 0 for `WM_DPICHANGED`, keeping the physical rect it set.
