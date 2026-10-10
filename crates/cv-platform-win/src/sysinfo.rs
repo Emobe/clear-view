@@ -75,7 +75,7 @@ unsafe fn get_value(
 /// `IDXGIOutput2::SupportsOverlays`, display scale and desktop rect for every output of the
 /// adapter capture uses. The scale and rect show whether a test ran with mixed scaling across
 /// monitors (roadmap 5.3); the rect is in physical pixels because the process is Per-Monitor v2.
-fn log_outputs() {
+pub(crate) fn log_outputs() {
     let adapter = match primary_adapter() {
         Ok(a) => a,
         Err(e) => {

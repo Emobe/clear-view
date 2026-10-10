@@ -59,6 +59,13 @@ impl Magnifier {
     pub fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
         self.view.tick(host, now);
     }
+
+    /// The set of monitors changed (plugged, unplugged, new resolution, another primary): the
+    /// backend calls this between ticks with the list it just read (ADR 0009). Never call it
+    /// from inside `OverlayHost::apply_layout`. A list equal to the current one does nothing.
+    pub fn outputs_changed(&mut self, outputs: Vec<OutputInfo>) {
+        self.view.outputs_changed(outputs);
+    }
 }
 
 /// What the tick needs from the GPU. `WgpuState` in the app, a recording fake in tests.
@@ -98,6 +105,9 @@ pub(crate) const CURSOR_HIDDEN: u32 = u32::MAX;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Applied {
     Hidden,
+    /// The monitors changed, so whatever the window is must be applied again (ADR 0009). Never
+    /// a wanted state: the next tick always differs from it, including when disabled.
+    Stale,
     Fullscreen { output: u32 },
     Docked { edge: Edge, panel_pct: u32, monitor: u32 },
 }
@@ -106,7 +116,8 @@ struct View<R> {
     renderer: R,
     app_state: SharedState,
     frame_state: FrameState,
-    /// All monitors, enumerated at startup (virtual-screen coordinates).
+    /// All monitors (virtual-screen coordinates): at startup, then as the backend reports changes
+    /// through `outputs_changed`.
     outputs: Vec<OutputInfo>,
     /// The monitor being magnified.
     active: OutputInfo,
@@ -292,9 +303,55 @@ impl<R: Renderer> View<R> {
         self.active = output;
     }
 
+    /// Takes a new monitor list (ADR 0009). The active monitor is the one under the target; if
+    /// the target is on none (its monitor was removed) the view jumps to the primary's centre.
+    /// Capture is told the active index even when it is unchanged, the frame texture is made
+    /// again for the active size (this also covers a resolution change that keeps the index),
+    /// and the layout is applied again on the next tick if the active or primary monitor changed. A caret position stays a screen point,
+    /// so the tracker is kept unless the target was lost.
+    fn outputs_changed(&mut self, outputs: Vec<OutputInfo>) {
+        if outputs.is_empty() || outputs == self.outputs {
+            return;
+        }
+        let primary = geometry::primary_output(&outputs)
+            .or(outputs.first())
+            .cloned()
+            .expect("the list is not empty");
+        self.outputs = outputs;
+
+        let (x, y) = (self.target.0.floor() as i32, self.target.1.floor() as i32);
+        let active = match geometry::output_at(&self.outputs, x, y) {
+            Some(output) => output.clone(),
+            None => {
+                let output = self.primary.clone();
+                let centre = (
+                    output.left as f32 + output.width as f32 / 2.0,
+                    output.top as f32 + output.height as f32 / 2.0,
+                );
+                self.target = centre;
+                self.smooth_x = centre.0;
+                self.smooth_y = centre.1;
+                // A caret kept from the removed monitor would pull the view back off screen.
+                self.tracker = Tracker::new();
+                output
+            }
+        };
+        self.desired_output.store(active.idx, Ordering::Relaxed);
+        self.renderer.recreate_frame_texture(active.width, active.height);
+        self.last_frame = None; // the new texture needs the frame again
+        // The window only needs placing again if a monitor it is placed on moved or changed
+        // size. `Applied` names indices, which cannot tell.
+        let moved = active != self.active || primary != self.primary;
+        self.active = active;
+        self.primary = primary;
+        if moved {
+            self.applied = Applied::Stale;
+        }
+    }
+
     fn layout_for(&self, applied: Applied, state: &AppState) -> Layout {
         match applied {
-            Applied::Hidden => Layout::Hidden,
+            Applied::Hidden | Applied::Stale => Layout::Hidden,
             Applied::Fullscreen { .. } => Layout::Fullscreen { monitor: self.active.clone() },
             Applied::Docked { edge, panel_pct, .. } => {
                 let monitor = self.panel_monitor(state).clone();
@@ -1376,5 +1433,145 @@ mod tests {
         rig.set(|s| s.enabled = true);
         rig.step();
         assert_eq!(rig.smooth(), (960.0, 540.0));
+    }
+
+    // ── Monitors connected or disconnected (ADR 0009) ───────────────────────────
+
+    #[test]
+    fn the_active_monitor_removed_falls_back_to_the_primary() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.point_at(2000, 100);
+        rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+
+        rig.view.outputs_changed(vec![primary()]);
+        // The view jumps to the primary's centre; it does not slide there.
+        assert_eq!(rig.smooth(), (960.0, 540.0));
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        // Windows moves the pointer onto the monitor that is left.
+        rig.point_at(100, 100);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: primary() }]);
+        assert_eq!(gpu[0], Gpu::Recreate(1920, 1080));
+        assert!(gpu.contains(&Gpu::Resize(1920, 1080)));
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_caret_left_on_the_removed_monitor_does_not_pull_the_view_off_screen() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.caret_at(2000, 100);
+        for _ in 0..30 {
+            rig.tick();
+        }
+        assert_eq!(rig.view.active.idx, 1, "the caret took the view to the second monitor");
+
+        rig.view.outputs_changed(vec![primary()]);
+        rig.tick();
+        assert_eq!(rig.view.target, (960.0, 540.0), "back on the pointer");
+        assert_eq!(rig.view.active.idx, 0);
+    }
+
+    #[test]
+    fn the_primary_removed_moves_the_docked_panel_and_rewrites_the_index() {
+        let mut rig = Rig::new();
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+
+        // The second monitor becomes output 0 at (0, 0), the same number as before.
+        let left = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 1024 };
+        rig.desired.store(7, Ordering::Relaxed);
+        rig.view.outputs_changed(vec![left.clone()]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [docked(left, Edge::Top, 512)]);
+        assert_eq!(gpu[0], Gpu::Recreate(1280, 1024));
+    }
+
+    #[test]
+    fn a_monitor_added_is_reachable_and_changes_no_layout() {
+        let mut rig = Rig::with(primary(), vec![primary()]);
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.point_at(2000, 100);
+        let (layouts, _) = rig.step();
+        assert!(layouts.is_empty(), "no monitor there yet");
+        assert_eq!(rig.view.active.idx, 0);
+
+        // The pointer comes back before the monitor appears.
+        rig.point_at(1900, 100);
+        rig.step();
+        rig.view.outputs_changed(vec![primary(), second()]);
+        let (layouts, gpu) = rig.step();
+        assert!(layouts.is_empty(), "the active monitor is unchanged: {layouts:?}");
+        assert_eq!(rig.view.active.idx, 0);
+        assert_eq!(rig.view.outputs.len(), 2);
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+
+        // The view follows the pointer onto the new monitor as onto any other.
+        rig.point_at(2000, 100);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: second() }]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_active_monitor_changing_resolution_places_the_window_and_uploads_again() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.publish_frame();
+        rig.step();
+
+        let smaller = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 720 };
+        rig.view.outputs_changed(vec![smaller.clone(), second()]);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: smaller }]);
+        assert_eq!(gpu[0], Gpu::Recreate(1280, 720));
+        assert!(gpu.contains(&Gpu::Resize(1280, 720)));
+
+        // The capture thread's next frame has the new size, and the texture takes it.
+        rig.publish_frame();
+        let (_, gpu) = rig.step();
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Upload(1280, 720))), 1);
+    }
+
+    #[test]
+    fn an_unchanged_list_does_nothing() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.desired.store(5, Ordering::Relaxed);
+        rig.view.outputs_changed(vec![primary(), second()]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 5);
+        assert!(rig.view.renderer.calls.is_empty(), "nothing reached the renderer");
+        let (layouts, gpu) = rig.step();
+        assert!(layouts.is_empty());
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Recreate(..))), 0);
+    }
+
+    #[test]
+    fn a_change_while_the_window_is_shown_then_disabled_still_hides_it() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+
+        let smaller = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 720 };
+        rig.view.outputs_changed(vec![smaller.clone(), second()]);
+        rig.set(|s| s.enabled = false);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Hidden]);
+
+        rig.set(|s| s.enabled = true);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: smaller }]);
     }
 }

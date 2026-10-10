@@ -6,6 +6,7 @@
 
 mod capture;
 mod caret;
+mod display;
 mod dpi;
 mod hotkey;
 mod overlay;
