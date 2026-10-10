@@ -6,7 +6,7 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 6.2a pointer probe, the dev-only `pointer_probe` example (merged into the integration branch; the PR number is below once it is open)
+- 6.2a pointer probe, the dev-only `pointer_probe` example (merged into the integration branch; PR #53)
 Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46), 5.4 (PR #48), 5.5a (PR #50) and 6.1 (ADR 0010, docs only, PR #52), all approved 2026-10-10 without hand testing for 5.4 and 5.5a. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
