@@ -23,7 +23,7 @@ use windows::{
                 PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOZORDER, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
                 SetWindowPos, ShowWindow, TranslateMessage, UnregisterClassW,
-                WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_NCHITTEST, WM_TIMER,
+                WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_NCHITTEST, WM_TIMER,
                 WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
                 WS_EX_TRANSPARENT, WS_POPUP,
             },
@@ -330,6 +330,11 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         },
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+        // Sent when the window lands on a monitor with other scaling (fullscreen, or a docked
+        // panel that follows the target, roadmap 5.2). The suggested rect in lParam is the old
+        // size scaled for the new DPI; the magnifier places the window in physical pixels and
+        // already gave it the right rect, so the suggestion is ignored. Mixed scaling is 5.3.
+        WM_DPICHANGED => LRESULT(0),
         // The message loop runs the tick; nothing to do if a timer message is dispatched.
         WM_TIMER => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

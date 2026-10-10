@@ -93,13 +93,13 @@ pub(crate) struct Uniforms {
 pub(crate) const CURSOR_HIDDEN: u32 = u32::MAX;
 
 /// What was last applied to the window, as the magnifier decides when to apply again.
-/// Docked compares edge and panel percentage, not the monitor, so a monitor switch while docked
-/// leaves the panel where it is (STATUS Finding 10, roadmap 5.2).
+/// Docked names the monitor the panel is on: the primary, or with `panel_follows_monitor` the
+/// active one, so only then does a monitor switch move the panel (roadmap 5.2).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Applied {
     Hidden,
     Fullscreen { output: u32 },
-    Docked { edge: Edge, panel_pct: u32 },
+    Docked { edge: Edge, panel_pct: u32, monitor: u32 },
 }
 
 struct View<R> {
@@ -110,6 +110,9 @@ struct View<R> {
     outputs: Vec<OutputInfo>,
     /// The monitor being magnified.
     active: OutputInfo,
+    /// Where the docked panel sits unless it follows the target (roadmap 5.2): the output at
+    /// (0, 0), or the start monitor if none is.
+    primary: OutputInfo,
     /// Written here on a monitor switch, read by the capture loop.
     desired_output: Arc<AtomicU32>,
     /// Last pointer position read. Kept when a read fails (lock screen, UAC prompt), so the
@@ -129,7 +132,7 @@ struct View<R> {
     last_tick: Instant,
     applied: Applied,
     /// The docked panel's rect as last applied, `None` unless docked. Kept from the layout
-    /// rather than recomputed, because a monitor switch while docked does not move the panel.
+    /// rather than recomputed, because a monitor switch while docked need not move the panel.
     panel: Option<ScreenRect>,
     /// True while `set_system_cursor(false)` is in force because the pointer is inside the
     /// panel. `apply_layout` resets the cursor, so this is cleared with every layout change.
@@ -154,7 +157,9 @@ impl<R: Renderer> View<R> {
         };
         let smooth_x = start.width as f32 / 2.0 + start.left as f32;
         let smooth_y = start.height as f32 / 2.0 + start.top as f32;
+        let primary = geometry::primary_output(&outputs).cloned().unwrap_or_else(|| start.clone());
         Self {
+            primary,
             renderer,
             app_state,
             frame_state,
@@ -197,12 +202,14 @@ impl<R: Renderer> View<R> {
         let want = match (state.enabled, state.display_mode) {
             (false, _) => Applied::Hidden,
             (true, DisplayMode::Fullscreen) => Applied::Fullscreen { output: self.active.idx },
-            (true, DisplayMode::Docked(edge)) => {
-                Applied::Docked { edge, panel_pct: state.panel_size }
-            }
+            (true, DisplayMode::Docked(edge)) => Applied::Docked {
+                edge,
+                panel_pct: state.panel_size,
+                monitor: self.panel_monitor(&state).idx,
+            },
         };
         if want != self.applied {
-            let layout = self.layout_for(want);
+            let layout = self.layout_for(want, &state);
             let (w, h) = host.apply_layout(&layout);
             if want != Applied::Hidden {
                 self.renderer.resize(w, h);
@@ -246,14 +253,26 @@ impl<R: Renderer> View<R> {
         self.tracker.update(now, self.pointer, events, view)
     }
 
-    /// The window size the view is drawn into: the active monitor, or the docked panel on it.
+    /// The window size the view is drawn into: the active monitor in fullscreen, or the docked
+    /// panel on the monitor it sits on, which need not be the one magnified (STATUS Finding 18).
+    /// `layout_for` places the panel on the same monitor, so the two always agree.
     fn window_size(&self, state: &AppState) -> (u32, u32) {
+        let monitor = match state.display_mode {
+            DisplayMode::Fullscreen => &self.active,
+            DisplayMode::Docked(_) => self.panel_monitor(state),
+        };
         window_dims(
             state.display_mode,
             state.panel_size,
-            self.active.width as i32,
-            self.active.height as i32,
+            monitor.width as i32,
+            monitor.height as i32,
         )
+    }
+
+    /// The monitor the docked panel sits on (roadmap 5.2): the primary, or the one being
+    /// magnified when the panel follows the target.
+    fn panel_monitor(&self, state: &AppState) -> &OutputInfo {
+        if state.panel_follows_monitor { &self.active } else { &self.primary }
     }
 
     /// Switches the active monitor to the one under the target, if that changed. A target off
@@ -273,12 +292,12 @@ impl<R: Renderer> View<R> {
         self.active = output;
     }
 
-    fn layout_for(&self, applied: Applied) -> Layout {
-        let monitor = self.active.clone();
+    fn layout_for(&self, applied: Applied, state: &AppState) -> Layout {
         match applied {
             Applied::Hidden => Layout::Hidden,
-            Applied::Fullscreen { .. } => Layout::Fullscreen { monitor },
-            Applied::Docked { edge, panel_pct } => {
+            Applied::Fullscreen { .. } => Layout::Fullscreen { monitor: self.active.clone() },
+            Applied::Docked { edge, panel_pct, .. } => {
+                let monitor = self.panel_monitor(state).clone();
                 let dim = match edge {
                     Edge::Top | Edge::Bottom => monitor.height,
                     Edge::Left | Edge::Right => monitor.width,
@@ -453,16 +472,22 @@ mod tests {
     }
 
     impl Rig {
+        /// Starts on the primary, with the second monitor to its right.
         fn new() -> Self {
+            Self::with(primary(), vec![primary(), second()])
+        }
+
+        fn with(start: OutputInfo, outputs: Vec<OutputInfo>) -> Self {
             let state = cv_core::new_shared();
             let frames: FrameState = Arc::new(Mutex::new(None));
-            let desired = Arc::new(AtomicU32::new(0));
+            let desired = Arc::new(AtomicU32::new(start.idx));
             let (events, rx) = channel();
-            let renderer = FakeRenderer { frame: (1920, 1080), render_ok: true, calls: Vec::new() };
+            let frame = (start.width, start.height);
+            let renderer = FakeRenderer { frame, render_ok: true, calls: Vec::new() };
             let view = View::new(
                 renderer,
-                primary(),
-                vec![primary(), second()],
+                start,
+                outputs,
                 state.clone(),
                 frames.clone(),
                 desired.clone(),
@@ -695,21 +720,166 @@ mod tests {
         assert_eq!(layouts, [Layout::Fullscreen { monitor: primary() }]);
     }
 
-    #[test]
-    fn docked_monitor_switch_moves_capture_but_not_the_panel() {
+    /// The crop in the last uniform write of `gpu`.
+    fn crop_written(gpu: &[Gpu]) -> Option<[f32; 4]> {
+        gpu.iter().rev().find_map(|c| match c {
+            Gpu::Uniforms(u) => Some(u.crop),
+            _ => None,
+        })
+    }
+
+    /// Docked on the top edge at the default 50%, snapping to the target, at 2x, one tick
+    /// taken with the pointer at (960, 540) on the primary.
+    fn docked_top_half(follows: bool) -> Rig {
         let mut rig = Rig::new();
         rig.set(|s| {
             s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_follows_monitor = follows;
+            s.smooth_speed = 1.0;
             s.enabled = true;
         });
-        rig.step();
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+        rig.host.cursor.clear();
+        rig
+    }
 
+    #[test]
+    fn docked_monitor_switch_keeps_the_panel_on_the_primary_and_sizes_the_view_for_it() {
+        let mut rig = docked_top_half(false);
         rig.point_at(2000, 100);
         let (layouts, gpu) = rig.step();
         assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
         assert!(layouts.is_empty());
         assert_eq!(gpu.first(), Some(&Gpu::Recreate(1280, 1024)));
         assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+        // The 1920x540 panel on the primary at 2x shows 960x270 of the second monitor's
+        // 1280x1024 frame, not the 640x256 a panel on the second monitor would (Finding 18).
+        assert_eq!(crop_written(&gpu), Some([0.0, 0.0, 0.75, 270.0 / 1024.0]));
+    }
+
+    #[test]
+    fn enabling_docked_on_the_second_monitor_puts_the_panel_on_the_primary() {
+        let mut rig = Rig::new();
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+    }
+
+    #[test]
+    fn enabling_docked_on_the_second_monitor_with_the_setting_puts_the_panel_there() {
+        let mut rig = Rig::new();
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Left);
+            s.panel_follows_monitor = true;
+            s.enabled = true;
+        });
+        let (layouts, gpu) = rig.step();
+        // 50% of the second monitor's 1280 px width.
+        assert_eq!(layouts, [docked(second(), Edge::Left, 640)]);
+        assert!(gpu.contains(&Gpu::Resize(640, 1024)));
+    }
+
+    #[test]
+    fn with_the_setting_the_panel_moves_with_the_target_and_back() {
+        let mut rig = docked_top_half(true);
+        rig.point_at(2000, 100);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(second(), Edge::Top, 512)]);
+        assert_eq!(gpu[..2], [Gpu::Recreate(1280, 1024), Gpu::Resize(1280, 512)]);
+        // A 1280x512 panel at 2x: 640x256 of the 1280x1024 frame.
+        assert_eq!(crop_written(&gpu), Some([0.0, 0.0, 0.5, 0.25]));
+
+        rig.point_at(100, 700);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+        assert_eq!(gpu[..2], [Gpu::Recreate(1920, 1080), Gpu::Resize(1920, 540)]);
+    }
+
+    #[test]
+    fn with_the_setting_a_caret_on_the_other_monitor_moves_the_panel() {
+        let mut rig = docked_top_half(true);
+        rig.caret_at(2500, 500);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(second(), Edge::Top, 512)]);
+        // Re-centred across only: at 2x, 500 is inside the middle of the view's height.
+        assert_eq!(rig.smooth().0, 2500.0);
+    }
+
+    #[test]
+    fn changing_the_setting_while_docked_moves_the_panel_at_once() {
+        let mut rig = docked_top_half(false);
+        rig.point_at(2000, 100);
+        rig.step();
+
+        rig.set(|s| s.panel_follows_monitor = true);
+        assert_eq!(rig.step().0, [docked(second(), Edge::Top, 512)]);
+        rig.set(|s| s.panel_follows_monitor = false);
+        assert_eq!(rig.step().0, [docked(primary(), Edge::Top, 540)]);
+    }
+
+    #[test]
+    fn the_setting_changes_nothing_on_one_monitor_or_in_fullscreen() {
+        let mut rig = docked_top_half(false);
+        rig.set(|s| s.panel_follows_monitor = true); // active is the primary: same panel
+        assert!(rig.step().0.is_empty());
+
+        rig.set(|s| s.display_mode = DisplayMode::Fullscreen);
+        rig.step();
+        rig.set(|s| s.panel_follows_monitor = false);
+        assert!(rig.step().0.is_empty());
+    }
+
+    #[test]
+    fn the_cursor_hides_inside_the_panel_after_it_moves() {
+        let mut rig = docked_top_half(true);
+        // (960, 540) is the first row below the primary's 540 px panel.
+        assert!(rig.cursor_step().is_empty());
+        // Inside the second monitor's 512 px panel, which the same tick puts there.
+        rig.point_at(2000, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+        let moved = ScreenRect { left: 1920, top: 0, width: 1280, height: 512 };
+        assert_eq!(rig.view.panel, Some(moved));
+        rig.point_at(2000, 600);
+        assert_eq!(rig.cursor_step(), [true]);
+    }
+
+    #[test]
+    fn the_primary_is_the_monitor_at_the_origin_not_the_start_one() {
+        // Starts on the second monitor, listed first; the pointer stays on it.
+        let mut rig = Rig::with(second(), vec![second(), primary()]);
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Bottom);
+            s.panel_size = 25;
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(primary(), Edge::Bottom, 270)]);
+    }
+
+    #[test]
+    fn with_no_monitor_at_the_origin_the_panel_stays_on_the_start_monitor() {
+        let a = OutputInfo { idx: 0, left: 100, top: 0, width: 1920, height: 1080 };
+        let b = OutputInfo { idx: 1, left: 2020, top: 0, width: 1280, height: 1024 };
+        let mut rig = Rig::with(a.clone(), vec![a.clone(), b]);
+        rig.point_at(2100, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(a, Edge::Top, 540)]);
     }
 
     #[test]

@@ -26,6 +26,13 @@ pub fn output_at(outputs: &[OutputInfo], x: i32, y: i32) -> Option<&OutputInfo> 
     })
 }
 
+/// The primary monitor: the one containing the virtual-screen origin (0, 0)
+/// ([The Virtual Screen](https://learn.microsoft.com/en-us/windows/win32/gdi/the-virtual-screen)).
+/// `None` when no output does, for example when the primary is on another adapter.
+pub fn primary_output(outputs: &[OutputInfo]) -> Option<&OutputInfo> {
+    output_at(outputs, 0, 0)
+}
+
 /// Convert a panel_size percentage to pixels along the given screen dimension (at least 1).
 pub fn panel_pct_to_px(pct: u32, dim: i32) -> i32 {
     (dim * pct as i32 / 100).max(1)
@@ -87,6 +94,10 @@ impl Crop {
 }
 
 /// Crop centred on `(cx, cy)` (monitor-local frame pixels), clamped to the frame.
+///
+/// The crop keeps the window's aspect ratio. A window larger than the frame at this zoom (a
+/// docked panel on a bigger monitor than the one it shows, roadmap 5.2) gets the largest crop
+/// of that shape that fits, so the image is zoomed a little more rather than stretched.
 pub fn compute_crop(
     cx: f32,
     cy: f32,
@@ -96,8 +107,11 @@ pub fn compute_crop(
     frame_w: f32,
     frame_h: f32,
 ) -> Crop {
-    let src_w = (win_w as f32 / zoom).min(frame_w);
-    let src_h = (win_h as f32 / zoom).min(frame_h);
+    let (w, h) = (win_w as f32 / zoom, win_h as f32 / zoom);
+    let fit = (frame_w / w).min(frame_h / h).min(1.0);
+    // `min` again: rounding in `h * fit` must never leave the crop a hair larger than the frame
+    // (the clamps below would then get min > max).
+    let (src_w, src_h) = ((w * fit).min(frame_w), (h * fit).min(frame_h));
     let src_x = (cx - src_w * 0.5).clamp(0.0, frame_w - src_w);
     let src_y = (cy - src_h * 0.5).clamp(0.0, frame_h - src_h);
     Crop {
@@ -206,11 +220,25 @@ mod tests {
     }
 
     #[test]
-    fn crop_larger_window_than_frame_is_clamped_to_frame() {
-        // Window bigger than frame at zoom 1: source never exceeds the frame.
+    fn crop_larger_window_than_frame_fits_the_frame_and_keeps_the_shape() {
+        // Window bigger than frame at zoom 1: source never exceeds the frame, and keeps the
+        // window's 3:2 shape (height is the tighter side: 1080 / 2000).
         let c = compute_crop(100.0, 100.0, 3000, 2000, 1.0, 1920.0, 1080.0);
-        assert_eq!((c.src_w, c.src_h), (1920.0, 1080.0));
+        assert!((c.src_w - 1620.0).abs() < 0.01 && (c.src_h - 1080.0).abs() < 0.01, "{c:?}");
+        assert!(c.src_h <= 1080.0 && c.src_w <= 1920.0, "{c:?}");
         assert_eq!((c.src_x, c.src_y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn crop_for_a_wider_panel_than_the_frame_keeps_the_panel_shape() {
+        // A 2560x720 top panel showing a 1920x1080 monitor at 1x: 2560 is too wide, so the crop
+        // is 1920x540, the panel's shape, not 1920x720 stretched.
+        let c = compute_crop(960.0, 540.0, 2560, 720, 1.0, 1920.0, 1080.0);
+        assert_eq!((c.src_w, c.src_h), (1920.0, 540.0));
+        assert_eq!((c.src_x, c.src_y), (0.0, 270.0));
+        // From about 1.34x it fits, and the zoom is exact again.
+        let c = compute_crop(960.0, 540.0, 2560, 720, 2.0, 1920.0, 1080.0);
+        assert_eq!((c.src_w, c.src_h), (1280.0, 360.0));
     }
 
     #[test]
@@ -273,6 +301,26 @@ mod tests {
         assert!(output_at(&outs, 500, 1080).is_none());
         assert_eq!(output_at(&outs, -1280, 0).map(|o| o.idx), Some(1));
         assert!(output_at(&outs, -1281, 0).is_none());
+    }
+
+    #[test]
+    fn primary_is_the_output_at_the_origin_wherever_it_is_listed() {
+        let outs = [out(0, -1280, 0, 1280, 1024), out(1, 0, 0, 1920, 1080)];
+        assert_eq!(primary_output(&outs).map(|o| o.idx), Some(1));
+        // Origin on the primary's top-left corner even with monitors above and left of it.
+        let outs = [
+            out(0, 1920, -500, 1280, 1024),
+            out(1, 0, 0, 1920, 1080),
+            out(2, -800, -600, 800, 600),
+        ];
+        assert_eq!(primary_output(&outs).map(|o| o.idx), Some(1));
+    }
+
+    #[test]
+    fn no_output_at_the_origin_has_no_primary() {
+        let outs = [out(0, 1920, 0, 1280, 1024)];
+        assert!(primary_output(&outs).is_none());
+        assert!(primary_output(&[]).is_none());
     }
 
     #[test]
