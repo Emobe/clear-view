@@ -54,6 +54,7 @@ Current roadmap:
 - 5.4 Monitors connected or disconnected while running (ADR 0009, branch step/5.4-display-changes, PR #48, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing.
 - 5.5a Performance measuring tools (5.5 split into 5.5a and 5.5b; branch step/5.5a-perf-tooling, PR #50, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing. 5.5b (you) is open.
 - 6.1 Cursor enhancement ADR (ADR 0010, branch step/6.1-cursor-enhancement-adr, PR #52, merged into the integration branch step/4.6-fullscreen-tracking)
+- 6.2a Pointer probe (ADR 0010, branch step/6.2a-pointer-probe, PR #53, merged into the integration branch step/4.6-fullscreen-tracking). 6.2b (you) is open.
 
 ## Works (a command proved it, or you verified it)
 
@@ -202,6 +203,12 @@ Current roadmap:
   - The shader draws it recoloured (blue by default) with an outline, at a size multiple that is not tied to zoom. The circle stays as the fallback when the shape is unknown.
   - `SetSystemCursor` is rejected.
   - 6.2 is split into 6.2a (pointer probe), 6.2b (you run it: is the shape readable while `MagShowSystemCursor(false)` hides the cursor?) and 6.2c (build it, or the own-arrow fallback).
+- Pointer probe (6.2a, approved by you 2026-10-10, PR #53, on the integration branch). You said "I approve" without itemising a run, so the probe's behaviour on a real machine is not recorded; `cargo build`, `cargo clippy --workspace --all-targets` (0 warnings) and `cargo test --workspace` pass:
+  - `cargo run -p cv-platform-win --example pointer_probe > probe.txt` (crates/cv-platform-win/examples/pointer_probe.rs, dev-only, not shipped; `--secs N` per phase, default 20, and `--output N`). Three phases: system cursor shown, hidden with `MagShowSystemCursor(false)`, shown again.
+  - `GetCursorInfo` is read every 50 ms: flags, handle (named when it is a standard shared cursor) and position. A new handle is read with `GetIconInfo` + `GetDIBits`: size, hotspot, monochrome or colour, and drawn-pixel counts by each rule (alpha > 0, mask AND = 0, inverting), so 6.2c can choose the rule for colour cursors without alpha.
+  - Desktop Duplication on one output, on its own thread, logs mouse updates (`Visible`, position beside `GetCursorPos`) and new pointer shapes (`GetFramePointerShape`); no image is copied.
+  - Each phase ends with a summary line and all three are printed again together; that comparison answers 6.2b's question (is the shape readable while hidden).
+  - A drop guard and a console handler show the cursor again on exit, Ctrl+C and console close. No library crate, trait, setting or dependency changed.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
