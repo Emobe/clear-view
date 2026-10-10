@@ -1,6 +1,6 @@
 # 0010: Cursor enhancement
 
-Status: Proposed
+Status: Accepted (by the owner's instruction, 2026-10-10)
 Date: 2026-10-10
 
 ## Context
