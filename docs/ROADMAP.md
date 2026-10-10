@@ -109,7 +109,10 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 ## Phase 6: v1 (M5)
 
 6.1 (ADR first) Cursor enhancement: drawing our own enlarged pointer in the magnified view vs changing the system cursor; size, colour (blue default) and outline options.
-6.2 Cursor enhancement per the ADR.
+6.2 Cursor enhancement per the ADR. Split by ADR 0010 into 6.2a to 6.2c, measurement first:
+6.2a Pointer probe: a dev-only `pointer_probe` example (not shipped) that hides the cursor with `MagShowSystemCursor(false)` for a few seconds and shows it again, logging what `GetCursorInfo` (flags, handle, shape via `GetIconInfo`) and the duplication's `PointerPosition` and pointer shape report in both states: arrow, over text, over a link, at a resize edge, busy cursor (pending ADR 0010).
+6.2b (you) Run the probe and send the output. It decides whether the real cursor shape can be read while hidden (pending ADR 0010).
+6.2c Enhanced pointer in the magnified view: the real cursor shape as a coverage mask from the backend (`GetCursorInfo` + `GetIconInfo` on the render thread), drawn by the shader at the pointer with size, fill colour and outline settings, replacing the circle (the circle stays as the fallback when the shape is unknown); or ADR 0010's fallback, our own arrow, if 6.2b shows nothing reports while hidden. Verify at 100% and 150% scaling (pending ADR 0010).
 6.3 (ADR first) UIAccess, signing and installer.
 6.4 UIAccess manifest and build script.
 6.5 Signing.

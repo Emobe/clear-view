@@ -42,3 +42,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0007 Docked overlay (Accepted; supersedes the AppBar docking part of 0002)
 - 0008 Caret sources (Accepted; supersedes the "only the TTS thread adds or removes UIA handlers" part of 0003)
 - 0009 Monitors connected or disconnected while running (Accepted; extends 0004, supersedes nothing)
+- 0010 Cursor enhancement (Proposed)
