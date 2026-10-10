@@ -6,6 +6,7 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
+- 5.2 implement 5.1: docked panel on the primary, `panel_follows_monitor` setting, Finding 18 fix (branch step/5.2-docked-monitors)
 Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
 
 Decided in 5.1, for 5.2 (your choice, 2026-10-10; full text in ROADMAP 5.2):

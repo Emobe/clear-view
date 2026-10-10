@@ -100,6 +100,11 @@ impl eframe::App for ClearViewApp {
                     egui::Slider::new(&mut s.panel_size, PANEL_SIZE_MIN..=PANEL_SIZE_MAX)
                         .text("Panel size (%)"),
                 );
+                // Off: the panel stays on the primary monitor (roadmap 5.2).
+                ui.checkbox(
+                    &mut s.panel_follows_monitor,
+                    "Move the panel to the monitor being magnified",
+                );
             }
 
             ui.add_space(8.0);
@@ -191,6 +196,7 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         edge_threshold,
         display_mode,
         panel_size,
+        panel_follows_monitor,
         color_filter,
         tts_enabled,
         tts_hover_enabled,
@@ -230,6 +236,7 @@ mod tests {
             enabled: true,
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 20,
+            panel_follows_monitor: true,
             color_filter: ColorFilter::Inverted,
             interpolation: Interpolation::CleanEdge,
             edge_threshold: 0.4,
