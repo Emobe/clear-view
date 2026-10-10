@@ -6,13 +6,25 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46), 5.4 (PR #48) and 5.5a (PR #50), all approved 2026-10-10 without hand testing for 5.4 and 5.5a. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46), 5.4 (PR #48), 5.5a (PR #50) and 6.1 (ADR 0010, docs only, PR #52), all approved 2026-10-10 without hand testing for 5.4 and 5.5a. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
 State: ready
-Item: 6.1 (ADR first) Cursor enhancement: drawing our own enlarged pointer in the magnified view vs changing the system cursor; size, colour (blue default) and outline options. Run /adr 6.1. Chosen because 5.5b (you) is open and 5.6 waits for its numbers.
-Model: Opus high (it touches the platform seam: CLAUDE.md model guide for /adr).
+Item: 6.2a Pointer probe (pending ADR 0010, Accepted): a dev-only `pointer_probe` example; see ROADMAP 6.2a. Run /step 6.2a.
+Model: Sonnet high (CLAUDE.md model guide for /step).
+
+6.1 is approved (2026-10-10, PR #52). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
+- The shape is read with `GetCursorInfo` + `GetIconInfo` on the render thread and passed through cv-core as a coverage mask.
+- The shader draws it recoloured (blue by default), with an outline, at a size multiple not tied to zoom.
+- The circle stays as the fallback when the shape is unknown; our own arrow is the fallback if the probe fails.
+
+6.2 is split into 6.2a, 6.2b and 6.2c:
+- 6.2a (agent): the `pointer_probe` dev example.
+- 6.2b (you): run it. Whether the shape can be read while `MagShowSystemCursor(false)` hides the cursor is undocumented.
+- 6.2c (agent): build it, or the own-arrow fallback if 6.2b shows nothing reports while hidden.
+
+While you cannot test, 6.2b and 6.2c wait; after 6.2a the next agent item is 6.3 (ADR first).
 
 5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b (you) is open and /next skips it while you cannot test: run the matrix in docs/prototypes/performance.md and send the numbers; thresholds are set with you then. 5.6 fixes what 5.5b finds (Finding 4 already has the pointer-only capture cost from 3.1).
 

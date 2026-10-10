@@ -53,6 +53,7 @@ Current roadmap:
 - 5.3 Mixed display scaling across monitors (branch step/5.3-mixed-scaling, PR #46, merged into the integration branch step/4.6-fullscreen-tracking)
 - 5.4 Monitors connected or disconnected while running (ADR 0009, branch step/5.4-display-changes, PR #48, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing.
 - 5.5a Performance measuring tools (5.5 split into 5.5a and 5.5b; branch step/5.5a-perf-tooling, PR #50, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing. 5.5b (you) is open.
+- 6.1 Cursor enhancement ADR (ADR 0010, branch step/6.1-cursor-enhancement-adr, PR #52, merged into the integration branch step/4.6-fullscreen-tracking)
 
 ## Works (a command proved it, or you verified it)
 
@@ -196,6 +197,11 @@ Current roadmap:
   - `scripts/perf-sample.ps1` samples CPU and the GPU Engine counters of the running app (`-Move` circles the pointer). It parses, and a dry run on a shell and on `dwm` gave sensible CPU and GPU columns; it was not run against clear-view. No current Microsoft page was found for the GPU Engine counters.
   - Ignored benches, run once by the agent on a machine not confirmed idle: `bench_readback_4k` (cv-platform-win) 6.0 ms average per 3840x2160 frame (33 MB), max 6.8 ms; `bench_upload_4k` (cv-magnifier) 1.54 ms for the `write_texture` call and 2.98 ms until the GPU copy finishes.
   - docs/prototypes/performance.md has the method and the empty matrix. Not done: the matrix runs and the thresholds (5.5b, yours); the `[perf]` line and the script have not been seen on a real run.
+- Cursor enhancement decided (6.1, accepted and approved by you 2026-10-10, PR #52, docs only): ADR 0010 is Accepted. Status set by the agent on your instruction. Choices:
+  - Draw the real cursor shape in the magnified view (fullscreen and inside the docked panel), replacing the circle. The backend reads it with `GetCursorInfo` + `GetIconInfo` on the render thread as a neutral coverage mask.
+  - The shader draws it recoloured (blue by default) with an outline, at a size multiple that is not tied to zoom. The circle stays as the fallback when the shape is unknown.
+  - `SetSystemCursor` is rejected.
+  - 6.2 is split into 6.2a (pointer probe), 6.2b (you run it: is the shape readable while `MagShowSystemCursor(false)` hides the cursor?) and 6.2c (build it, or the own-arrow fallback).
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
