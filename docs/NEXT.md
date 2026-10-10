@@ -6,16 +6,15 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 5.5a measuring tools (PR #50; see "What 5.5a built")
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46) and 5.4 (PR #48, approved without hand testing), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46), 5.4 (PR #48) and 5.5a (PR #50), all approved 2026-10-10 without hand testing for 5.4 and 5.5a. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-State: coded, waiting for your test
-Item: 5.5 Measure CPU and GPU use ... Set thresholds with you, split on 2026-10-10 because you cannot run the app now: 5.5a (agent, the tools; branch step/5.5a-perf-tooling, PR #50, merged into the integration branch) and 5.5b (you, run the matrix and send the numbers; thresholds are set with you then, do not invent them). Neither is recorded as done until you say "I approve" (5.5a) or report the numbers (5.5b).
-Model: Sonnet high for 5.6 afterwards (CLAUDE.md model guide for /step).
+State: ready
+Item: 6.1 (ADR first) Cursor enhancement: drawing our own enlarged pointer in the magnified view vs changing the system cursor; size, colour (blue default) and outline options. Run /adr 6.1. Chosen because 5.5b (you) is open and 5.6 waits for its numbers.
+Model: Opus high (it touches the platform seam: CLAUDE.md model guide for /adr).
 
-Note for 5.5b and 5.6: Finding 4 (STATUS) already has the pointer-only capture cost from 3.1; 5.6 fixes what 5.5b finds.
+5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b (you) is open and /next skips it while you cannot test: run the matrix in docs/prototypes/performance.md and send the numbers; thresholds are set with you then. 5.6 fixes what 5.5b finds (Finding 4 already has the pointer-only capture cost from 3.1).
 
 5.4 is approved (2026-10-10) without hand testing; STATUS Works says so. Still owed, by hand, when you can test (ADR 0009 / PR #48):
 1. Plug or unplug a second monitor with no resolution change: does `[display] WM_DISPLAYCHANGE received` print? If not, tell the agent; another signal is an ADR change.
@@ -24,13 +23,13 @@ Note for 5.5b and 5.6: Finding 4 (STATUS) already has the pointer-only capture c
 4. Change the active monitor's resolution: the view must not freeze.
 5. Watch for a wrong-monitor flash for about a tick, and for the wrong monitor staying magnified. Known gap: a monitor that keeps its index but now means another one is followed only through DXGI's access-lost error. The fix is ADR 0009 option B (a stable output id), which needs an ADR change.
 
-What 5.5a built (coded, waiting for your "I approve"; 5.5 was split into 5.5a, agent, and 5.5b, you, because you cannot run the app now):
+What 5.5a built (approved 2026-10-10 without hand testing; 5.5 was split into 5.5a, agent, and 5.5b, you, because you cannot run the app now):
 - `CV_PERF=1` prints a `[perf]` line a second: process CPU, capture image and pointer-only frames a second with copy time, ticks, uploads, renders (cv-magnifier `perf.rs` counters, cv-platform-win `perf.rs` reporter in the overlay loop). Off, it costs a flag read.
 - `scripts/perf-sample.ps1` samples CPU and GPU (GPU Engine counters) of the running app, with `-Move` to circle the pointer. Dry-run only on other processes.
 - Ignored benches `bench_readback_4k` (cv-platform-win, 6.0 ms per 4K frame) and `bench_upload_4k` (cv-magnifier, 1.5 ms call, 3.0 ms to the GPU copy), run once on a machine not confirmed idle.
 - docs/prototypes/performance.md has the method and the empty matrix.
-- Verify by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then 5.5b: fill in the matrix and tell me the numbers so we set thresholds.
-- 5.6 waits for the 5.5b numbers. While you cannot test, the next agent item is 6.1 (ADR first).
+- Still owed, by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then 5.5b: fill in the matrix and tell me the numbers so we set thresholds.
+- 5.6 waits for the 5.5b numbers.
 
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
