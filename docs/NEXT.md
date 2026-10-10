@@ -6,6 +6,15 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
+- 5.1 docked mode on multiple monitors decided (docs only, PR #44, merged into the integration branch)
+
+Decided in 5.1, for 5.2 (your choice, 2026-10-10; full text in ROADMAP 5.2):
+- Default: the docked panel stays on the primary monitor. Capture still follows the target (pointer or caret) to any monitor, so the panel shows that monitor magnified (PRODUCT Must 6).
+- Setting, off by default and saved: the panel moves to the target's monitor, same edge, thickness re-measured as the same percentage of that monitor. Switches as soon as the target crosses, like fullscreen.
+- Primary monitor = the output whose rect contains (0, 0) ([The Virtual Screen](https://learn.microsoft.com/en-us/windows/win32/gdi/the-virtual-screen)). `OutputInfo` has no primary flag; outputs come from the primary adapter only, so fall back to the start monitor if none contains (0, 0).
+- Fix Finding 18 in both behaviours: `window_size` and the tracker's view come from the applied panel, not `self.active`. Replace `docked_monitor_switch_moves_capture_but_not_the_panel`; with the setting on, `Applied::Docked` also compares the monitor.
+- A new `AppState` field the panel edits goes in app.rs `apply_changes`' list and in settings persistence (missing key loads as off).
+- Moving the panel to a monitor with other scaling sends `WM_DPICHANGED` ([docs](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged)); the overlay does not handle it. Check the window keeps its physical-pixel rect; mixed scaling as a whole is 5.3.
 
 State: ready
 Item: 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).

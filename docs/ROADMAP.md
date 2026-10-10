@@ -98,7 +98,7 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 ## Phase 5: Multiple monitors and performance (M4)
 
 5.1 Decide with you how docked mode behaves on multiple monitors: which monitor the panel sits on, and what happens when the mouse moves to another one. Record the decision in the PR or an ADR if it gets complicated.
-5.2 Implement 5.1 (Finding 10).
+5.2 Implement 5.1 (Findings 10 and 18). Decided in 5.1: by default the panel stays on the primary monitor and shows whichever monitor the target (pointer or caret) is on; a saved setting, off by default, moves the panel to the target's monitor instead (same edge, same percentage of that monitor). No ADR: no monitor identity is saved, and `Layout::Docked` already names the monitor.
 5.3 Mixed display scaling across monitors.
 5.4 Monitors connected or disconnected while running.
 5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you.
