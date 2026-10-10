@@ -6,20 +6,19 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 5.2 implement 5.1: docked panel on the primary, `panel_follows_monitor` setting, Finding 18 fix (branch step/5.2-docked-monitors)
-Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
+Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10) and 5.2 (PR #45, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
 
-Decided in 5.1, for 5.2 (your choice, 2026-10-10; full text in ROADMAP 5.2):
-- Default: the docked panel stays on the primary monitor. Capture still follows the target (pointer or caret) to any monitor, so the panel shows that monitor magnified (PRODUCT Must 6).
-- Setting, off by default and saved: the panel moves to the target's monitor, same edge, thickness re-measured as the same percentage of that monitor. Switches as soon as the target crosses, like fullscreen.
-- Primary monitor = the output whose rect contains (0, 0) ([The Virtual Screen](https://learn.microsoft.com/en-us/windows/win32/gdi/the-virtual-screen)). `OutputInfo` has no primary flag; outputs come from the primary adapter only, so fall back to the start monitor if none contains (0, 0).
-- Fix Finding 18 in both behaviours: `window_size` and the tracker's view come from the applied panel, not `self.active`. Replace `docked_monitor_switch_moves_capture_but_not_the_panel`; with the setting on, `Applied::Docked` also compares the monitor.
-- A new `AppState` field the panel edits goes in app.rs `apply_changes`' list and in settings persistence (missing key loads as off).
-- Moving the panel to a monitor with other scaling sends `WM_DPICHANGED` ([docs](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged)); the overlay does not handle it. Check the window keeps its physical-pixel rect; mixed scaling as a whole is 5.3.
+What 5.2 built (STATUS "Works" has the full list): the docked panel stays on the primary (`geometry::primary_output`, the output at (0, 0), else the start monitor); `AppState::panel_follows_monitor` moves it to the target's monitor; the view is sized from the panel's own monitor (`View::panel_monitor`); `compute_crop` keeps the window's shape when the window is larger than the frame; the overlay returns 0 for `WM_DPICHANGED`, keeping the physical rect it set.
+
+Notes for 5.3 (mixed display scaling across monitors):
+- The process is Per-Monitor v2 (1.6), so cursor, monitor rects, DXGI frames and window rects are physical pixels on every monitor. 1.6 needed no fix on one monitor; 5.3 may also be mostly a check. Start by listing what could depend on scale and test it on two monitors at, say, 100% and 150%.
+- Candidates from the code: the caret thread converts gui to physical pixels in the caret window's DPI context (4.4); msaa and uia rects were never checked on a monitor whose scale differs from the primary's. The software cursor circle radius is fixed in physical pixels, so it looks smaller on the higher-scale monitor (size, roadmap 6.1/6.2, not alignment). The settings panel is eframe's window; its scaling is eframe's.
+- `WM_DPICHANGED` is ignored by the overlay since 5.2; if a check shows the window resized anyway, look at `WM_GETDPISCALEDSIZE` ([docs](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-getdpiscaledsize)).
+- You cannot test at the moment: the step can still code and unit-test whatever it finds, and leave the by-hand checks in its Verify list.
 
 State: ready
-Item: 5.2 Implement 5.1 (Findings 10 and 18). Branch step/5.2-<name> from the integration branch.
-ADR: none needed (5.1 decided it in its PR; ADR 0007 left multi-monitor docking to 5.1). Run `/step 5.2`. If it needs a saved monitor identity or a trait change after all, stop and go to /adr.
+Item: 5.3 Mixed display scaling across monitors. Branch step/5.3-<name> from the integration branch.
+ADR: none expected (not marked ADR first; nothing found that crosses a seam). If it needs a new trait, dependency or a change to ADR 0004/0007/0008, stop and go to /adr.
 Model: Sonnet high (CLAUDE.md model guide for /step).
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
@@ -60,7 +59,7 @@ What comes next:
 
 Still true:
 - Display scaling (1.6): the process is Per-Monitor v2, so all cursor, monitor, frame and window coordinates are physical pixels. Keep it that way; a `[dpi]` line on stderr means it isn't. Mixed scaling across monitors is 5.3.
-- Docked panel monitor: the panel goes on the monitor active when the layout is applied, origin included since 3.3. Multi-monitor docking is 5.1.
+- Docked panel monitor (5.2): the primary by default, the target's monitor with `panel_follows_monitor`; origin included since 3.3.
 - Interpolation default is Bicubic (your choice in 1.5). Modes: Bilinear 0, Bicubic 1, Sharp 2, CleanEdge 3; the shader.wgsl header, `as_u32` and gfx.rs `write_uniforms` comment must agree. shader.wgsl has clean_edge.wgsl appended at compile time (gfx.rs `SHADER`). Uniforms are 48 bytes; `uniform_size_matches_the_shader_struct` checks gfx.rs against the WGSL struct. `cargo test` validates the shader.
 - `cargo test --release -p cv-magnifier bench_modes_4k -- --ignored --nocapture` measures every mode at 3840x2160 headless. Bench only with the GPU idle.
 - `cargo build` and `cargo clippy --workspace --all-targets` are at 0 warnings, also with `--features app/tts`. Keep them there. Docs-only steps skip the gate.
