@@ -2,10 +2,10 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
-Stacking: on (your instruction, 2026-10-10, until you say otherwise). Unmerged step branches do not block: each new /step or /adr branch is created from the top of the stack and its PR targets that branch. You test the stack in a batch and merge it yourself, nothing into master by the agent. STATUS Done and the State/Item below change only after "I approve", so they lag the stack.
-Stack (coded, not yet approved; bottom first):
-- 4.6 step/4.6-fullscreen-tracking, PR #42 (base master)
-- 4.7 step/4.7-docked-tracking, PR #43 (base step/4.6-fullscreen-tracking)
+Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integration branch: step/4.6-fullscreen-tracking (PR #42 to master, which you merge after testing everything bit by bit). Unmerged work does not block /next. Each new /step or /adr item gets its own step/<number>-<name> branch created from the integration branch; its PR targets the integration branch, and once the gate passes and the PR is open the agent merges it there (`gh pr merge <n> --merge`). Nothing goes into master by the agent. STATUS Done and the State/Item below change only after "I approve", so they lag the stack.
+On the integration branch, coded but not yet approved:
+- 4.6 wire the policy into fullscreen (PR #42 itself)
+- 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
 
 State: ready
 Item: 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
