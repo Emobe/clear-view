@@ -108,6 +108,10 @@ pub struct AppState {
     /// Panel size as a percentage of the relevant screen dimension
     /// (`PANEL_SIZE_MIN`–`PANEL_SIZE_MAX`). Ignored in Fullscreen mode.
     pub panel_size: u32,
+    /// Docked with more than one monitor (roadmap 5.1, 5.2). Off: the panel stays on the
+    /// primary monitor and shows whichever monitor the target is on. On: the panel moves to
+    /// the target's monitor, same edge, `panel_size` percent of that monitor.
+    pub panel_follows_monitor: bool,
     pub color_filter: ColorFilter,
     /// Master TTS on/off switch.
     pub tts_enabled: bool,
@@ -129,6 +133,7 @@ impl Default for AppState {
             edge_threshold: 0.1,
             display_mode: DisplayMode::Fullscreen,
             panel_size: 50,
+            panel_follows_monitor: false,
             color_filter: ColorFilter::None,
             tts_enabled: false,
             tts_hover_enabled: true,
@@ -259,6 +264,7 @@ mod tests {
             edge_threshold: 0.25,
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 30,
+            panel_follows_monitor: true,
             color_filter: ColorFilter::GreyscaleInverted,
             tts_enabled: true,
             tts_hover_enabled: false,
@@ -301,6 +307,14 @@ mod tests {
         assert_eq!(s.zoom, 3.0);
         assert_eq!(s.tts_rate, 2);
         assert_eq!(s.panel_size, AppState::default().panel_size);
+    }
+
+    #[test]
+    fn a_file_without_panel_follows_monitor_loads_it_off() {
+        // Every settings file written before 5.2.
+        let s: AppState = serde_json::from_str(r#"{"display_mode": {"Docked": "Top"}}"#).unwrap();
+        assert!(!s.panel_follows_monitor);
+        assert_eq!(s.display_mode, DisplayMode::Docked(Edge::Top));
     }
 
     #[test]

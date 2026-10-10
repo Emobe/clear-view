@@ -294,7 +294,8 @@ impl WgpuState {
     /// crop:           [src_x, src_y, src_w, src_h] normalised to [0, 1].
     /// color_mode:     ColorFilter::as_u32()   — 0=None,1=Inverted,2=Greyscale,3=GreyscaleInverted.
     /// interp_mode:    Interpolation::as_u32() — 0=Bilinear, 1=Bicubic, 2=Sharp, 3=CleanEdge.
-    /// cursor_x/y:     software cursor position in output window pixels.
+    /// cursor_x/y:     software cursor position in output window pixels; `CURSOR_HIDDEN` on both
+    ///                 when the pointer is out of view (no circle).
     /// edge_threshold: cleanEdge colour similarity threshold (0–1).
     pub fn write_uniforms(
         &self,

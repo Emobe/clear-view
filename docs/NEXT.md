@@ -2,10 +2,25 @@
 
 The handoff between sessions. Written by /audit, /step and /adr. Read by /next. Context is cleared between commands, so anything the next session needs must be here or in docs/STATUS.md. Keep it short.
 
+Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integration branch: step/4.6-fullscreen-tracking (PR #42 to master, which you merge after testing everything bit by bit). Unmerged work does not block /next. Each new /step or /adr item gets its own step/<number>-<name> branch created from the integration branch; its PR targets the integration branch, and once the gate passes and the PR is open the agent merges it there (`gh pr merge <n> --merge`). Nothing goes into master by the agent. STATUS Done and the State/Item below change only after "I approve", so they lag the stack.
+On the integration branch, coded but not yet approved:
+- 4.6 wire the policy into fullscreen (PR #42 itself)
+- 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test.
+
+What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
+
+Notes for 5.4 (monitors connected or disconnected while running), read from code, not run:
+- Outputs are enumerated once at startup (app main.rs `platform::enumerate_outputs()`, DXGI `EnumOutputs` on the primary adapter) and the list is handed to `spawn_overlay` and `Magnifier::new`. Nothing re-enumerates, so a monitor plugged in later is never captured, and an unplugged one stays in the list (`geometry::primary_output`, `follow_pointer` and the docked panel all read it).
+- Capture is addressed by DXGI output index (`desired_output`, `Capturer::switch_output`). Indices can shift when a monitor goes away, so a stale index may capture the wrong monitor or fail. A hot-plug shows up in capture as `DXGI_ERROR_ACCESS_LOST` (or a mode change); `run_capture` retries `reconnect` every 250 ms since 2.5a, which never succeeds for an output that is gone.
+- Re-enumerating needs the magnifier (platform-neutral) to get a new output list from the backend. That is a new seam call (`OverlayHost`, `CaptureSource` or a new trait) and a change to ADR 0004's boundaries, so check ADR 0004 first; if it doesn't cover it, stop and go to /adr. A Windows signal to start from: `WM_DISPLAYCHANGE` to the overlay window.
+- You cannot test at the moment: the step can still code and unit-test whatever it finds (fake host and capture source exist), and leave the by-hand checks (plug and unplug in fullscreen and docked, primary unplugged, panel follows on and off) in its Verify list.
+
 State: ready
-Item: 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
-ADR: docs/adr/0008-caret-sources.md, Accepted. Run `/step 4.6`. No new ADR expected; if wiring needs a decision the ADR does not cover, stop and go to /adr.
+Item: 5.4 Monitors connected or disconnected while running. Branch step/5.4-<name> from the integration branch.
+ADR: possibly. Not marked ADR first, but re-enumerating outputs likely adds a call across the ADR 0004 seam; the step checks ADR 0004 first and goes to /adr if it is not covered.
 Model: Sonnet high (CLAUDE.md model guide for /step).
+4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
 What 4.5 built (PR #41, approved 2026-10-09), for 4.6 and 4.7:
 - cv-core `tracking`: `Tracker::update(now, pointer, events, view) -> (f32, f32)`, once per tick; `Tracker::following() -> Following { Pointer, Caret }`. Re-exported from `cv_core`. `view` is the magnified area in screen pixels (window size / zoom). The return value is the virtual-screen point to ease toward: feed it to `geometry::lerp_toward` in place of `self.pointer` in `View::draw` (cv-magnifier/src/magnifier.rs); keep `smooth_speed`.
@@ -44,7 +59,7 @@ What comes next:
 
 Still true:
 - Display scaling (1.6): the process is Per-Monitor v2, so all cursor, monitor, frame and window coordinates are physical pixels. Keep it that way; a `[dpi]` line on stderr means it isn't. Mixed scaling across monitors is 5.3.
-- Docked panel monitor: the panel goes on the monitor active when the layout is applied, origin included since 3.3. Multi-monitor docking is 5.1.
+- Docked panel monitor (5.2): the primary by default, the target's monitor with `panel_follows_monitor`; origin included since 3.3.
 - Interpolation default is Bicubic (your choice in 1.5). Modes: Bilinear 0, Bicubic 1, Sharp 2, CleanEdge 3; the shader.wgsl header, `as_u32` and gfx.rs `write_uniforms` comment must agree. shader.wgsl has clean_edge.wgsl appended at compile time (gfx.rs `SHADER`). Uniforms are 48 bytes; `uniform_size_matches_the_shader_struct` checks gfx.rs against the WGSL struct. `cargo test` validates the shader.
 - `cargo test --release -p cv-magnifier bench_modes_4k -- --ignored --nocapture` measures every mode at 3840x2160 headless. Bench only with the GPU idle.
 - `cargo build` and `cargo clippy --workspace --all-targets` are at 0 warnings, also with `--features app/tts`. Keep them there. Docs-only steps skip the gate.
