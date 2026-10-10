@@ -6,22 +6,27 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it once PR #47 is merged: ADR 0009 (Accepted), from /adr 5.4.
+- 5.4 monitors connected or disconnected while running (see below)
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47) and, coded but not approved, 5.4 (its own PR).
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-State: blocked-on-adr
-Item: 5.4 Monitors connected or disconnected while running. Branch step/5.4-<name> from the integration branch.
-ADR: 0009 Monitors connected or disconnected while running (docs/adr/0009-display-changes.md), Accepted by you 2026-10-10 as recommended. 5.4 resumes with `/step 5.4`.
-Model: Sonnet high (CLAUDE.md model guide for /step).
+State: coded, waiting for your test
+Item: 5.4 Monitors connected or disconnected while running (ADR 0009, Accepted). Branch step/5.4-display-changes, merged into the integration branch with its PR. Not recorded as done until you say "I approve".
 
-Notes for 5.4 (ADR 0009 as accepted: option 1, addressing A):
-- Backend: `wnd_proc` sets an atomic flag on `WM_DISPLAYCHANGE`; the loop in `run_overlay` sees it before the next tick, runs `enumerate_outputs()`, and on a changed list reprints the `[system] output N` lines (reuse sysinfo.rs `log_outputs`) and calls `magnifier.outputs_changed(list)`. Re-check about 1 s after the last message. Never call the magnifier from inside `apply_layout`.
-- `Capturer::duplicate` (switch) reuses its old device; make it check `IDXGIFactory1::IsCurrent` and rebuild the device when stale. `recreate` already builds a new one.
-- Magnifier (`View::outputs_changed`): replace `outputs`, recompute `primary`, re-pick `active` from the target (primary centre if the target is on no monitor), always rewrite `desired_output`, always recreate the frame texture and clear `last_frame`, and reset `applied` so the layout is applied again. `Applied` compares indices only, so without the reset a monitor that keeps its index but changes rect is never re-placed.
-- Side fix that comes with it: a resolution change on the active monitor freezes the view today (`upload_frame` drops frames of another size; the texture is resized only on an index change).
-- First thing to check by hand: whether `WM_DISPLAYCHANGE` arrives for a plug or unplug that keeps the resolution (undocumented). If it doesn't, stop and record it here; another signal is an ADR change.
-- You cannot test right now: code and unit-test it with the fake host and renderer, and leave the plug and unplug checks in the Verify list (ADR 0009 lists them).
+What 5.4 built:
+- Backend (cv-platform-win): `wnd_proc` sets a flag on `WM_DISPLAYCHANGE`; the render loop takes it before the next tick, logs `[display] WM_DISPLAYCHANGE received`, and reads the outputs (`try_enumerate_outputs`, `None` when no adapter or no output, so the made-up 1920x1080 output never reaches the magnifier). `DisplayWatch` (display.rs) reads at once and once more 1 s after the last message. A changed list is logged (`[display] outputs changed: N -> M` and the `[system] output N` lines) and passed to `Magnifier::outputs_changed`.
+- `Capturer::duplicate` checks `IDXGIFactory1::IsCurrent` and builds a new device when stale; nothing is replaced unless the whole switch worked.
+- Magnifier: `outputs_changed` replaces `outputs`, recomputes `primary`, re-picks `active` from the target (primary centre and a reset tracker if the target is on no monitor), writes `desired_output`, recreates the frame texture, clears `last_frame`, and sets `Applied::Stale` (layout applied again) when the active or primary monitor changed. This also fixes the freeze after a resolution change.
+- Known gap, from ADR 0009 addressing A: if a monitor keeps its index but means another monitor after a change, rewriting `desired_output` is a no-op for the capture loop (it switches only when the number differs). Capture then follows only through the `ACCESS_LOST` DXGI reports on a mode change, then `recreate`. If a plug, unplug or primary switch leaves the wrong monitor magnified, that is ADR 0009 option B (a stable output id), which needs an ADR change.
+
+Verify by hand (you cannot test right now; leave for when you can):
+1. Plug or unplug a second monitor with no resolution change: does `[display] WM_DISPLAYCHANGE received` print? If not, stop and tell me; another signal is an ADR change.
+2. Plug and unplug a second monitor in fullscreen and docked, with `panel_follows_monitor` on and off: no freeze, no stale panel, the `[system] output` lines reprinted, a clean exit afterwards.
+3. Unplug the primary; switch the primary in Windows Settings.
+4. Change the active monitor's resolution: the view must not freeze.
+5. Watch for a wrong-monitor flash for about a tick (option B), and for the wrong monitor staying magnified (the known gap above).
+
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
 What 4.5 built (PR #41, approved 2026-10-09), for 4.6 and 4.7:

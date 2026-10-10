@@ -11,7 +11,7 @@ use windows::{
         },
         Dxgi::{
             Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
-            IDXGIAdapter, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
+            IDXGIAdapter, IDXGIDevice, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, DXGI_ERROR_ACCESS_LOST,
             DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_WAIT_TIMEOUT,
             DXGI_OUTDUPL_FRAME_INFO,
         },
@@ -73,9 +73,19 @@ impl Capturer {
     }
 
     /// Switch to capturing a different output (monitor). Recreates duplication + staging.
+    ///
+    /// If the device's factory is no longer current (a display was added or removed), the
+    /// device is rebuilt first: the old one can still list the outputs as they were (ADR 0009).
+    /// Nothing is replaced unless the whole switch worked, so on error the capturer keeps its
+    /// current output.
     fn duplicate(&mut self, idx: u32) -> windows::core::Result<()> {
-        let (duplication, width, height) = create_duplication(&self.ctx.device, idx)?;
-        let staging = create_staging(&self.ctx.device, width, height)?;
+        let fresh = if device_is_stale(&self.ctx.device) { Some(create_device()?) } else { None };
+        let device = fresh.as_ref().map_or(&self.ctx.device, |ctx| &ctx.device);
+        let (duplication, width, height) = create_duplication(device, idx)?;
+        let staging = create_staging(device, width, height)?;
+        if let Some(ctx) = fresh {
+            self.ctx = ctx;
+        }
         self.duplication = Some(duplication);
         self.staging = staging;
         self.width = width;
@@ -120,21 +130,21 @@ fn capture_error(e: windows::core::Error) -> CaptureError {
 }
 
 /// Enumerate all monitors attached to the primary adapter.
-/// Returns one `OutputInfo` per active output, in DXGI output order.
+/// Returns one `OutputInfo` per active output, in DXGI output order, and never an empty list.
 pub fn enumerate_outputs() -> Vec<OutputInfo> {
+    // Always have at least one entry so callers never see an empty list.
+    try_enumerate_outputs()
+        .unwrap_or_else(|| vec![OutputInfo { idx: 0, left: 0, top: 0, width: 1920, height: 1080 }])
+}
+
+/// Like [`enumerate_outputs`], but `None` when no device, adapter or attached output could be
+/// read. While the system reconfigures the displays that can happen, and the made-up output of
+/// `enumerate_outputs` must not reach the magnifier then (ADR 0009).
+pub(crate) fn try_enumerate_outputs() -> Option<Vec<OutputInfo>> {
     unsafe {
-        let ctx = match create_device() {
-            Ok(c) => c,
-            Err(_) => return vec![],
-        };
-        let dxgi: IDXGIDevice = match ctx.device.cast() {
-            Ok(d) => d,
-            Err(_) => return vec![],
-        };
-        let adapter = match dxgi.GetAdapter() {
-            Ok(a) => a,
-            Err(_) => return vec![],
-        };
+        let ctx = create_device().ok()?;
+        let dxgi: IDXGIDevice = ctx.device.cast().ok()?;
+        let adapter = dxgi.GetAdapter().ok()?;
 
         let mut result = Vec::new();
         let mut idx = 0u32;
@@ -158,11 +168,7 @@ pub fn enumerate_outputs() -> Vec<OutputInfo> {
             idx += 1;
         }
 
-        // Always have at least one entry so callers never see an empty list.
-        if result.is_empty() {
-            result.push(OutputInfo { idx: 0, left: 0, top: 0, width: 1920, height: 1080 });
-        }
-        result
+        if result.is_empty() { None } else { Some(result) }
     }
 }
 
@@ -189,6 +195,19 @@ fn create_device() -> windows::core::Result<D3dCtx> {
             Some(&mut context),
         )?;
         Ok(D3dCtx { device: device.unwrap(), context: context.unwrap() })
+    }
+}
+
+/// True when the factory the device came from is no longer current (`IDXGIFactory1::IsCurrent`),
+/// or cannot be asked: a new device is then the safe choice.
+fn device_is_stale(device: &ID3D11Device) -> bool {
+    let factory = || -> windows::core::Result<IDXGIFactory1> {
+        let dxgi: IDXGIDevice = device.cast()?;
+        unsafe { dxgi.GetAdapter()?.GetParent::<IDXGIFactory1>() }
+    };
+    match factory() {
+        Ok(f) => !unsafe { f.IsCurrent() }.as_bool(),
+        Err(_) => true,
     }
 }
 
