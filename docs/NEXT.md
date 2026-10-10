@@ -6,16 +6,16 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Proposed), from /adr 5.4.
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it once PR #47 is merged: ADR 0009 (Accepted), from /adr 5.4.
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
 State: blocked-on-adr
 Item: 5.4 Monitors connected or disconnected while running. Branch step/5.4-<name> from the integration branch.
-ADR: 0009 Monitors connected or disconnected while running (docs/adr/0009-display-changes.md), Proposed. 5.4 resumes with `/step 5.4` once you set its Status to Accepted.
+ADR: 0009 Monitors connected or disconnected while running (docs/adr/0009-display-changes.md), Accepted by you 2026-10-10 as recommended. 5.4 resumes with `/step 5.4`.
 Model: Sonnet high (CLAUDE.md model guide for /step).
 
-Notes for 5.4, if ADR 0009 is accepted as recommended (option 1, addressing A):
+Notes for 5.4 (ADR 0009 as accepted: option 1, addressing A):
 - Backend: `wnd_proc` sets an atomic flag on `WM_DISPLAYCHANGE`; the loop in `run_overlay` sees it before the next tick, runs `enumerate_outputs()`, and on a changed list reprints the `[system] output N` lines (reuse sysinfo.rs `log_outputs`) and calls `magnifier.outputs_changed(list)`. Re-check about 1 s after the last message. Never call the magnifier from inside `apply_layout`.
 - `Capturer::duplicate` (switch) reuses its old device; make it check `IDXGIFactory1::IsCurrent` and rebuild the device when stale. `recreate` already builds a new one.
 - Magnifier (`View::outputs_changed`): replace `outputs`, recompute `primary`, re-pick `active` from the target (primary centre if the target is on no monitor), always rewrite `desired_output`, always recreate the frame texture and clear `last_frame`, and reset `applied` so the layout is applied again. `Applied` compares indices only, so without the reset a monitor that keeps its index but changes rect is never re-placed.

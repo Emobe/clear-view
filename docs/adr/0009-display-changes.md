@@ -1,6 +1,6 @@
 # 0009: Monitors connected or disconnected while running
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-10
 
 ## Context
