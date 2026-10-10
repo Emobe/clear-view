@@ -6,18 +6,27 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 5.5a measuring tools (PR #50; see "What 5.5a built")
-Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46) 5.4 (PR #48, approved without hand testing) and 6.1 (ADR 0010, docs only, PR #52), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45), 5.3 (PR #46), 5.4 (PR #48), 5.5a (PR #50) and 6.1 (ADR 0010, docs only, PR #52), all approved 2026-10-10 without hand testing for 5.4 and 5.5a. 4.8 (you) is skipped while you cannot test. Also on it: ADR 0009 (Accepted, PR #47).
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
 State: ready
-Item: 6.2a Pointer probe (pending ADR 0010, Accepted): a dev-only `pointer_probe` example; see ROADMAP 6.2a. 6.1 is approved (2026-10-10, PR #52 merged into the integration branch). ADR 0010 (branch step/6.1-cursor-enhancement-adr) recommends the real cursor shape, read with `GetCursorInfo` + `GetIconInfo` on the render thread and drawn by the shader recoloured, with an outline and a size multiple not tied to zoom, replacing the circle. Our own arrow is the fallback. It splits 6.2 into 6.2a (agent: `pointer_probe` dev example), 6.2b (you: run it, because whether the shape can be read while `MagShowSystemCursor(false)` hides the cursor is undocumented) and 6.2c (agent: build it). While you cannot test, 6.2b and 6.2c wait; once 0010 is Accepted, 6.2a can be built, and after that the next agent item is 6.3 (ADR first).
-Model: Sonnet high for /step 6.2a (CLAUDE.md model guide).
+Item: 6.2a Pointer probe (pending ADR 0010, Accepted): a dev-only `pointer_probe` example; see ROADMAP 6.2a. Run /step 6.2a.
+Model: Sonnet high (CLAUDE.md model guide for /step).
 
-Still open from 5.5: 5.5a (agent, the tools; branch step/5.5a-perf-tooling, PR #50, merged into the integration branch) waits for your "I approve"; 5.5b (you, run the matrix and send the numbers; thresholds are set with you then, do not invent them).
+6.1 is approved (2026-10-10, PR #52). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
+- The shape is read with `GetCursorInfo` + `GetIconInfo` on the render thread and passed through cv-core as a coverage mask.
+- The shader draws it recoloured (blue by default), with an outline, at a size multiple not tied to zoom.
+- The circle stays as the fallback when the shape is unknown; our own arrow is the fallback if the probe fails.
 
-Note for 5.5b and 5.6: Finding 4 (STATUS) already has the pointer-only capture cost from 3.1; 5.6 fixes what 5.5b finds.
+6.2 is split into 6.2a, 6.2b and 6.2c:
+- 6.2a (agent): the `pointer_probe` dev example.
+- 6.2b (you): run it. Whether the shape can be read while `MagShowSystemCursor(false)` hides the cursor is undocumented.
+- 6.2c (agent): build it, or the own-arrow fallback if 6.2b shows nothing reports while hidden.
+
+While you cannot test, 6.2b and 6.2c wait; after 6.2a the next agent item is 6.3 (ADR first).
+
+5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b (you) is open and /next skips it while you cannot test: run the matrix in docs/prototypes/performance.md and send the numbers; thresholds are set with you then. 5.6 fixes what 5.5b finds (Finding 4 already has the pointer-only capture cost from 3.1).
 
 5.4 is approved (2026-10-10) without hand testing; STATUS Works says so. Still owed, by hand, when you can test (ADR 0009 / PR #48):
 1. Plug or unplug a second monitor with no resolution change: does `[display] WM_DISPLAYCHANGE received` print? If not, tell the agent; another signal is an ADR change.
@@ -26,13 +35,13 @@ Note for 5.5b and 5.6: Finding 4 (STATUS) already has the pointer-only capture c
 4. Change the active monitor's resolution: the view must not freeze.
 5. Watch for a wrong-monitor flash for about a tick, and for the wrong monitor staying magnified. Known gap: a monitor that keeps its index but now means another one is followed only through DXGI's access-lost error. The fix is ADR 0009 option B (a stable output id), which needs an ADR change.
 
-What 5.5a built (coded, waiting for your "I approve"; 5.5 was split into 5.5a, agent, and 5.5b, you, because you cannot run the app now):
+What 5.5a built (approved 2026-10-10 without hand testing; 5.5 was split into 5.5a, agent, and 5.5b, you, because you cannot run the app now):
 - `CV_PERF=1` prints a `[perf]` line a second: process CPU, capture image and pointer-only frames a second with copy time, ticks, uploads, renders (cv-magnifier `perf.rs` counters, cv-platform-win `perf.rs` reporter in the overlay loop). Off, it costs a flag read.
 - `scripts/perf-sample.ps1` samples CPU and GPU (GPU Engine counters) of the running app, with `-Move` to circle the pointer. Dry-run only on other processes.
 - Ignored benches `bench_readback_4k` (cv-platform-win, 6.0 ms per 4K frame) and `bench_upload_4k` (cv-magnifier, 1.5 ms call, 3.0 ms to the GPU copy), run once on a machine not confirmed idle.
 - docs/prototypes/performance.md has the method and the empty matrix.
-- Verify by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then 5.5b: fill in the matrix and tell me the numbers so we set thresholds.
-- 5.6 waits for the 5.5b numbers. While you cannot test, the next agent item was 6.1 (ADR first); ADR 0010 is now written for it.
+- Still owed, by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then 5.5b: fill in the matrix and tell me the numbers so we set thresholds.
+- 5.6 waits for the 5.5b numbers.
 
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 

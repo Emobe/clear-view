@@ -52,6 +52,7 @@ Current roadmap:
 - 5.2 Docked mode on multiple monitors, as decided in 5.1 (Findings 10 and 18, branch step/5.2-docked-monitors, PR #45, merged into the integration branch step/4.6-fullscreen-tracking)
 - 5.3 Mixed display scaling across monitors (branch step/5.3-mixed-scaling, PR #46, merged into the integration branch step/4.6-fullscreen-tracking)
 - 5.4 Monitors connected or disconnected while running (ADR 0009, branch step/5.4-display-changes, PR #48, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing.
+- 5.5a Performance measuring tools (5.5 split into 5.5a and 5.5b; branch step/5.5a-perf-tooling, PR #50, merged into the integration branch step/4.6-fullscreen-tracking). Approved without hand testing. 5.5b (you) is open.
 - 6.1 Cursor enhancement ADR (ADR 0010, branch step/6.1-cursor-enhancement-adr, PR #52, merged into the integration branch step/4.6-fullscreen-tracking)
 
 ## Works (a command proved it, or you verified it)
@@ -191,6 +192,11 @@ Current roadmap:
   - `Capturer::duplicate` checks `IDXGIFactory1::IsCurrent` and builds a new device when stale; nothing is replaced unless the whole switch worked.
   - `Magnifier::outputs_changed` replaces the outputs, recomputes the primary, re-picks the active monitor from the target (the primary's centre and a reset tracker if the target is on no monitor), writes `desired_output`, recreates the frame texture, clears `last_frame` and re-applies the layout (`Applied::Stale`) when the active or primary monitor changed. A resolution change on the active monitor no longer freezes the view. 7 fake-host tests.
   - Not seen on a real machine: whether `WM_DISPLAYCHANGE` arrives for a plug or unplug that keeps the resolution (if not, another signal is an ADR change), plug and unplug in fullscreen and docked, an unplugged or switched primary, a resolution change, a wrong-monitor flash. Known gap (ADR 0009, addressing A): rewriting `desired_output` with an unchanged index does nothing to the capture loop, so a monitor that keeps its index but now means another one is followed only through DXGI's access-lost error and `recreate`. The by-hand list is in docs/NEXT.md.
+- Performance measuring tools (5.5a, approved by you 2026-10-10 without hand testing, PR #50, on the integration branch). Proven by unit tests and the gate only; clear-view was not run with them:
+  - `CV_PERF=1` prints a `[perf]` line a second (process CPU as % of one core from `GetProcessTimes`; capture image and pointer-only frames a second, told apart by `LastPresentTime`, with copy time; ticks; uploads; presents). Counters are statics in cv-magnifier `perf.rs` (4 tests); the reporter is cv-platform-win `perf.rs` (3 tests) called from the overlay loop. Off, each call is one flag read. No seam trait or signature changed.
+  - `scripts/perf-sample.ps1` samples CPU and the GPU Engine counters of the running app (`-Move` circles the pointer). It parses, and a dry run on a shell and on `dwm` gave sensible CPU and GPU columns; it was not run against clear-view. No current Microsoft page was found for the GPU Engine counters.
+  - Ignored benches, run once by the agent on a machine not confirmed idle: `bench_readback_4k` (cv-platform-win) 6.0 ms average per 3840x2160 frame (33 MB), max 6.8 ms; `bench_upload_4k` (cv-magnifier) 1.54 ms for the `write_texture` call and 2.98 ms until the GPU copy finishes.
+  - docs/prototypes/performance.md has the method and the empty matrix. Not done: the matrix runs and the thresholds (5.5b, yours); the `[perf]` line and the script have not been seen on a real run.
 - Cursor enhancement decided (6.1, accepted and approved by you 2026-10-10, PR #52, docs only): ADR 0010 is Accepted. Status set by the agent on your instruction. Choices:
   - Draw the real cursor shape in the magnified view (fullscreen and inside the docked panel), replacing the circle. The backend reads it with `GetCursorInfo` + `GetIconInfo` on the render thread as a neutral coverage mask.
   - The shader draws it recoloured (blue by default) with an outline, at a size multiple that is not tied to zoom. The circle stays as the fallback when the shape is unknown.
@@ -202,11 +208,11 @@ Current roadmap:
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 173 tests and 1 ignored (integration branch after 5.4; includes the unapproved 4.6 and 4.7 tests).
+- `cargo test --workspace`: passes, 180 tests and 3 ignored (integration branch after 5.5a; includes the unapproved 4.6 and 4.7 tests).
   - cv-core 76: 25 in `geometry::tests` (including `docked_rect`, `primary_output` and the shape-keeping crop), 24 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`, 6 in `events::tests` for the hub, 21 in `tracking::tests` for the tracking policy.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
-  - cv-magnifier 68: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 54 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge, caret tracking, docked multi-monitor and monitors changing), plus the ignored GPU bench `bench_modes_4k`.
-  - cv-platform-win 19: 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls), 1 in `sysinfo::tests` for `scale_percent`, 4 in `display::tests` for the re-read timing. cv-tts has none.
+  - cv-magnifier 72: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 54 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge, caret tracking, docked multi-monitor and monitors changing), 4 in `perf::tests`, plus the ignored GPU benches `bench_modes_4k` and `bench_upload_4k`.
+  - cv-platform-win 22: 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls), 1 in `sysinfo::tests` for `scale_percent`, 4 in `display::tests` for the re-read timing, 3 in `perf::tests` for the `[perf]` line, plus the ignored `bench_readback_4k`. cv-tts has none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 
 ## Broken
