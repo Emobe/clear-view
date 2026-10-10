@@ -28,7 +28,7 @@ If the item is bigger than one branch and one PR should be, propose numbered sub
 Otherwise stop and wait for my approval.
 
 Phase B, only after I approve:
-1. Create branch step/<number>-<short-name> from master, for example step/1.3-zoom-hotkeys (or continue the existing one named in NEXT.md).
+1. Create branch step/<number>-<short-name> from master, for example step/1.3-zoom-hotkeys (or continue the existing one named in NEXT.md). When NEXT.md says `Stacking: on`, create it from the top of the stack (the newest unmerged step branch) instead, open the PR with `--base <that branch>`, and add the item to NEXT.md's Stack list in the same commit.
 2. Implement the target and nothing else.
 3. Run the gate.
 4. Commit on the branch.
