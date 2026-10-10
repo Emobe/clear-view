@@ -50,6 +50,7 @@ Current roadmap:
 - 4.5 Tracking policy in cv-core (ADR 0008, branch step/4.5-tracking-policy, PR #41)
 - 5.1 Docked mode on multiple monitors decided (docs only, branch step/5.1-docked-multi-monitor, PR #44, merged into the integration branch step/4.6-fullscreen-tracking)
 - 5.2 Docked mode on multiple monitors, as decided in 5.1 (Findings 10 and 18, branch step/5.2-docked-monitors, PR #45, merged into the integration branch step/4.6-fullscreen-tracking)
+- 5.3 Mixed display scaling across monitors (branch step/5.3-mixed-scaling, PR #46, merged into the integration branch step/4.6-fullscreen-tracking)
 
 ## Works (a command proved it, or you verified it)
 
@@ -178,17 +179,22 @@ Current roadmap:
   - `compute_crop` keeps the window's shape when the window is larger than the frame (a wide panel showing a smaller monitor at low zoom): a little more zoom instead of a stretched image. No change on one monitor.
   - The overlay returns 0 for `WM_DPICHANGED`, so the window keeps the physical rect it was given on a monitor with other scaling.
   - You approved it; individual Verify items (panel on the primary per edge, Notepad caret on the second monitor, setting on and off, saved setting, mixed scaling, fullscreen and exit) were not itemised, so whether the mixed-scaling check was possible is not recorded.
+- Mixed display scaling across monitors (5.3, approved by you 2026-10-10, PR #46, on the integration branch):
+  - No alignment fix was needed. Per-Monitor v2 keeps the pointer, DXGI monitor rects, frames and window rects in physical pixels on every monitor. The overlay ignores `WM_DPICHANGED`, and per the Microsoft docs the window is resized only if that handler calls `SetWindowPos`, so `WM_GETDPISCALEDSIZE` needs no handler. uia caret rects are physical (Microsoft docs); gui is converted in the caret window's DPI context (4.4).
+  - Each `[system] output N` startup line now also gives the display scale (`GetDpiForMonitor`, `MDT_EFFECTIVE_DPI`) and the physical desktop rect, for example `scale 150%, at (2560, 0) 1920x1080`. `scale_percent` has a unit test.
+  - msaa caret rects in DPI-unaware or system-aware apps are undocumented and unchecked (Finding 19).
+  - You approved it; individual Verify items (startup scale lines, fullscreen and docked across a 100% and a 150% monitor, caret on each, the Finding 19 probe check, a scale change while running, the settings panel on the other monitor, exit) were not itemised, so whether a mixed-scaling setup was available, and the Finding 19 result, are not recorded.
 - Old 2.3 (per-mode TTS toggles) was dropped, not approved. Its two commits are kept as docs/archive/old-2.3-tts-mode-toggles.patch and the step/tts-mode-toggles branch is deleted (local and GitHub; PR #6 was already closed).
 - Verified by you by hand while approving old 2.1 (2026-10-08): the global toggle hotkey Ctrl+Alt+Shift+Z works (the old Win+= opened Windows Magnifier and was replaced); the cursor circle sits on the real pointer; smooth follow works; the zoom slider works; all four colour filters work; docked mode works; in fullscreen, moving the mouse to the second monitor moves the magnified view there. You said docking needs to change later; details to come (Finding 11).
 - Verified by you by hand while approving old 2.2 (2026-10-08): settings are saved to `%APPDATA%\clear-view\settings.json` and restored on relaunch; deleting the file recreates it with defaults; an invalid file prints the parse error to the CLI, is moved to `settings.json.bad`, and defaults are used; `zoom` 99 and `panel_size` 0 load as 10 and 1; a change made more than a second before killing the process in Task Manager is kept; the file has no `enabled` key. `enabled` is deliberately never persisted, so the magnifier always starts off (your decision).
 
 - `cargo build`: passes, 0 warnings (0.5).
 - `cargo clippy --workspace --all-targets`: passes, 0 warnings, also with `--features app/tts` (0.5).
-- `cargo test --workspace`: passes, 161 tests and 1 ignored (integration branch after 5.2; includes the unapproved 4.6 and 4.7 tests).
+- `cargo test --workspace`: passes, 162 tests and 1 ignored (integration branch after 5.3; includes the unapproved 4.6 and 4.7 tests).
   - cv-core 76: 25 in `geometry::tests` (including `docked_rect`, `primary_output` and the shape-keeping crop), 24 in `tests` for serde round-trips, `sanitize`, `step_zoom`, `apply` and `ScreenRect::contains`, 6 in `events::tests` for the hub, 21 in `tracking::tests` for the tracking policy.
   - app 10: 6 in `settings::tests`, 4 in `app::tests` for `apply_changes`.
   - cv-magnifier 61: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 47 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge, caret tracking and docked multi-monitor), plus the ignored GPU bench `bench_modes_4k`.
-  - cv-platform-win 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls). cv-tts has none.
+  - cv-platform-win 15: 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls), 1 in `sysinfo::tests` for `scale_percent`. cv-tts has none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 
 ## Broken

@@ -6,20 +6,19 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 5.3 mixed display scaling across monitors (branch step/5.3-mixed-scaling): no alignment fix needed; the startup log gives each output's scale and rect; Finding 19 (msaa in DPI-unaware apps) left for a by-hand check
-Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10) and 5.2 (PR #45, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
+Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45) and 5.3 (PR #46), all approved 2026-10-10. 4.8 (you) is skipped while you cannot test.
 
-What 5.2 built (STATUS "Works" has the full list): the docked panel stays on the primary (`geometry::primary_output`, the output at (0, 0), else the start monitor); `AppState::panel_follows_monitor` moves it to the target's monitor; the view is sized from the panel's own monitor (`View::panel_monitor`); `compute_crop` keeps the window's shape when the window is larger than the frame; the overlay returns 0 for `WM_DPICHANGED`, keeping the physical rect it set.
+What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-Notes for 5.3 (mixed display scaling across monitors):
-- The process is Per-Monitor v2 (1.6), so cursor, monitor rects, DXGI frames and window rects are physical pixels on every monitor. 1.6 needed no fix on one monitor; 5.3 may also be mostly a check. Start by listing what could depend on scale and test it on two monitors at, say, 100% and 150%.
-- Candidates from the code: the caret thread converts gui to physical pixels in the caret window's DPI context (4.4); msaa and uia rects were never checked on a monitor whose scale differs from the primary's. The software cursor circle radius is fixed in physical pixels, so it looks smaller on the higher-scale monitor (size, roadmap 6.1/6.2, not alignment). The settings panel is eframe's window; its scaling is eframe's.
-- `WM_DPICHANGED` is ignored by the overlay since 5.2; if a check shows the window resized anyway, look at `WM_GETDPISCALEDSIZE` ([docs](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-getdpiscaledsize)).
-- You cannot test at the moment: the step can still code and unit-test whatever it finds, and leave the by-hand checks in its Verify list.
+Notes for 5.4 (monitors connected or disconnected while running), read from code, not run:
+- Outputs are enumerated once at startup (app main.rs `platform::enumerate_outputs()`, DXGI `EnumOutputs` on the primary adapter) and the list is handed to `spawn_overlay` and `Magnifier::new`. Nothing re-enumerates, so a monitor plugged in later is never captured, and an unplugged one stays in the list (`geometry::primary_output`, `follow_pointer` and the docked panel all read it).
+- Capture is addressed by DXGI output index (`desired_output`, `Capturer::switch_output`). Indices can shift when a monitor goes away, so a stale index may capture the wrong monitor or fail. A hot-plug shows up in capture as `DXGI_ERROR_ACCESS_LOST` (or a mode change); `run_capture` retries `reconnect` every 250 ms since 2.5a, which never succeeds for an output that is gone.
+- Re-enumerating needs the magnifier (platform-neutral) to get a new output list from the backend. That is a new seam call (`OverlayHost`, `CaptureSource` or a new trait) and a change to ADR 0004's boundaries, so check ADR 0004 first; if it doesn't cover it, stop and go to /adr. A Windows signal to start from: `WM_DISPLAYCHANGE` to the overlay window.
+- You cannot test at the moment: the step can still code and unit-test whatever it finds (fake host and capture source exist), and leave the by-hand checks (plug and unplug in fullscreen and docked, primary unplugged, panel follows on and off) in its Verify list.
 
 State: ready
-Item: 5.3 Mixed display scaling across monitors. Branch step/5.3-<name> from the integration branch.
-ADR: none expected (not marked ADR first; nothing found that crosses a seam). If it needs a new trait, dependency or a change to ADR 0004/0007/0008, stop and go to /adr.
+Item: 5.4 Monitors connected or disconnected while running. Branch step/5.4-<name> from the integration branch.
+ADR: possibly. Not marked ADR first, but re-enumerating outputs likely adds a call across the ADR 0004 seam; the step checks ADR 0004 first and goes to /adr if it is not covered.
 Model: Sonnet high (CLAUDE.md model guide for /step).
 4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
