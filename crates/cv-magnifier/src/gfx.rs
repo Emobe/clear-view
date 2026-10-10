@@ -536,6 +536,75 @@ mod tests {
         }
     }
 
+    /// Cost of uploading one 3840x2160 BGRA8 frame (roadmap 5.5a), the work `upload_frame` does
+    /// for every new capture frame. Needs a GPU, so it is ignored by `cargo test`. Run with
+    /// `cargo test --release -p cv-magnifier bench_upload_4k -- --ignored --nocapture`, with the
+    /// GPU idle.
+    ///
+    /// Two numbers: the `write_texture` call alone (what the render thread waits for in a tick,
+    /// the copy into wgpu's staging memory) and the whole upload to the point the GPU copy has
+    /// finished (`submit` and wait).
+    #[test]
+    #[ignore]
+    fn bench_upload_4k() {
+        const W: u32 = 3840;
+        const H: u32 = 2160;
+        const FRAMES: u32 = 100;
+
+        let Some((device, queue, adapter_name)) = pollster::block_on(headless_device()) else {
+            println!("no DX12 adapter; skipped");
+            return;
+        };
+        println!("adapter: {adapter_name}");
+
+        let (frame_tex, _view) = WgpuState::make_frame_texture(&device, W, H);
+        let pixels = vec![0xEEu8; (W * H * 4) as usize];
+        let upload = || {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &frame_tex,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                &pixels,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(W * 4), rows_per_image: None },
+                wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
+            );
+        };
+
+        // Warm up.
+        for _ in 0..5 {
+            upload();
+            queue.submit([]);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+
+        let mut call = std::time::Duration::ZERO;
+        let mut call_max = std::time::Duration::ZERO;
+        let start = Instant::now();
+        for _ in 0..FRAMES {
+            let t = Instant::now();
+            upload();
+            let d = t.elapsed();
+            call += d;
+            call_max = call_max.max(d);
+            queue.submit([]);
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        }
+        let total = start.elapsed();
+        println!("{W}x{H} frame, {} MB", W * H * 4 / 1_000_000);
+        println!(
+            "write_texture call: avg {:.2} ms, max {:.2} ms",
+            call.as_secs_f64() * 1000.0 / FRAMES as f64,
+            call_max.as_secs_f64() * 1000.0,
+        );
+        println!(
+            "upload to GPU copy finished: avg {:.2} ms",
+            total.as_secs_f64() * 1000.0 / FRAMES as f64,
+        );
+    }
+
     async fn headless_device() -> Option<(wgpu::Device, wgpu::Queue, String)> {
         let instance = dx12_instance();
         let adapter = instance
