@@ -6,7 +6,7 @@ Stacking: on (your instruction, 2026-10-10, until you say otherwise). Integratio
 On the integration branch, coded but not yet approved:
 - 4.6 wire the policy into fullscreen (PR #42 itself)
 - 4.7 wire the policy into docked mode (PR #43, merged into the integration branch)
-- 5.1 docked mode on multiple monitors decided (docs only, PR #44, merged into the integration branch)
+Also on the integration branch, approved: 5.1 (docs only, PR #44, approved 2026-10-10). 4.8 (you) is skipped while you cannot test.
 
 Decided in 5.1, for 5.2 (your choice, 2026-10-10; full text in ROADMAP 5.2):
 - Default: the docked panel stays on the primary monitor. Capture still follows the target (pointer or caret) to any monitor, so the panel shows that monitor magnified (PRODUCT Must 6).
@@ -17,9 +17,10 @@ Decided in 5.1, for 5.2 (your choice, 2026-10-10; full text in ROADMAP 5.2):
 - Moving the panel to a monitor with other scaling sends `WM_DPICHANGED` ([docs](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged)); the overlay does not handle it. Check the window keeps its physical-pixel rect; mixed scaling as a whole is 5.3.
 
 State: ready
-Item: 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
-ADR: docs/adr/0008-caret-sources.md, Accepted. Run `/step 4.6`. No new ADR expected; if wiring needs a decision the ADR does not cover, stop and go to /adr.
+Item: 5.2 Implement 5.1 (Findings 10 and 18). Branch step/5.2-<name> from the integration branch.
+ADR: none needed (5.1 decided it in its PR; ADR 0007 left multi-monitor docking to 5.1). Run `/step 5.2`. If it needs a saved monitor identity or a trait change after all, stop and go to /adr.
 Model: Sonnet high (CLAUDE.md model guide for /step).
+4.6 and 4.7 are coded on the integration branch and still wait for your test and "I approve"; their notes stay below.
 
 What 4.5 built (PR #41, approved 2026-10-09), for 4.6 and 4.7:
 - cv-core `tracking`: `Tracker::update(now, pointer, events, view) -> (f32, f32)`, once per tick; `Tracker::following() -> Following { Pointer, Caret }`. Re-exported from `cv_core`. `view` is the magnified area in screen pixels (window size / zoom). The return value is the virtual-screen point to ease toward: feed it to `geometry::lerp_toward` in place of `self.pointer` in `View::draw` (cv-magnifier/src/magnifier.rs); keep `smooth_speed`.
