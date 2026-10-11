@@ -20,7 +20,7 @@ use windows::{
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
                 HTTRANSPARENT, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, MSG, PostMessageW,
-                PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
+                PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SW_SHOWNA, SWP_NOACTIVATE,
                 SWP_NOZORDER, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
                 SetWindowPos, ShowWindow, TranslateMessage, UnregisterClassW,
                 WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
@@ -130,11 +130,11 @@ unsafe extern "system" fn console_ctrl_handler(_event: u32) -> BOOL {
     BOOL(0)
 }
 
-/// Restores what the overlay changed, the system cursor, then destroys the window. Runs from
+/// Restores what the overlay changed, the system cursor, then destroys the windows. Runs from
 /// `WinHost`'s `Drop`, so it also runs when the render thread panics. The work area and the
 /// cursor clip are never changed (ADR 0007), so there is nothing to restore for them; releasing
 /// the clip here would free one another app set.
-fn teardown(hwnd: HWND) {
+fn teardown(hwnd: HWND, pan_hwnd: HWND) {
     OVERLAY_HWND.store(0, Ordering::SeqCst);
     unsafe {
         let _ = KillTimer(Some(hwnd), TIMER_ID);
@@ -143,6 +143,8 @@ fn teardown(hwnd: HWND) {
     let _ = unsafe { MagShowSystemCursor(true) };
     let _ = unsafe { MagUninitialize() };
     unsafe {
+        // Both windows go before the class: `UnregisterClassW` fails while one still exists.
+        let _ = DestroyWindow(pan_hwnd);
         let _ = DestroyWindow(hwnd);
         if let Ok(hinstance) = GetModuleHandleW(None) {
             let _ = UnregisterClassW(CLASS_NAME, Some(hinstance.into()));
@@ -155,6 +157,11 @@ fn teardown(hwnd: HWND) {
 /// cursor hiding. Dropping it restores the machine and destroys the window.
 struct WinHost {
     hwnd: HWND,
+    /// The pan window (ADR 0011): over the part of the monitor the docked panel does not cover.
+    /// Hidden after every `apply_layout`; `set_pan_visible` shows it.
+    pan_hwnd: HWND,
+    /// Whether the pan window is shown.
+    pan_shown: bool,
     /// What `apply_layout` last made the window.
     applied: Layout,
     /// Reads the pointer's position and shape; keeps the last shape between ticks.
@@ -174,6 +181,16 @@ impl PointerSource for WinHost {
 impl OverlayHost for WinHost {
     fn apply_layout(&mut self, layout: &Layout) -> (u32, u32) {
         let was_hidden = self.applied == Layout::Hidden;
+        // The pan window is hidden by every layout change; the magnifier shows it again.
+        if self.pan_shown {
+            unsafe {
+                let _ = ShowWindow(self.pan_hwnd, SW_HIDE);
+            }
+            self.pan_shown = false;
+        }
+        if let Some(rect) = pan_placement(layout) {
+            move_window(self.pan_hwnd, to_rect(rect));
+        }
         let size = match layout {
             Layout::Hidden => {
                 unsafe {
@@ -220,18 +237,49 @@ impl OverlayHost for WinHost {
         let _ = unsafe { MagShowSystemCursor(visible) };
     }
 
+    fn set_pan_visible(&mut self, visible: bool) {
+        // Only a docked panel with an uncovered area has anything to pan (ADR 0011).
+        let show = visible && pan_placement(&self.applied).is_some();
+        if show != self.pan_shown {
+            unsafe {
+                let _ = ShowWindow(self.pan_hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+            }
+            self.pan_shown = show;
+        }
+    }
+
     fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
-        let display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
-        let window = RawWindowHandle::Win32(Win32WindowHandle::new(
-            NonZeroIsize::new(self.hwnd.0 as isize).expect("overlay window handle is non-null"),
-        ));
-        (display, window)
+        window_handles(self.hwnd)
+    }
+
+    fn pan_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
+        window_handles(self.pan_hwnd)
     }
 }
 
 impl Drop for WinHost {
     fn drop(&mut self) {
-        teardown(self.hwnd);
+        teardown(self.hwnd, self.pan_hwnd);
+    }
+}
+
+fn window_handles(hwnd: HWND) -> (RawDisplayHandle, RawWindowHandle) {
+    let display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+    let window = RawWindowHandle::Win32(Win32WindowHandle::new(
+        NonZeroIsize::new(hwnd.0 as isize).expect("overlay window handle is non-null"),
+    ));
+    (display, window)
+}
+
+/// Where the pan window goes for `layout`: the part of the monitor the docked panel does not
+/// cover (ADR 0011). `None` when there is no docked panel or it covers the whole monitor.
+fn pan_placement(layout: &Layout) -> Option<ScreenRect> {
+    match layout {
+        Layout::Docked { monitor, edge, thickness } => {
+            let rect = geometry::uncovered_rect(monitor, *edge, *thickness);
+            (rect.width > 0 && rect.height > 0).then_some(rect)
+        }
+        Layout::Hidden | Layout::Fullscreen { .. } => None,
     }
 }
 
@@ -252,7 +300,7 @@ fn run_overlay(
         height: 1080,
     });
 
-    let hwnd = unsafe {
+    let (hwnd, pan_hwnd) = unsafe {
         let hinstance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -264,30 +312,22 @@ fn run_overlay(
         };
         RegisterClassExW(&wc);
 
-        let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
-            CLASS_NAME,
-            w!("clear-view"),
-            WS_POPUP, // starts hidden
-            primary.left,
-            primary.top,
-            primary.width as i32,
-            primary.height as i32,
-            None,
-            None,
-            Some(hinstance),
-            None,
-        )
-        .expect("CreateWindowExW failed");
-
-        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).ok();
-        SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA).ok();
-        hwnd
+        // The pan window (ADR 0011) is made like the panel and also starts hidden; if it cannot
+        // be made nothing system-wide has changed yet, so the process just ends.
+        let hwnd = create_overlay_window(hinstance, &primary);
+        let pan_hwnd = create_overlay_window(hinstance, &primary);
+        (hwnd, pan_hwnd)
     };
     OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     // From here on, any exit from this function (including a panic) restores the machine when
     // `host` is dropped.
-    let mut host = WinHost { hwnd, applied: Layout::Hidden, pointer: CursorPointer::new() };
+    let mut host = WinHost {
+        hwnd,
+        pan_hwnd,
+        pan_shown: false,
+        applied: Layout::Hidden,
+        pointer: CursorPointer::new(),
+    };
 
     // wgpu init (blocking): the window starts primary-monitor-sized.
     // SAFETY: `magnifier` is declared after `host`, so it (and its wgpu surface) is dropped
@@ -349,6 +389,35 @@ fn run_overlay(
     }
 
     // `magnifier` then `host` drop here; `host` runs `teardown`.
+}
+
+/// Creates one hidden overlay window on `monitor`: click-through, never activated, topmost,
+/// excluded from capture. The panel and the pan window are both made with it.
+///
+/// # Safety
+/// The window class must be registered, and `hinstance` must be this module's.
+unsafe fn create_overlay_window(hinstance: HINSTANCE, monitor: &OutputInfo) -> HWND {
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
+            CLASS_NAME,
+            w!("clear-view"),
+            WS_POPUP, // starts hidden
+            monitor.left,
+            monitor.top,
+            monitor.width as i32,
+            monitor.height as i32,
+            None,
+            None,
+            Some(hinstance),
+            None,
+        )
+        .expect("CreateWindowExW failed");
+
+        SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).ok();
+        SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA).ok();
+        hwnd
+    }
 }
 
 /// Re-reads the monitor list and, if it differs from `known`, logs it and tells the magnifier
@@ -441,5 +510,46 @@ fn move_window(hwnd: HWND, r: RECT) {
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
         .ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cv_core::Edge;
+
+    use super::*;
+
+    fn monitor() -> OutputInfo {
+        OutputInfo { idx: 0, left: 0, top: 0, width: 1920, height: 1080 }
+    }
+
+    fn docked(edge: Edge, thickness: u32) -> Layout {
+        Layout::Docked { monitor: monitor(), edge, thickness }
+    }
+
+    fn rect(left: i32, top: i32, width: u32, height: u32) -> ScreenRect {
+        ScreenRect { left, top, width, height }
+    }
+
+    #[test]
+    fn the_pan_window_covers_what_the_panel_does_not_on_each_edge() {
+        assert_eq!(pan_placement(&docked(Edge::Top, 270)), Some(rect(0, 270, 1920, 810)));
+        assert_eq!(pan_placement(&docked(Edge::Bottom, 270)), Some(rect(0, 0, 1920, 810)));
+        assert_eq!(pan_placement(&docked(Edge::Left, 480)), Some(rect(480, 0, 1440, 1080)));
+        assert_eq!(pan_placement(&docked(Edge::Right, 480)), Some(rect(0, 0, 1440, 1080)));
+    }
+
+    #[test]
+    fn the_pan_window_has_no_place_without_a_docked_panel() {
+        assert_eq!(pan_placement(&Layout::Hidden), None);
+        assert_eq!(pan_placement(&Layout::Fullscreen { monitor: monitor() }), None);
+    }
+
+    #[test]
+    fn the_pan_window_has_no_place_when_the_panel_covers_the_monitor() {
+        assert_eq!(pan_placement(&docked(Edge::Top, 1080)), None);
+        assert_eq!(pan_placement(&docked(Edge::Bottom, 5000)), None);
+        assert_eq!(pan_placement(&docked(Edge::Left, 1920)), None);
+        assert_eq!(pan_placement(&docked(Edge::Right, 5000)), None);
     }
 }
