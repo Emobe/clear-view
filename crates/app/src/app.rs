@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cv_core::{
     AppState, ColorFilter, DisplayMode, Edge, Interpolation, PANEL_SIZE_MAX, PANEL_SIZE_MIN,
-    SharedState, ZOOM_MAX, ZOOM_MIN,
+    POINTER_OUTLINE_MAX, POINTER_SIZE_MAX, POINTER_SIZE_MIN, SharedState, ZOOM_MAX, ZOOM_MIN,
 };
 use eframe::egui;
 
@@ -139,6 +139,32 @@ impl eframe::App for ClearViewApp {
                 );
             }
 
+            ui.add_space(8.0);
+
+            // Pointer in the magnified view (ADR 0010). Off: the circle, which has no settings.
+            ui.label("Pointer");
+            ui.checkbox(&mut s.pointer_shape, "Draw the real pointer shape (off: circle)");
+            ui.add_enabled_ui(s.pointer_shape, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut s.pointer_size, POINTER_SIZE_MIN..=POINTER_SIZE_MAX)
+                        .step_by(0.5)
+                        .text("Pointer size"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut s.pointer_outline, 0.0..=POINTER_OUTLINE_MAX)
+                        .step_by(0.5)
+                        .text("Outline width (px)"),
+                );
+                ui.horizontal(|ui| {
+                    ui.color_edit_button_srgb(&mut s.pointer_fill);
+                    ui.label("Fill colour");
+                });
+                ui.horizontal(|ui| {
+                    ui.color_edit_button_srgb(&mut s.pointer_outline_colour);
+                    ui.label("Outline colour");
+                });
+            });
+
             #[cfg(feature = "tts")]
             {
                 ui.add_space(8.0);
@@ -198,6 +224,11 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         panel_size,
         panel_follows_monitor,
         color_filter,
+        pointer_shape,
+        pointer_size,
+        pointer_outline,
+        pointer_fill,
+        pointer_outline_colour,
         tts_enabled,
         tts_hover_enabled,
         tts_volume,
@@ -246,6 +277,32 @@ mod tests {
         let mut live = before.clone();
         apply_changes(&mut live, &before, &after);
         assert_eq!(live, after);
+    }
+
+    #[test]
+    fn the_pointer_settings_are_copied() {
+        let before = AppState::default();
+        let after = AppState {
+            pointer_shape: false,
+            pointer_size: 4.0,
+            pointer_outline: 5.5,
+            pointer_fill: [1, 2, 3],
+            pointer_outline_colour: [4, 5, 6],
+            ..before.clone()
+        };
+        let mut live = AppState { enabled: true, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, AppState { enabled: true, ..after });
+    }
+
+    #[test]
+    fn one_pointer_setting_leaves_the_others_live() {
+        let before = AppState::default();
+        let after = AppState { pointer_outline: 7.0, ..before.clone() };
+        let mut live = AppState { pointer_size: 3.0, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live.pointer_outline, 7.0);
+        assert_eq!(live.pointer_size, 3.0);
     }
 
     #[test]
