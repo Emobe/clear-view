@@ -13,7 +13,7 @@ use std::{
 
 use cv_core::{
     AppState, CoreEvent, DisplayMode, Edge, Following, Frame, FrameState, OutputInfo,
-    ScreenPoint, ScreenRect, SharedState, Tracker,
+    PointerLook, PointerShape, ScreenPoint, ScreenRect, SharedState, Tracker,
     geometry::{self, panel_pct_to_px, window_dims},
     tracking,
 };
@@ -81,6 +81,9 @@ pub(crate) trait Renderer {
     /// Replaces the frame texture with one of a new size (monitor switch).
     fn recreate_frame_texture(&mut self, width: u32, height: u32);
     fn upload_frame(&mut self, data: &[u8], width: u32, height: u32);
+    /// Replaces the pointer mask (one byte per pixel, `width * height` bytes) the shader draws
+    /// for [`POINTER_SHAPE`]. Called only for a new shape.
+    fn upload_pointer_mask(&mut self, data: &[u8], width: u32, height: u32);
     fn write_uniforms(&mut self, uniforms: &Uniforms);
     /// Draws and presents. False when the surface is lost or outdated.
     fn render(&mut self) -> bool;
@@ -93,14 +96,73 @@ pub(crate) struct Uniforms {
     pub crop: [f32; 4],
     pub color_mode: u32,
     pub interp_mode: u32,
-    /// Software cursor in output window pixels; [`CURSOR_HIDDEN`] on both draws no circle.
+    /// The pointer in output window pixels; [`CURSOR_HIDDEN`] on both draws nothing.
     pub cursor_x: u32,
     pub cursor_y: u32,
     pub edge_threshold: f32,
+    pub pointer: PointerDraw,
 }
 
-/// Cursor position that draws no circle: the pointer is outside the magnified area. Far outside
-/// any window, so the shader's distance test never passes.
+/// How the shader draws the pointer (ADR 0010).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PointerDraw {
+    /// [`POINTER_NONE`], [`POINTER_CIRCLE`] or [`POINTER_SHAPE`].
+    pub kind: u32,
+    /// Size of the mask in the pointer texture; zero unless `kind` is [`POINTER_SHAPE`].
+    pub mask: (u32, u32),
+    pub hotspot: (u32, u32),
+    /// Output pixels per mask pixel.
+    pub size: f32,
+    /// Outline width in output pixels.
+    pub outline: f32,
+    /// Straight RGBA, 0–1.
+    pub fill: [f32; 4],
+    pub outline_colour: [f32; 4],
+}
+
+/// Draw nothing at the pointer.
+pub(crate) const POINTER_NONE: u32 = 0;
+/// The circle, for a pointer whose shape is unknown.
+pub(crate) const POINTER_CIRCLE: u32 = 1;
+/// The shape in the pointer mask texture.
+pub(crate) const POINTER_SHAPE: u32 = 2;
+
+/// Fixed until the settings of roadmap 6.2c3 replace them: twice the size Windows draws the
+/// pointer, a blue fill and a white outline.
+const POINTER_SIZE: f32 = 2.0;
+const POINTER_OUTLINE: f32 = 2.0;
+const POINTER_FILL: [f32; 4] = [0.10, 0.40, 1.0, 1.0];
+const POINTER_OUTLINE_COLOUR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// Largest mask side the magnifier uploads. Real cursors are far smaller; a bigger answer is
+/// treated as unreadable (the circle) rather than risking a texture the device refuses.
+const MAX_MASK_SIDE: u32 = 512;
+
+impl PointerDraw {
+    /// The fixed look with no mask: `kind` is [`POINTER_NONE`] or [`POINTER_CIRCLE`].
+    pub(crate) fn marker(kind: u32) -> Self {
+        Self {
+            kind,
+            mask: (0, 0),
+            hotspot: (0, 0),
+            size: POINTER_SIZE,
+            outline: POINTER_OUTLINE,
+            fill: POINTER_FILL,
+            outline_colour: POINTER_OUTLINE_COLOUR,
+        }
+    }
+}
+
+/// Whether the mask can be drawn: a size the device takes and as many bytes as pixels.
+fn usable(shape: &PointerShape) -> bool {
+    let (w, h) = (shape.width, shape.height);
+    (1..=MAX_MASK_SIDE).contains(&w)
+        && (1..=MAX_MASK_SIDE).contains(&h)
+        && shape.mask.len() == w as usize * h as usize
+}
+
+/// Cursor position that draws nothing: the pointer is outside the magnified area. Far outside
+/// any window, and the shader tests for it.
 pub(crate) const CURSOR_HIDDEN: u32 = u32::MAX;
 
 /// What was last applied to the window, as the magnifier decides when to apply again.
@@ -154,6 +216,11 @@ struct View<R> {
     cursor_hidden_in_panel: bool,
     last_frame: Option<Arc<Frame>>,
     last_uniforms: Option<Uniforms>,
+    /// What the pointer looked like at the last enabled tick (ADR 0010). `Unknown` until the
+    /// first read, so the circle shows.
+    look: PointerLook,
+    /// The shape whose mask is in the renderer's pointer texture.
+    last_mask: Option<Arc<PointerShape>>,
 }
 
 impl<R: Renderer> View<R> {
@@ -193,6 +260,8 @@ impl<R: Renderer> View<R> {
             cursor_hidden_in_panel: false,
             last_frame: None,
             last_uniforms: None,
+            look: PointerLook::Unknown,
+            last_mask: None,
         }
     }
 
@@ -208,9 +277,8 @@ impl<R: Renderer> View<R> {
             if let Some(p) = host.position() {
                 self.pointer = p;
             }
-            // Read every enabled tick so the host notices a shape change. Nothing draws it yet
-            // (roadmap 6.2c2), so the circle stays as it was.
-            let _look = host.look();
+            // Read every enabled tick so the host notices a shape change; `draw` shows it.
+            self.look = host.look();
             self.target = self.track(&state, now, events);
             self.follow_target();
         } else {
@@ -427,11 +495,12 @@ impl<R: Renderer> View<R> {
             }
         }
 
-        // The circle marks the real pointer, wherever the view is; none when it is out of view.
+        // The pointer marks the real pointer, wherever the view is; none when it is out of view.
         let px = geometry::to_monitor_local(self.pointer.x as f32, self.active.left);
         let py = geometry::to_monitor_local(self.pointer.y as f32, self.active.top);
         let (cursor_x, cursor_y) = geometry::pointer_in_output(px, py, &crop, win_w, win_h)
             .unwrap_or((CURSOR_HIDDEN, CURSOR_HIDDEN));
+        let pointer = self.pointer_draw();
         let uniforms = Uniforms {
             crop: crop.normalized(),
             color_mode: state.color_filter.as_u32(),
@@ -439,6 +508,7 @@ impl<R: Renderer> View<R> {
             cursor_x,
             cursor_y,
             edge_threshold: state.edge_threshold,
+            pointer,
         };
         if self.last_uniforms != Some(uniforms) {
             self.renderer.write_uniforms(&uniforms);
@@ -450,6 +520,29 @@ impl<R: Renderer> View<R> {
         } else {
             // Surface lost or outdated: reconfigure to recover.
             self.renderer.resize(win_w, win_h);
+        }
+    }
+
+    /// How to draw the pointer for the current look (ADR 0010): nothing when hidden, the circle
+    /// when the shape is unknown or unusable, else the shape. A mask is uploaded only when the
+    /// shape is a new `Arc`.
+    fn pointer_draw(&mut self) -> PointerDraw {
+        match self.look.clone() {
+            PointerLook::Hidden => PointerDraw::marker(POINTER_NONE),
+            PointerLook::Shape(shape) if usable(&shape) => {
+                let new = self.last_mask.as_ref().is_none_or(|last| !Arc::ptr_eq(last, &shape));
+                if new {
+                    self.renderer.upload_pointer_mask(&shape.mask, shape.width, shape.height);
+                    self.last_mask = Some(Arc::clone(&shape));
+                }
+                PointerDraw {
+                    kind: POINTER_SHAPE,
+                    mask: (shape.width, shape.height),
+                    hotspot: shape.hotspot,
+                    ..PointerDraw::marker(POINTER_SHAPE)
+                }
+            }
+            PointerLook::Unknown | PointerLook::Shape(_) => PointerDraw::marker(POINTER_CIRCLE),
         }
     }
 }
@@ -523,6 +616,8 @@ mod tests {
         Resize(u32, u32),
         Recreate(u32, u32),
         Upload(u32, u32),
+        /// A pointer mask of this size.
+        Mask(u32, u32),
         Uniforms(Uniforms),
         Render,
     }
@@ -546,6 +641,10 @@ mod tests {
         }
         fn upload_frame(&mut self, _data: &[u8], width: u32, height: u32) {
             self.calls.push(Gpu::Upload(width, height));
+        }
+        fn upload_pointer_mask(&mut self, data: &[u8], width: u32, height: u32) {
+            assert_eq!(data.len(), (width * height) as usize);
+            self.calls.push(Gpu::Mask(width, height));
         }
         fn write_uniforms(&mut self, uniforms: &Uniforms) {
             self.calls.push(Gpu::Uniforms(*uniforms));
@@ -1134,6 +1233,7 @@ mod tests {
                 cursor_x: 960,
                 cursor_y: 540,
                 edge_threshold: 0.3,
+                pointer: PointerDraw::marker(POINTER_CIRCLE),
             })
         );
     }
@@ -1189,29 +1289,135 @@ mod tests {
         assert_eq!(rig.host.looks, 3);
     }
 
+    fn arrow() -> Arc<PointerShape> {
+        Arc::new(PointerShape { width: 2, height: 2, hotspot: (1, 0), mask: vec![255, 0, 255, 255] })
+    }
+
+    /// The pointer part of the last uniform write of `gpu`.
+    fn pointer_written(gpu: &[Gpu]) -> Option<PointerDraw> {
+        gpu.iter().rev().find_map(|c| match c {
+            Gpu::Uniforms(u) => Some(u.pointer),
+            _ => None,
+        })
+    }
+
+    fn masks(gpu: &[Gpu]) -> usize {
+        count(gpu, |c| matches!(c, Gpu::Mask(..)))
+    }
+
     #[test]
-    fn what_the_pointer_looks_like_changes_nothing_drawn_yet() {
-        let arrow = Arc::new(PointerShape {
-            width: 2,
-            height: 2,
+    fn the_circle_shows_until_a_shape_is_known() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        let (_, gpu) = rig.step();
+        assert_eq!(pointer_written(&gpu), Some(PointerDraw::marker(POINTER_CIRCLE)));
+        assert_eq!(masks(&gpu), 0);
+    }
+
+    #[test]
+    fn a_hidden_pointer_draws_nothing() {
+        let mut rig = Rig::new();
+        rig.host.look = PointerLook::Hidden;
+        rig.set(|s| s.enabled = true);
+        let (_, gpu) = rig.step();
+        assert_eq!(pointer_written(&gpu), Some(PointerDraw::marker(POINTER_NONE)));
+        assert_eq!(masks(&gpu), 0);
+    }
+
+    #[test]
+    fn a_shape_is_drawn_with_the_fixed_defaults() {
+        let mut rig = Rig::new();
+        rig.host.look = PointerLook::Shape(arrow());
+        rig.set(|s| s.enabled = true);
+        let (_, gpu) = rig.step();
+        assert_eq!(masks(&gpu), 1);
+        assert_eq!(
+            pointer_written(&gpu),
+            Some(PointerDraw {
+                kind: POINTER_SHAPE,
+                mask: (2, 2),
+                hotspot: (1, 0),
+                size: POINTER_SIZE,
+                outline: POINTER_OUTLINE,
+                fill: POINTER_FILL,
+                outline_colour: POINTER_OUTLINE_COLOUR,
+            })
+        );
+    }
+
+    #[test]
+    fn the_mask_is_uploaded_once_per_shape() {
+        let mut rig = Rig::new();
+        let first = arrow();
+        rig.host.look = PointerLook::Shape(Arc::clone(&first));
+        rig.set(|s| s.enabled = true);
+        rig.publish_frame();
+        assert_eq!(masks(&rig.step().1), 1);
+
+        // The same Arc, with the pointer moving: no upload.
+        rig.point_at(700, 300);
+        assert_eq!(masks(&rig.step().1), 0);
+        rig.point_at(710, 305);
+        assert_eq!(masks(&rig.step().1), 0);
+
+        // A new Arc, even with equal contents, is a new shape; so is one of another size.
+        let same_bytes = Arc::new((*first).clone());
+        rig.host.look = PointerLook::Shape(same_bytes);
+        assert_eq!(masks(&rig.step().1), 1);
+        let big = Arc::new(PointerShape { width: 3, height: 3, hotspot: (0, 0), mask: vec![255; 9] });
+        rig.host.look = PointerLook::Shape(big);
+        let (_, gpu) = rig.step();
+        assert!(gpu.contains(&Gpu::Mask(3, 3)));
+        assert_eq!(pointer_written(&gpu).map(|p| p.mask), Some((3, 3)));
+    }
+
+    #[test]
+    fn going_hidden_and_back_does_not_upload_the_same_shape_again() {
+        let mut rig = Rig::new();
+        let shape = arrow();
+        rig.host.look = PointerLook::Shape(Arc::clone(&shape));
+        rig.set(|s| s.enabled = true);
+        assert_eq!(masks(&rig.step().1), 1);
+        rig.host.look = PointerLook::Hidden;
+        assert_eq!(masks(&rig.step().1), 0);
+        rig.host.look = PointerLook::Shape(shape);
+        let (_, gpu) = rig.step();
+        assert_eq!(masks(&gpu), 0);
+        assert_eq!(pointer_written(&gpu).map(|p| p.kind), Some(POINTER_SHAPE));
+    }
+
+    #[test]
+    fn an_unusable_shape_falls_back_to_the_circle() {
+        let wrong_length = PointerShape { width: 2, height: 2, hotspot: (0, 0), mask: vec![255; 3] };
+        let empty = PointerShape { width: 0, height: 0, hotspot: (0, 0), mask: Vec::new() };
+        let huge = PointerShape {
+            width: MAX_MASK_SIDE + 1,
+            height: 1,
             hotspot: (0, 0),
-            mask: vec![255, 0, 255, 255],
-        });
-        let mut runs = Vec::new();
-        for look in [PointerLook::Hidden, PointerLook::Unknown, PointerLook::Shape(arrow)] {
+            mask: vec![255; MAX_MASK_SIDE as usize + 1],
+        };
+        for shape in [wrong_length, empty, huge] {
             let mut rig = Rig::new();
-            rig.host.look = look;
+            rig.host.look = PointerLook::Shape(Arc::new(shape));
             rig.set(|s| s.enabled = true);
-            rig.publish_frame();
-            rig.point_at(700, 300);
-            let mut calls = rig.step().1;
-            rig.point_at(710, 305);
-            calls.extend(rig.step().1);
-            runs.push(calls);
+            let (_, gpu) = rig.step();
+            assert_eq!(masks(&gpu), 0);
+            assert_eq!(pointer_written(&gpu), Some(PointerDraw::marker(POINTER_CIRCLE)));
         }
-        assert!(uniform_writes(&runs[0]) > 0);
-        assert_eq!(runs[0], runs[1]);
-        assert_eq!(runs[0], runs[2]);
+    }
+
+    #[test]
+    fn the_shape_is_drawn_in_docked_mode_too() {
+        let mut rig = Rig::new();
+        rig.host.look = PointerLook::Shape(arrow());
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_size = 25;
+            s.enabled = true;
+        });
+        let (_, gpu) = rig.step();
+        assert_eq!(masks(&gpu), 1);
+        assert_eq!(pointer_written(&gpu).map(|p| p.kind), Some(POINTER_SHAPE));
     }
 
     #[test]
