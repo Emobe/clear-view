@@ -106,6 +106,7 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you. Split on 2026-10-10 because the owner cannot run the app for now:
 5.5a Measuring tools: an opt-in `[perf]` line (`CV_PERF=1`), `scripts/perf-sample.ps1` for CPU and GPU, and two ignored headless 4K benches (capture copy, GPU upload). Method and matrix in docs/prototypes/performance.md.
 5.5b (you) Run the matrix from docs/prototypes/performance.md and send the numbers (4K needs the desktop at 3840x2160, for example NVIDIA DSR). Thresholds are set with you then.
+5.5c (you) On hold: proper performance test, later (your decision 2026-10-11, when you approved 5.5b as done for basic purposes without the matrix; you also held off any more performance work, so 5.6 is on hold too): fill in the matrix in docs/prototypes/performance.md on a quiet desktop, fullscreen and docked, still and moving, with the 4K rows if possible, then set the thresholds with you. It settles Finding 4 (24% in the partial run against 100–170% from the 3.1 prototype).
 5.6 Fix what 5.5b finds. Likely the per-frame allocation in capture (Finding 4).
 
 ## Phase 6: v1 (M5)
