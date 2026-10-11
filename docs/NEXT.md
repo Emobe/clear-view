@@ -9,10 +9,10 @@ Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45),
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-State: waiting on the owner (2026-10-11, after "4.8 done" and "5.5b done, performance on hold")
-Item: no agent item is ready. 6.2c waits on 6.2b, 4.9 is on hold with the tester items, 6.3 to 6.6 are on hold, and all performance work is on hold (5.5c and 5.6, see below). /next offers the owner items below. The "cannot test" skip is over, so /next does not skip hands-on (you) items (6.2b; 4.2a is skipped, see below). Stacking stays on until you say otherwise, and nothing is merged into master by the agent. 6.3 to 6.6 (UIAccess, signing, installer) are still on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. The open owner items:
+State: ready for an agent item (2026-10-11, after "6.2b done")
+Item: 6.2c, enhanced pointer in the magnified view (ROADMAP 6.2c, ADR 0010 Accepted). 6.2b is Done: the probe shows `GetCursorInfo` reports the real shape while `MagShowSystemCursor(false)` hides the cursor, so build the main option (shape via `GetCursorInfo` + `GetIconInfo` on the render thread, coverage mask through cv-core, drawn by the shader), not the own-arrow fallback; the duplication reports no pointer while hidden. The probe only saw the arrow and size-we; I-beam, hand and busy go in 6.2c's Verify. 4.9 is on hold with the tester items, 6.3 to 6.6 are on hold, and all performance work is on hold (5.5c and 5.6, see below). The "cannot test" skip is over, so /next does not skip hands-on (you) items (4.2a is skipped, see below). Stacking stays on until you say otherwise, and nothing is merged into master by the agent. 6.3 to 6.6 (UIAccess, signing, installer) are still on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. The open owner items:
 - 5.4 and 5.5a: nothing owed. You reported (2026-10-11) that you switched the monitors and the rest of the 5.4 list, that a plain launch prints no `[perf]` line, and that the pointer inside a docked panel worked; the cases and outcomes were not itemised (STATUS says so).
-- 6.2b: run the pointer probe (below); 6.2c then builds the cursor.
+- 6.2b: done (2026-10-11), see the Item above and STATUS Works.
 - 5.5b is Done (2026-10-11, "I approve") for basic purposes, on the partial run in STATUS; the matrix was not filled in. Your decision, same day: ANY more performance work is held off for a while. That puts 5.5c (the proper test, ROADMAP) and 5.6 (the Finding 4 fix) on hold, and Finding 4 stays open (24% in the partial run against 100–170% from the 3.1 prototype). /next must not offer 5.5c, 5.6 or any other performance item until you raise it.
 - 4.8 is Done (2026-10-11, "4.8 done"; STATUS Done and Works). You tested Notepad, Explorer, Brave, Terminal and admin Notepad; the modes and per-app results were not itemised. LibreOffice did not work (no caret source, as 4.2 measured) and Word is not installed: both are postponed by your decision ("we do libreoffice way later and word later"). /next must not offer either until you raise it. A LibreOffice fix needs a source outside ADR 0008's chain, so an ADR first. 4.2a is skipped, not Done (2026-10-11, your decision): you have no Word, and Brave stands in for Chrome (same engine, measured in 4.2). Word is an open gap, to be measured later with `caret_probe` on a machine that has it (docs/prototypes/caret-sources.md). /next must not offer 4.2a again.
 Test run of the integration branch, 2026-10-11 (you, by hand; Windows, regular non-elevated terminal windows; approved the same day for what passed, now in STATUS Done and Works):
@@ -20,7 +20,7 @@ Test run of the integration branch, 2026-10-11 (you, by hand; Windows, regular n
 - Fail: the Explorer address bar does not move the view (Finding 21, roadmap 4.8a; resolved by 4.8a, approved 2026-10-11).
 - Not tested or not itemised: the Finding 19 `caret_probe` check; the other 4.8 apps; whether Notepad really ran elevated (Finding 20).
 - Perf numbers (a video was playing, so not for thresholds): docked with `-Move`, process CPU mean 24% of one core, max 42.5%, Gpu3D 4.4%, GpuCopy and GpuOther 0. A run without `-Move` gave 64–88% for 7 s then 15–32%, probably your mouse and the video. This does not match Finding 4's 100–170% from the 3.1 prototype; a run without the video, with `CV_PERF=1` beside it (now 5.5c, on hold), would settle it.
-Model: no agent item to run. /next may offer the owner items above in "Before that", and picks what each unlocks once you report it (Sonnet high for /step).
+Model: Sonnet high for `/step 6.2c` (CLAUDE.md model guide). It touches cv-core, cv-platform-win, cv-magnifier and app, so expect the plan to be large and possibly split into sub-items.
 
 6.1 and 6.2a are approved (2026-10-10, PRs #52 and #53). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
 - The shape is read with `GetCursorInfo` + `GetIconInfo` on the render thread and passed through cv-core as a coverage mask.
@@ -29,10 +29,8 @@ Model: no agent item to run. /next may offer the owner items above in "Before th
 
 6.2 is split into 6.2a, 6.2b and 6.2c:
 - 6.2a (agent, approved): the `pointer_probe` dev example, `cargo run -p cv-platform-win --example pointer_probe > probe.txt`. Three phases of 20 s (`--secs N`): cursor shown, hidden, shown; each ends with a summary line, all three are repeated at the end.
-- 6.2b (you): run it with clear-view closed, visit arrow, text, link, window edge and busy cursor in each phase, and send probe.txt. Whether the shape can be read while `MagShowSystemCursor(false)` hides the cursor is undocumented.
-- 6.2c (agent): build it, or the own-arrow fallback if 6.2b shows nothing reports while hidden.
-
-While you cannot test, 6.2b and 6.2c wait; the next agent item is 6.3 (ADR first).
+- 6.2b (you, done 2026-10-11): ran it. The shape is readable through `GetCursorInfo` while hidden (arrow and size-we seen); the duplication reports nothing while hidden. Gaps: shown-1 empty, other cursors not visited.
+- 6.2c (agent): build the main option of ADR 0010.
 
 5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b is Done for basic purposes (2026-10-11) without the matrix. The proper test is 5.5c (you) and 5.6 fixes what it finds (Finding 4 already has the pointer-only capture cost from 3.1); both are on hold by your decision, along with any other performance work.
 
