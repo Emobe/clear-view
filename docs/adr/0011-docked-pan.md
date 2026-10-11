@@ -1,6 +1,6 @@
 # 0011: Docked pan
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-11
 
 ## Context
