@@ -15,6 +15,11 @@
 //!   box, is kept for [`PENDING_FOR`] and takes the view once the pointer has been still for
 //!   [`POINTER_QUIET`]. The source sends it once and never repeats it, so dropping it would lose
 //!   it for good (Explorer address bar, roadmap 4.8a).
+//! - While on the pointer, a `FocusRect` with the pointer inside it is a click into that box:
+//!   the view is already where the user clicked, so it stays on the pointer. Showing the box's
+//!   start instead pulled the view away from a click on the right of a wide box (roadmap 4.8a,
+//!   your choice 2026-10-11). Keyboard focus (Ctrl+L, Tab) with the pointer elsewhere, or while
+//!   on the caret, still moves the view to the box.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -154,6 +159,7 @@ impl Tracker {
         let Some(pending) = self.pending else { return };
         if now.saturating_duration_since(pending.since) > PENDING_FOR
             || distance(pointer, pending.pointer) > POINTER_RETURN_PX
+            || pending.rect.contains(pointer)
             || !matches!(self.mode, Mode::Pointer)
         {
             self.pending = None;
@@ -176,12 +182,16 @@ impl Tracker {
         match event {
             CoreEvent::CaretMoved { rect, source, .. } => {
                 let still = self.pointer_still(now);
+                let clicked = *source == CaretSource::FocusRect && rect.contains(pointer);
                 // The newest event is the one that counts.
                 self.pending = (!still
+                    && !clicked
                     && *source == CaretSource::FocusRect
                     && matches!(self.mode, Mode::Pointer))
                 .then_some(Pending { rect: *rect, since: now, pointer });
                 self.mode = match self.mode {
+                    // Clicked into a box: the view is already on the click.
+                    Mode::Pointer if clicked => Mode::Pointer,
                     // The view is on the pointer, so the caret is measured from there.
                     Mode::Pointer if still => Mode::Caret {
                         anchor: pointer,
@@ -479,8 +489,63 @@ mod tests {
     fn a_focus_rect_ignores_the_current_view() {
         // Inside the pointer view's middle, but still centred on: it is a control, not a caret.
         let mut rig = Rig::new();
-        let t = rig.tick(300, p(1000, 500), [focus(1000, 500, 40, 20)]);
-        assert!(approx(t, (1020.0, 510.0)), "{t:?}");
+        let t = rig.tick(300, p(1000, 500), [focus(1010, 495, 40, 20)]);
+        assert!(approx(t, (1030.0, 505.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_focus_rect_under_the_resting_pointer_leaves_the_view_on_the_pointer() {
+        // Clicked on the right of a box wider than the view: no jump to its left edge.
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus(600, 490, 442, 32)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+        // Typing in the box keeps it there; a caret elsewhere later still takes the view.
+        rig.tick(300, p(1000, 500), [focus(600, 490, 442, 33)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        rig.tick(300, p(1000, 500), [caret(1500, 500)]);
+        assert_eq!(rig.following(), Following::Caret);
+    }
+
+    #[test]
+    fn a_focus_rect_under_the_moving_pointer_is_not_held() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []); // moving to click
+        rig.tick(20, p(1100, 500), [focus(1000, 490, 442, 32)]);
+        assert_eq!(rig.tracker.pending_since(), None);
+        rig.tick(400, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn a_held_focus_rect_is_dropped_when_the_pointer_settles_inside_it() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(1110, 490, 400, 32)]);
+        assert!(rig.tracker.pending_since().is_some());
+        rig.tick(16, p(1115, 500), []); // drifts into the box
+        rig.tick(300, p(1115, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert_eq!(rig.tracker.pending_since(), None);
+    }
+
+    #[test]
+    fn a_focus_rect_with_the_pointer_far_away_still_takes_the_view() {
+        // Ctrl+L with the mouse parked elsewhere: the box's start is shown.
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus(1241, 203, 442, 32)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1241.0 + 76.8, 219.0)), "{t:?}");
+    }
+
+    #[test]
+    fn on_the_caret_a_focus_rect_under_the_pointer_still_takes_the_view() {
+        // Typing in Notepad with the mouse resting over the address bar, then Ctrl+L.
+        let mut rig = Rig::new();
+        rig.on_far_caret();
+        let t = rig.tick(300, p(1000, 500), [focus(900, 490, 442, 32)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (976.8, 506.0)), "{t:?}");
     }
 
     #[test]
