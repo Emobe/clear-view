@@ -23,6 +23,10 @@ pub trait OverlayHost: PointerSource {
     /// Leaves the system cursor hidden for `Layout::Fullscreen` and shown for every other
     /// layout, whatever `set_system_cursor` asked for before.
     ///
+    /// Also places the pan window (ADR 0011) over the part of the monitor the docked panel does
+    /// not cover, and leaves it hidden, for every layout; the caller shows it again with
+    /// `set_pan_visible` after each layout change.
+    ///
     /// May send window messages synchronously, so the backend must not call into the
     /// magnifier from inside it.
     fn apply_layout(&mut self, layout: &Layout) -> (u32, u32);
@@ -31,6 +35,14 @@ pub trait OverlayHost: PointerSource {
     /// inside the panel). The magnifier calls it only when the answer changes.
     fn set_system_cursor(&mut self, visible: bool);
 
+    /// Shows or hides the pan window (ADR 0011). Showing does nothing unless the applied layout
+    /// is docked and leaves part of the monitor uncovered. The magnifier calls it only when the
+    /// answer changes.
+    fn set_pan_visible(&mut self, visible: bool);
+
     /// Handles for the wgpu surface. Valid until the host is dropped.
     fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle);
+
+    /// Handles for the pan window's wgpu surface. Valid until the host is dropped.
+    fn pan_handles(&self) -> (RawDisplayHandle, RawWindowHandle);
 }

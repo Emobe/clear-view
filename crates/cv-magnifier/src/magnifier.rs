@@ -669,6 +669,8 @@ mod tests {
         looks: u32,
         layouts: Vec<Layout>,
         cursor: Vec<bool>,
+        /// Each `set_pan_visible` call.
+        pan: Vec<bool>,
     }
 
     impl PointerSource for FakeHost {
@@ -701,7 +703,15 @@ mod tests {
             self.cursor.push(visible);
         }
 
+        fn set_pan_visible(&mut self, visible: bool) {
+            self.pan.push(visible);
+        }
+
         fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
+            unreachable!("View never creates a surface")
+        }
+
+        fn pan_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
             unreachable!("View never creates a surface")
         }
     }
@@ -758,6 +768,7 @@ mod tests {
                 looks: 0,
                 layouts: Vec::new(),
                 cursor: Vec::new(),
+                pan: Vec::new(),
             };
             Self { view, host, state, frames, desired, events, now }
         }
@@ -1637,6 +1648,18 @@ mod tests {
 
         rig.point_at(100, 100);
         assert_eq!(rig.cursor_step(), [false]);
+    }
+
+    #[test]
+    fn the_pan_window_is_never_shown_yet() {
+        // ADR 0011, roadmap 7.2b: the host has the pan window, the magnifier does not use it.
+        let mut rig = Rig::new();
+        rig.docked_top();
+        rig.point_at(100, 100);
+        rig.step();
+        rig.point_at(100, 900);
+        rig.step();
+        assert!(rig.host.pan.is_empty());
     }
 
     #[test]
