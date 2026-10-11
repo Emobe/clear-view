@@ -28,7 +28,7 @@ If the item is bigger than one branch and one PR should be, propose numbered sub
 Otherwise stop and wait for my approval.
 
 Phase B, only after I approve:
-1. Create branch step/<number>-<short-name> from master, for example step/1.3-zoom-hotkeys (or continue the existing one named in NEXT.md).
+1. Create branch step/<number>-<short-name> from master, for example step/1.3-zoom-hotkeys (or continue the existing one named in NEXT.md). When NEXT.md says `Stacking: on`, create it from the integration branch NEXT.md names instead, add the item to NEXT.md's integration list in the same commit, open the PR with `--base <integration branch>`, and once the PR is open merge it there with `gh pr merge <n> --merge` (this is the one merge allowed; never into master).
 2. Implement the target and nothing else.
 3. Run the gate.
 4. Commit on the branch.
@@ -42,4 +42,4 @@ Blocked on an ADR:
 2. Tell me to /clear and run /adr with the item number, then /next.
 3. Write no code beyond what is already committed.
 
-Do not merge. Do not start the next item. No speech work unless the item names it. If you find yourself looping on the same failure, stop and report what you know instead of guessing at fixes.
+Do not merge, except into the integration branch while NEXT.md says `Stacking: on`. Do not start the next item. No speech work unless the item names it. If you find yourself looping on the same failure, stop and report what you know instead of guessing at fixes.

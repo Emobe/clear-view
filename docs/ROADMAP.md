@@ -93,21 +93,29 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 4.6 Wire the policy into fullscreen mode. The render thread drains its event receiver at the start of each tick (pending ADR 0008).
 4.7 Wire the policy into docked mode.
 4.8 (you) Run the app list from 4.2 with tracking on, plus Word (4.2a) and an admin Notepad (elevated, ADR 0008 option a). Failures become sub-items of 4.8 (pending ADR 0008).
+4.8a Explorer address bar and search box do not move the view (STATUS Finding 21, found in 4.8 on 2026-10-11): find the root cause by reading the code and the `[caret]` log, then fix. ADR 0008 chain i already ends in the focus rectangle for these boxes, so no new ADR is expected.
+4.8b Follow the text while typing in the Explorer address bar and search box (STATUS Finding 22, found approving 4.8a on 2026-10-11). Try the uia ranges Finding 22 lists first, with the `caret_probe` or `CV_TRACK_LOG=1`; they stay inside ADR 0008's uia source. If none gives a rectangle, stop: another source is a new ADR (pending ADR 0008).
 4.9 Tester build 3, tag v0.3.0. (you) Feedback into docs/FEEDBACK.md.
 
 ## Phase 5: Multiple monitors and performance (M4)
 
 5.1 Decide with you how docked mode behaves on multiple monitors: which monitor the panel sits on, and what happens when the mouse moves to another one. Record the decision in the PR or an ADR if it gets complicated.
-5.2 Implement 5.1 (Finding 10).
+5.2 Implement 5.1 (Findings 10 and 18). Decided in 5.1: by default the panel stays on the primary monitor and shows whichever monitor the target (pointer or caret) is on; a saved setting, off by default, moves the panel to the target's monitor instead (same edge, same percentage of that monitor). No ADR: no monitor identity is saved, and `Layout::Docked` already names the monitor.
 5.3 Mixed display scaling across monitors.
-5.4 Monitors connected or disconnected while running.
-5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you.
-5.6 Fix what 5.5 finds. Likely the per-frame allocation in capture (Finding 4).
+5.4 Monitors connected or disconnected while running (pending ADR 0009): the overlay's `WM_DISPLAYCHANGE` sets a flag, the backend's loop re-enumerates and calls `Magnifier::outputs_changed` when the list differs (once more about 1 s after the last message); the magnifier re-picks the active and primary monitors, rewrites `desired_output`, recreates the frame texture and re-applies the layout; `switch_output` never uses a stale factory. Fake-host tests for removal, primary change, addition and resolution change. Verify includes whether `WM_DISPLAYCHANGE` arrives for a plain plug and unplug.
+5.5 Measure CPU and GPU use, idle and while moving, at native resolution and at 4K. Set thresholds with you. Split on 2026-10-10 because the owner cannot run the app for now:
+5.5a Measuring tools: an opt-in `[perf]` line (`CV_PERF=1`), `scripts/perf-sample.ps1` for CPU and GPU, and two ignored headless 4K benches (capture copy, GPU upload). Method and matrix in docs/prototypes/performance.md.
+5.5b (you) Run the matrix from docs/prototypes/performance.md and send the numbers (4K needs the desktop at 3840x2160, for example NVIDIA DSR). Thresholds are set with you then.
+5.5c (you) On hold: proper performance test, later (your decision 2026-10-11, when you approved 5.5b as done for basic purposes without the matrix; you also held off any more performance work, so 5.6 is on hold too): fill in the matrix in docs/prototypes/performance.md on a quiet desktop, fullscreen and docked, still and moving, with the 4K rows if possible, then set the thresholds with you. It settles Finding 4 (24% in the partial run against 100–170% from the 3.1 prototype).
+5.6 Fix what 5.5b finds. Likely the per-frame allocation in capture (Finding 4).
 
 ## Phase 6: v1 (M5)
 
 6.1 (ADR first) Cursor enhancement: drawing our own enlarged pointer in the magnified view vs changing the system cursor; size, colour (blue default) and outline options.
-6.2 Cursor enhancement per the ADR.
+6.2 Cursor enhancement per the ADR. Split by ADR 0010 into 6.2a to 6.2c, measurement first:
+6.2a Pointer probe: a dev-only `pointer_probe` example (not shipped) that hides the cursor with `MagShowSystemCursor(false)` for a few seconds and shows it again, logging what `GetCursorInfo` (flags, handle, shape via `GetIconInfo`) and the duplication's `PointerPosition` and pointer shape report in both states: arrow, over text, over a link, at a resize edge, busy cursor (pending ADR 0010).
+6.2b (you) Run the probe and send the output. It decides whether the real cursor shape can be read while hidden (pending ADR 0010).
+6.2c Enhanced pointer in the magnified view: the real cursor shape as a coverage mask from the backend (`GetCursorInfo` + `GetIconInfo` on the render thread), drawn by the shader at the pointer with size, fill colour and outline settings, replacing the circle (the circle stays as the fallback when the shape is unknown); or ADR 0010's fallback, our own arrow, if 6.2b shows nothing reports while hidden. Verify at 100% and 150% scaling (pending ADR 0010).
 6.3 (ADR first) UIAccess, signing and installer.
 6.4 UIAccess manifest and build script.
 6.5 Signing.

@@ -6,19 +6,22 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
+        mpsc::Receiver,
     },
     time::Instant,
 };
 
 use cv_core::{
-    AppState, DisplayMode, Edge, Frame, FrameState, OutputInfo, ScreenPoint, ScreenRect,
-    SharedState,
+    AppState, CoreEvent, DisplayMode, Edge, Following, Frame, FrameState, OutputInfo,
+    ScreenPoint, ScreenRect, SharedState, Tracker,
     geometry::{self, panel_pct_to_px, window_dims},
+    tracking,
 };
 
 use crate::{
     gfx::WgpuState,
     host::{Layout, OverlayHost},
+    perf,
 };
 
 /// The magnifier for one overlay window: smoothing, the active monitor, the applied layout and
@@ -29,7 +32,8 @@ pub struct Magnifier {
 
 impl Magnifier {
     /// Creates the wgpu surface on `host`'s window, sized to `start`, the monitor the window
-    /// starts on.
+    /// starts on. `events` is this view's subscription to the core events (ADR 0008); the tick
+    /// drains it.
     ///
     /// # Safety
     /// The window behind `host.raw_handles()` must stay valid until this `Magnifier` is dropped.
@@ -40,6 +44,7 @@ impl Magnifier {
         app_state: SharedState,
         frame_state: FrameState,
         desired_output: Arc<AtomicU32>,
+        events: Receiver<CoreEvent>,
     ) -> Self {
         let (display, window) = host.raw_handles();
         // SAFETY: the caller keeps the window valid for the life of `self`.
@@ -47,21 +52,23 @@ impl Magnifier {
             WgpuState::new(display, window, start.width, start.height, start.width, start.height)
         };
         Self {
-            view: View::new(
-                wgpu,
-                start,
-                outputs,
-                app_state,
-                frame_state,
-                desired_output,
-                Instant::now(),
-            ),
+            view: View::new(wgpu, start, outputs, app_state, frame_state, desired_output, events),
         }
     }
 
-    /// One tick: follow the pointer, apply any layout change through `host`, then draw.
+    /// One tick: drain the core events, pick the target (pointer or caret, by the tracking
+    /// policy), apply any layout change through `host`, then draw.
     pub fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
+        let timer = perf::start();
         self.view.tick(host, now);
+        perf::ticked(timer);
+    }
+
+    /// The set of monitors changed (plugged, unplugged, new resolution, another primary): the
+    /// backend calls this between ticks with the list it just read (ADR 0009). Never call it
+    /// from inside `OverlayHost::apply_layout`. A list equal to the current one does nothing.
+    pub fn outputs_changed(&mut self, outputs: Vec<OutputInfo>) {
+        self.view.outputs_changed(outputs);
     }
 }
 
@@ -86,42 +93,61 @@ pub(crate) struct Uniforms {
     pub crop: [f32; 4],
     pub color_mode: u32,
     pub interp_mode: u32,
-    /// Software cursor in output window pixels.
+    /// Software cursor in output window pixels; [`CURSOR_HIDDEN`] on both draws no circle.
     pub cursor_x: u32,
     pub cursor_y: u32,
     pub edge_threshold: f32,
 }
 
+/// Cursor position that draws no circle: the pointer is outside the magnified area. Far outside
+/// any window, so the shader's distance test never passes.
+pub(crate) const CURSOR_HIDDEN: u32 = u32::MAX;
+
 /// What was last applied to the window, as the magnifier decides when to apply again.
-/// Docked compares edge and panel percentage, not the monitor, so a monitor switch while docked
-/// leaves the panel where it is (STATUS Finding 10, roadmap 5.2).
+/// Docked names the monitor the panel is on: the primary, or with `panel_follows_monitor` the
+/// active one, so only then does a monitor switch move the panel (roadmap 5.2).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Applied {
     Hidden,
+    /// The monitors changed, so whatever the window is must be applied again (ADR 0009). Never
+    /// a wanted state: the next tick always differs from it, including when disabled.
+    Stale,
     Fullscreen { output: u32 },
-    Docked { edge: Edge, panel_pct: u32 },
+    Docked { edge: Edge, panel_pct: u32, monitor: u32 },
 }
 
 struct View<R> {
     renderer: R,
     app_state: SharedState,
     frame_state: FrameState,
-    /// All monitors, enumerated at startup (virtual-screen coordinates).
+    /// All monitors (virtual-screen coordinates): at startup, then as the backend reports changes
+    /// through `outputs_changed`.
     outputs: Vec<OutputInfo>,
     /// The monitor being magnified.
     active: OutputInfo,
+    /// Where the docked panel sits unless it follows the target (roadmap 5.2): the output at
+    /// (0, 0), or the start monitor if none is.
+    primary: OutputInfo,
     /// Written here on a monitor switch, read by the capture loop.
     desired_output: Arc<AtomicU32>,
     /// Last pointer position read. Kept when a read fails (lock screen, UAC prompt), so the
     /// view stays put instead of drifting to (0, 0) (STATUS Finding 15).
     pointer: ScreenPoint,
+    /// This view's core event subscription, drained every tick (ADR 0008).
+    events: Receiver<CoreEvent>,
+    /// The tracking policy (roadmap 4.5). Runs while enabled, in fullscreen and docked, and
+    /// keeps its state across a mode switch; reset while disabled, so the view starts on the
+    /// pointer when it comes back.
+    tracker: Tracker,
+    /// The virtual-screen point the view eases toward: the pointer, or the caret.
+    target: (f32, f32),
     smooth_x: f32,
     smooth_y: f32,
     /// Time of the last enabled tick; smoothing measures `dt` from it.
     last_tick: Instant,
     applied: Applied,
     /// The docked panel's rect as last applied, `None` unless docked. Kept from the layout
-    /// rather than recomputed, because a monitor switch while docked does not move the panel.
+    /// rather than recomputed, because a monitor switch while docked need not move the panel.
     panel: Option<ScreenRect>,
     /// True while `set_system_cursor(false)` is in force because the pointer is inside the
     /// panel. `apply_layout` resets the cursor, so this is cleared with every layout change.
@@ -138,23 +164,30 @@ impl<R: Renderer> View<R> {
         app_state: SharedState,
         frame_state: FrameState,
         desired_output: Arc<AtomicU32>,
-        now: Instant,
+        events: Receiver<CoreEvent>,
     ) -> Self {
         let centre = ScreenPoint {
             x: start.left + start.width as i32 / 2,
             y: start.top + start.height as i32 / 2,
         };
+        let smooth_x = start.width as f32 / 2.0 + start.left as f32;
+        let smooth_y = start.height as f32 / 2.0 + start.top as f32;
+        let primary = geometry::primary_output(&outputs).cloned().unwrap_or_else(|| start.clone());
         Self {
+            primary,
             renderer,
             app_state,
             frame_state,
             outputs,
-            smooth_x: start.width as f32 / 2.0 + start.left as f32,
-            smooth_y: start.height as f32 / 2.0 + start.top as f32,
+            smooth_x,
+            smooth_y,
             active: start,
             desired_output,
             pointer: centre,
-            last_tick: now,
+            events,
+            tracker: Tracker::new(),
+            target: (smooth_x, smooth_y),
+            last_tick: Instant::now(),
             applied: Applied::Hidden,
             panel: None,
             cursor_hidden_in_panel: false,
@@ -164,6 +197,8 @@ impl<R: Renderer> View<R> {
     }
 
     fn tick(&mut self, host: &mut impl OverlayHost, now: Instant) {
+        // Every tick, enabled or not, so the channel never grows (ADR 0008).
+        let events: Vec<CoreEvent> = self.events.try_iter().collect();
         let state = self.app_state.read().clone();
         let Ok(frame) = self.frame_state.lock().map(|f| f.clone()) else {
             return;
@@ -173,18 +208,23 @@ impl<R: Renderer> View<R> {
             if let Some(p) = host.position() {
                 self.pointer = p;
             }
-            self.follow_pointer();
+            self.target = self.track(&state, now, events);
+            self.follow_target();
+        } else {
+            self.tracker = Tracker::new();
         }
 
         let want = match (state.enabled, state.display_mode) {
             (false, _) => Applied::Hidden,
             (true, DisplayMode::Fullscreen) => Applied::Fullscreen { output: self.active.idx },
-            (true, DisplayMode::Docked(edge)) => {
-                Applied::Docked { edge, panel_pct: state.panel_size }
-            }
+            (true, DisplayMode::Docked(edge)) => Applied::Docked {
+                edge,
+                panel_pct: state.panel_size,
+                monitor: self.panel_monitor(&state).idx,
+            },
         };
         if want != self.applied {
-            let layout = self.layout_for(want);
+            let layout = self.layout_for(want, &state);
             let (w, h) = host.apply_layout(&layout);
             if want != Applied::Hidden {
                 self.renderer.resize(w, h);
@@ -219,27 +259,132 @@ impl<R: Renderer> View<R> {
         }
     }
 
-    /// Switches the active monitor to the one under the pointer, if that changed.
-    fn follow_pointer(&mut self) {
-        let Some(target) = geometry::output_at(&self.outputs, self.pointer.x, self.pointer.y) else {
-            return;
-        };
-        if target.idx == self.active.idx {
-            return;
+    /// The point the view eases toward this tick: the tracking policy over the pointer and
+    /// `events`, in both modes (roadmap 4.6, 4.7). The view is the window divided by the zoom,
+    /// the same size `draw` crops, so a docked panel keeps the caret inside its own middle area.
+    fn track(&mut self, state: &AppState, now: Instant, events: Vec<CoreEvent>) -> (f32, f32) {
+        let (win_w, win_h) = self.window_size(state);
+        let view = (win_w as f32 / state.zoom, win_h as f32 / state.zoom);
+        if !tracking::log_enabled() {
+            return self.tracker.update(now, self.pointer, events, view);
         }
-        let target = target.clone();
-        self.desired_output.store(target.idx, Ordering::Relaxed);
-        self.renderer.recreate_frame_texture(target.width, target.height);
-        self.last_frame = None; // the new texture needs the frame again
-        self.active = target;
+        // The `CV_TRACK_LOG` diagnostic (roadmap 4.8a): every event drained and every decision.
+        let before = self.snap(self.target);
+        let lines: Vec<String> = events.iter().map(CoreEvent::describe).collect();
+        let target = self.tracker.update(now, self.pointer, events, view);
+        // The tracker reads the pointer before the events, so this is what they were judged by.
+        let pointer = if self.tracker.pointer_still(now) { "still" } else { "moving" };
+        for line in lines {
+            eprintln!(
+                "[track] event {line}; pointer {} {pointer}, was following {:?}",
+                self.pointer, before.following
+            );
+        }
+        for line in track_changes(before, self.snap(target), now, self.pointer, view) {
+            eprintln!("{line}");
+        }
+        target
     }
 
-    fn layout_for(&self, applied: Applied) -> Layout {
-        let monitor = self.active.clone();
+    fn snap(&self, target: (f32, f32)) -> TrackSnap {
+        TrackSnap {
+            following: self.tracker.following(),
+            pending: self.tracker.pending_since(),
+            target,
+        }
+    }
+
+    /// The window size the view is drawn into: the active monitor in fullscreen, or the docked
+    /// panel on the monitor it sits on, which need not be the one magnified (STATUS Finding 18).
+    /// `layout_for` places the panel on the same monitor, so the two always agree.
+    fn window_size(&self, state: &AppState) -> (u32, u32) {
+        let monitor = match state.display_mode {
+            DisplayMode::Fullscreen => &self.active,
+            DisplayMode::Docked(_) => self.panel_monitor(state),
+        };
+        window_dims(
+            state.display_mode,
+            state.panel_size,
+            monitor.width as i32,
+            monitor.height as i32,
+        )
+    }
+
+    /// The monitor the docked panel sits on (roadmap 5.2): the primary, or the one being
+    /// magnified when the panel follows the target.
+    fn panel_monitor(&self, state: &AppState) -> &OutputInfo {
+        if state.panel_follows_monitor { &self.active } else { &self.primary }
+    }
+
+    /// Switches the active monitor to the one under the target, if that changed. A target off
+    /// every monitor keeps the current one.
+    fn follow_target(&mut self) {
+        let (x, y) = (self.target.0.floor() as i32, self.target.1.floor() as i32);
+        let Some(output) = geometry::output_at(&self.outputs, x, y) else {
+            return;
+        };
+        if output.idx == self.active.idx {
+            return;
+        }
+        let output = output.clone();
+        self.desired_output.store(output.idx, Ordering::Relaxed);
+        self.renderer.recreate_frame_texture(output.width, output.height);
+        self.last_frame = None; // the new texture needs the frame again
+        self.active = output;
+    }
+
+    /// Takes a new monitor list (ADR 0009). The active monitor is the one under the target; if
+    /// the target is on none (its monitor was removed) the view jumps to the primary's centre.
+    /// Capture is told the active index even when it is unchanged, the frame texture is made
+    /// again for the active size (this also covers a resolution change that keeps the index),
+    /// and the layout is applied again on the next tick if the active or primary monitor changed. A caret position stays a screen point,
+    /// so the tracker is kept unless the target was lost.
+    fn outputs_changed(&mut self, outputs: Vec<OutputInfo>) {
+        if outputs.is_empty() || outputs == self.outputs {
+            return;
+        }
+        let primary = geometry::primary_output(&outputs)
+            .or(outputs.first())
+            .cloned()
+            .expect("the list is not empty");
+        self.outputs = outputs;
+
+        let (x, y) = (self.target.0.floor() as i32, self.target.1.floor() as i32);
+        let active = match geometry::output_at(&self.outputs, x, y) {
+            Some(output) => output.clone(),
+            None => {
+                let output = self.primary.clone();
+                let centre = (
+                    output.left as f32 + output.width as f32 / 2.0,
+                    output.top as f32 + output.height as f32 / 2.0,
+                );
+                self.target = centre;
+                self.smooth_x = centre.0;
+                self.smooth_y = centre.1;
+                // A caret kept from the removed monitor would pull the view back off screen.
+                self.tracker = Tracker::new();
+                output
+            }
+        };
+        self.desired_output.store(active.idx, Ordering::Relaxed);
+        self.renderer.recreate_frame_texture(active.width, active.height);
+        self.last_frame = None; // the new texture needs the frame again
+        // The window only needs placing again if a monitor it is placed on moved or changed
+        // size. `Applied` names indices, which cannot tell.
+        let moved = active != self.active || primary != self.primary;
+        self.active = active;
+        self.primary = primary;
+        if moved {
+            self.applied = Applied::Stale;
+        }
+    }
+
+    fn layout_for(&self, applied: Applied, state: &AppState) -> Layout {
         match applied {
-            Applied::Hidden => Layout::Hidden,
-            Applied::Fullscreen { .. } => Layout::Fullscreen { monitor },
-            Applied::Docked { edge, panel_pct } => {
+            Applied::Hidden | Applied::Stale => Layout::Hidden,
+            Applied::Fullscreen { .. } => Layout::Fullscreen { monitor: self.active.clone() },
+            Applied::Docked { edge, panel_pct, .. } => {
+                let monitor = self.panel_monitor(state).clone();
                 let dim = match edge {
                     Edge::Top | Edge::Bottom => monitor.height,
                     Edge::Left | Edge::Right => monitor.width,
@@ -252,23 +397,19 @@ impl<R: Renderer> View<R> {
 
     /// Lerp, crop, upload, uniforms, present.
     fn draw(&mut self, state: &AppState, frame: Option<Arc<Frame>>, now: Instant) {
-        // Frame-rate-independent lerp toward the pointer.
+        // Frame-rate-independent lerp toward the target, which also smooths a switch between
+        // the pointer and the caret.
         let dt = now.saturating_duration_since(self.last_tick).as_secs_f32();
         self.last_tick = now;
         let alpha = geometry::smooth_alpha(state.smooth_speed, dt);
-        self.smooth_x = geometry::lerp_toward(self.smooth_x, self.pointer.x as f32, alpha);
-        self.smooth_y = geometry::lerp_toward(self.smooth_y, self.pointer.y as f32, alpha);
+        self.smooth_x = geometry::lerp_toward(self.smooth_x, self.target.0, alpha);
+        self.smooth_y = geometry::lerp_toward(self.smooth_y, self.target.1, alpha);
 
         // Monitor-local coordinates: the DXGI frame origin is the monitor's top-left.
         let cx = geometry::to_monitor_local(self.smooth_x, self.active.left);
         let cy = geometry::to_monitor_local(self.smooth_y, self.active.top);
 
-        let (win_w, win_h) = window_dims(
-            state.display_mode,
-            state.panel_size,
-            self.active.width as i32,
-            self.active.height as i32,
-        );
+        let (win_w, win_h) = self.window_size(state);
         let (fw, fh) = self.renderer.frame_size();
         let crop = geometry::compute_crop(cx, cy, win_w, win_h, state.zoom, fw as f32, fh as f32);
 
@@ -276,12 +417,18 @@ impl<R: Renderer> View<R> {
         if let Some(frame) = &frame {
             let new_frame = self.last_frame.as_ref().is_none_or(|last| !Arc::ptr_eq(last, frame));
             if new_frame {
+                let timer = perf::start();
                 self.renderer.upload_frame(&frame.data, frame.width, frame.height);
+                perf::uploaded(timer);
                 self.last_frame = Some(Arc::clone(frame));
             }
         }
 
-        let (cursor_x, cursor_y) = geometry::cursor_in_output(cx, cy, &crop, win_w, win_h);
+        // The circle marks the real pointer, wherever the view is; none when it is out of view.
+        let px = geometry::to_monitor_local(self.pointer.x as f32, self.active.left);
+        let py = geometry::to_monitor_local(self.pointer.y as f32, self.active.top);
+        let (cursor_x, cursor_y) = geometry::pointer_in_output(px, py, &crop, win_w, win_h)
+            .unwrap_or((CURSOR_HIDDEN, CURSOR_HIDDEN));
         let uniforms = Uniforms {
             crop: crop.normalized(),
             color_mode: state.color_filter.as_u32(),
@@ -295,20 +442,74 @@ impl<R: Renderer> View<R> {
             self.last_uniforms = Some(uniforms);
         }
 
-        if !self.renderer.render() {
+        if self.renderer.render() {
+            perf::rendered();
+        } else {
             // Surface lost or outdated: reconfigure to recover.
             self.renderer.resize(win_w, win_h);
         }
     }
 }
 
+/// The tracker before or after one update, for the `CV_TRACK_LOG` lines.
+#[derive(Debug, Clone, Copy)]
+struct TrackSnap {
+    following: Following,
+    /// When the held `FocusRect` arrived, if one is held.
+    pending: Option<Instant>,
+    target: (f32, f32),
+}
+
+/// The `[track]` lines for what one update decided: a focus rect held, replaced, applied or
+/// dropped, and a switch between pointer and caret or a new caret target.
+fn track_changes(
+    before: TrackSnap,
+    after: TrackSnap,
+    now: Instant,
+    pointer: ScreenPoint,
+    view: (f32, f32),
+) -> Vec<String> {
+    let ms = |since: Instant| now.saturating_duration_since(since).as_millis();
+    let mut lines = Vec::new();
+    let became_caret = before.following == Following::Pointer && after.following == Following::Caret;
+    match (before.pending, after.pending) {
+        (None, Some(_)) => lines.push("[track] focus rect held (pointer moving)".to_string()),
+        (Some(a), Some(b)) if a != b => lines.push("[track] held focus rect replaced".to_string()),
+        (Some(a), None) if became_caret => {
+            lines.push(format!("[track] held focus rect applied after {} ms", ms(a)));
+        }
+        (Some(a), None) => {
+            lines.push(format!("[track] held focus rect dropped after {} ms, pointer {pointer}", ms(a)));
+        }
+        _ => {}
+    }
+    let (x, y) = after.target;
+    match (before.following, after.following) {
+        (Following::Pointer, Following::Caret) => lines.push(format!(
+            "[track] pointer -> caret, target ({x:.0}, {y:.0}), view {:.0}x{:.0}, pointer {pointer}",
+            view.0, view.1
+        )),
+        (Following::Caret, Following::Pointer) => {
+            lines.push(format!("[track] caret -> pointer at {pointer}"));
+        }
+        (Following::Caret, Following::Caret) if before.target != after.target => {
+            lines.push(format!("[track] caret target ({x:.0}, {y:.0})"));
+        }
+        _ => {}
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cv_core::{ColorFilter, Interpolation, PointerSource};
+    use cv_core::{AppId, CaretSource, ColorFilter, Interpolation, PointerSource};
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     use std::{
-        sync::Mutex,
+        sync::{
+            Mutex,
+            mpsc::{Sender, channel},
+        },
         time::Duration,
     };
 
@@ -405,31 +606,69 @@ mod tests {
         state: SharedState,
         frames: FrameState,
         desired: Arc<AtomicU32>,
+        /// The core event channel the view drains.
+        events: Sender<CoreEvent>,
         now: Instant,
     }
 
     impl Rig {
+        /// Starts on the primary, with the second monitor to its right.
         fn new() -> Self {
+            Self::with(primary(), vec![primary(), second()])
+        }
+
+        fn with(start: OutputInfo, outputs: Vec<OutputInfo>) -> Self {
             let state = cv_core::new_shared();
             let frames: FrameState = Arc::new(Mutex::new(None));
-            let desired = Arc::new(AtomicU32::new(0));
-            let now = Instant::now();
-            let renderer = FakeRenderer { frame: (1920, 1080), render_ok: true, calls: Vec::new() };
+            let desired = Arc::new(AtomicU32::new(start.idx));
+            let (events, rx) = channel();
+            let frame = (start.width, start.height);
+            let renderer = FakeRenderer { frame, render_ok: true, calls: Vec::new() };
             let view = View::new(
                 renderer,
-                primary(),
-                vec![primary(), second()],
+                start,
+                outputs,
                 state.clone(),
                 frames.clone(),
                 desired.clone(),
-                now,
+                rx,
             );
+            // Test time starts at the view's own start, so the first tick's `dt` is one TICK.
+            let now = view.last_tick;
             let host = FakeHost {
                 pointer: Some(ScreenPoint { x: 960, y: 540 }),
                 layouts: Vec::new(),
                 cursor: Vec::new(),
             };
-            Self { view, host, state, frames, desired, now }
+            Self { view, host, state, frames, desired, events, now }
+        }
+
+        /// Sends a 2x20 msaa caret centred on (x, y), drained by the next tick.
+        fn caret_at(&self, x: i32, y: i32) {
+            let event = CoreEvent::CaretMoved {
+                at: self.now,
+                rect: ScreenRect { left: x - 1, top: y - 10, width: 2, height: 20 },
+                source: CaretSource::Msaa,
+                app: AppId { pid: 1, exe: "notepad.exe".into() },
+            };
+            self.events.send(event).unwrap();
+        }
+
+        /// True when the view has drained every event sent.
+        fn events_drained(&self) -> bool {
+            self.view.events.try_recv().is_err()
+        }
+
+        fn smooth(&self) -> (f32, f32) {
+            (self.view.smooth_x, self.view.smooth_y)
+        }
+
+        /// The cursor in the last uniform write of `gpu`.
+        fn cursor_written(gpu: &[Gpu]) -> Option<(u32, u32)> {
+            gpu.iter().rev().find_map(|c| match c {
+                Gpu::Uniforms(u) => Some((u.cursor_x, u.cursor_y)),
+                _ => None,
+            })
         }
 
         fn set(&self, f: impl FnOnce(&mut AppState)) {
@@ -621,21 +860,166 @@ mod tests {
         assert_eq!(layouts, [Layout::Fullscreen { monitor: primary() }]);
     }
 
-    #[test]
-    fn docked_monitor_switch_moves_capture_but_not_the_panel() {
+    /// The crop in the last uniform write of `gpu`.
+    fn crop_written(gpu: &[Gpu]) -> Option<[f32; 4]> {
+        gpu.iter().rev().find_map(|c| match c {
+            Gpu::Uniforms(u) => Some(u.crop),
+            _ => None,
+        })
+    }
+
+    /// Docked on the top edge at the default 50%, snapping to the target, at 2x, one tick
+    /// taken with the pointer at (960, 540) on the primary.
+    fn docked_top_half(follows: bool) -> Rig {
         let mut rig = Rig::new();
         rig.set(|s| {
             s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_follows_monitor = follows;
+            s.smooth_speed = 1.0;
             s.enabled = true;
         });
-        rig.step();
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+        rig.host.cursor.clear();
+        rig
+    }
 
+    #[test]
+    fn docked_monitor_switch_keeps_the_panel_on_the_primary_and_sizes_the_view_for_it() {
+        let mut rig = docked_top_half(false);
         rig.point_at(2000, 100);
         let (layouts, gpu) = rig.step();
         assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
         assert!(layouts.is_empty());
         assert_eq!(gpu.first(), Some(&Gpu::Recreate(1280, 1024)));
         assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+        // The 1920x540 panel on the primary at 2x shows 960x270 of the second monitor's
+        // 1280x1024 frame, not the 640x256 a panel on the second monitor would (Finding 18).
+        assert_eq!(crop_written(&gpu), Some([0.0, 0.0, 0.75, 270.0 / 1024.0]));
+    }
+
+    #[test]
+    fn enabling_docked_on_the_second_monitor_puts_the_panel_on_the_primary() {
+        let mut rig = Rig::new();
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+    }
+
+    #[test]
+    fn enabling_docked_on_the_second_monitor_with_the_setting_puts_the_panel_there() {
+        let mut rig = Rig::new();
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Left);
+            s.panel_follows_monitor = true;
+            s.enabled = true;
+        });
+        let (layouts, gpu) = rig.step();
+        // 50% of the second monitor's 1280 px width.
+        assert_eq!(layouts, [docked(second(), Edge::Left, 640)]);
+        assert!(gpu.contains(&Gpu::Resize(640, 1024)));
+    }
+
+    #[test]
+    fn with_the_setting_the_panel_moves_with_the_target_and_back() {
+        let mut rig = docked_top_half(true);
+        rig.point_at(2000, 100);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(second(), Edge::Top, 512)]);
+        assert_eq!(gpu[..2], [Gpu::Recreate(1280, 1024), Gpu::Resize(1280, 512)]);
+        // A 1280x512 panel at 2x: 640x256 of the 1280x1024 frame.
+        assert_eq!(crop_written(&gpu), Some([0.0, 0.0, 0.5, 0.25]));
+
+        rig.point_at(100, 700);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+        assert_eq!(gpu[..2], [Gpu::Recreate(1920, 1080), Gpu::Resize(1920, 540)]);
+    }
+
+    #[test]
+    fn with_the_setting_a_caret_on_the_other_monitor_moves_the_panel() {
+        let mut rig = docked_top_half(true);
+        rig.caret_at(2500, 500);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(second(), Edge::Top, 512)]);
+        // Re-centred across only: at 2x, 500 is inside the middle of the view's height.
+        assert_eq!(rig.smooth().0, 2500.0);
+    }
+
+    #[test]
+    fn changing_the_setting_while_docked_moves_the_panel_at_once() {
+        let mut rig = docked_top_half(false);
+        rig.point_at(2000, 100);
+        rig.step();
+
+        rig.set(|s| s.panel_follows_monitor = true);
+        assert_eq!(rig.step().0, [docked(second(), Edge::Top, 512)]);
+        rig.set(|s| s.panel_follows_monitor = false);
+        assert_eq!(rig.step().0, [docked(primary(), Edge::Top, 540)]);
+    }
+
+    #[test]
+    fn the_setting_changes_nothing_on_one_monitor_or_in_fullscreen() {
+        let mut rig = docked_top_half(false);
+        rig.set(|s| s.panel_follows_monitor = true); // active is the primary: same panel
+        assert!(rig.step().0.is_empty());
+
+        rig.set(|s| s.display_mode = DisplayMode::Fullscreen);
+        rig.step();
+        rig.set(|s| s.panel_follows_monitor = false);
+        assert!(rig.step().0.is_empty());
+    }
+
+    #[test]
+    fn the_cursor_hides_inside_the_panel_after_it_moves() {
+        let mut rig = docked_top_half(true);
+        // (960, 540) is the first row below the primary's 540 px panel.
+        assert!(rig.cursor_step().is_empty());
+        // Inside the second monitor's 512 px panel, which the same tick puts there.
+        rig.point_at(2000, 100);
+        assert_eq!(rig.cursor_step(), [false]);
+        let moved = ScreenRect { left: 1920, top: 0, width: 1280, height: 512 };
+        assert_eq!(rig.view.panel, Some(moved));
+        rig.point_at(2000, 600);
+        assert_eq!(rig.cursor_step(), [true]);
+    }
+
+    #[test]
+    fn the_primary_is_the_monitor_at_the_origin_not_the_start_one() {
+        // Starts on the second monitor, listed first; the pointer stays on it.
+        let mut rig = Rig::with(second(), vec![second(), primary()]);
+        rig.point_at(2000, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Bottom);
+            s.panel_size = 25;
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(primary(), Edge::Bottom, 270)]);
+    }
+
+    #[test]
+    fn with_no_monitor_at_the_origin_the_panel_stays_on_the_start_monitor() {
+        let a = OutputInfo { idx: 0, left: 100, top: 0, width: 1920, height: 1080 };
+        let b = OutputInfo { idx: 1, left: 2020, top: 0, width: 1280, height: 1024 };
+        let mut rig = Rig::with(a.clone(), vec![a.clone(), b]);
+        rig.point_at(2100, 100);
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [docked(a, Edge::Top, 540)]);
     }
 
     #[test]
@@ -939,5 +1323,382 @@ mod tests {
         rig.step();
         assert_eq!((rig.view.smooth_x, rig.view.smooth_y), (960.0, 540.0));
         assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+    }
+
+    /// Fullscreen at 10x (a 192x108 view on the primary), snapping to the target, one tick
+    /// taken with the pointer resting at (960, 540).
+    fn fullscreen_at_10x() -> Rig {
+        let mut rig = Rig::new();
+        rig.set(|s| {
+            s.smooth_speed = 1.0;
+            s.zoom = 10.0;
+            s.enabled = true;
+        });
+        let (_, gpu) = rig.step();
+        assert_eq!(Rig::cursor_written(&gpu), Some((960, 540)));
+        rig
+    }
+
+    #[test]
+    fn fullscreen_follows_a_caret_while_the_pointer_is_still() {
+        let mut rig = fullscreen_at_10x();
+        rig.caret_at(1500, 300);
+        let (layouts, gpu) = rig.step();
+        assert!(rig.events_drained());
+        assert!(layouts.is_empty());
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+        // The pointer at (960, 540) is outside the view now: no circle.
+        assert_eq!(Rig::cursor_written(&gpu), Some((CURSOR_HIDDEN, CURSOR_HIDDEN)));
+    }
+
+    #[test]
+    fn the_circle_stays_on_the_pointer_while_the_view_is_on_the_caret() {
+        let mut rig = Rig::new();
+        rig.set(|s| {
+            s.smooth_speed = 1.0;
+            s.zoom = 2.0;
+            s.enabled = true;
+        });
+        rig.step();
+        // 340 px right is past the middle of a 960 px view: the view centres on the caret.
+        rig.caret_at(1300, 540);
+        let (_, gpu) = rig.step();
+        assert_eq!(rig.smooth(), (1300.0, 540.0));
+        // Crop 820..1780 x 270..810 at 2x: the pointer at (960, 540) is 280 px in.
+        assert_eq!(Rig::cursor_written(&gpu), Some((280, 540)));
+    }
+
+    #[test]
+    fn moving_the_pointer_takes_the_view_back_from_the_caret() {
+        let mut rig = fullscreen_at_10x();
+        rig.caret_at(1500, 300);
+        rig.step();
+
+        // A bump below the return threshold keeps the caret.
+        rig.point_at(970, 540);
+        rig.step();
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+
+        rig.point_at(990, 540);
+        let (_, gpu) = rig.step();
+        assert_eq!(rig.smooth(), (990.0, 540.0));
+        assert_eq!(Rig::cursor_written(&gpu), Some((960, 540)));
+    }
+
+    #[test]
+    fn a_caret_on_the_other_monitor_moves_capture_there() {
+        let mut rig = fullscreen_at_10x();
+        rig.caret_at(2500, 500);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: second() }]);
+        assert_eq!(gpu[..2], [Gpu::Recreate(1280, 1024), Gpu::Resize(1280, 1024)]);
+        assert_eq!(rig.smooth(), (2500.0, 500.0));
+
+        // Moving the mouse brings the view, and capture, back to it.
+        rig.point_at(900, 540);
+        let (layouts, _) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: primary() }]);
+        assert_eq!(rig.smooth(), (900.0, 540.0));
+    }
+
+    /// Docked on the top edge at 25% and 10x (a 1920x270 panel, a 192x27 view), snapping to the
+    /// target, the pointer resting at (960, 540) below the panel.
+    fn docked_at_10x() -> Rig {
+        let mut rig = Rig::new();
+        rig.docked_top();
+        rig.set(|s| {
+            s.smooth_speed = 1.0;
+            s.zoom = 10.0;
+        });
+        rig.step();
+        rig
+    }
+
+    #[test]
+    fn docked_follows_a_caret_and_the_pointer_takes_it_back() {
+        let mut rig = docked_at_10x();
+        rig.caret_at(1500, 300);
+        let (layouts, gpu) = rig.step();
+        assert!(rig.events_drained());
+        assert!(layouts.is_empty());
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+        assert_eq!(Rig::cursor_written(&gpu), Some((CURSOR_HIDDEN, CURSOR_HIDDEN)));
+
+        rig.point_at(970, 540); // a bump keeps the caret
+        rig.step();
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+        rig.point_at(990, 540);
+        rig.step();
+        assert_eq!(rig.smooth(), (990.0, 540.0));
+    }
+
+    #[test]
+    fn the_docked_view_keeps_the_caret_inside_the_panel_not_the_monitor() {
+        // 15 px down is inside the middle of a 108 px fullscreen view at 10x, but past the
+        // middle of the 27 px docked one.
+        let mut full = fullscreen_at_10x();
+        full.caret_at(1500, 300);
+        full.step();
+        full.caret_at(1500, 315);
+        full.step();
+        assert_eq!(full.smooth(), (1500.0, 300.0));
+
+        let mut docked = docked_at_10x();
+        docked.caret_at(1500, 300);
+        docked.step();
+        docked.caret_at(1500, 315);
+        docked.step();
+        assert_eq!(docked.smooth(), (1500.0, 315.0));
+    }
+
+    #[test]
+    fn a_docked_caret_on_the_other_monitor_moves_capture_but_not_the_panel() {
+        let mut rig = docked_at_10x();
+        rig.caret_at(2500, 500);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert!(layouts.is_empty());
+        assert_eq!(gpu.first(), Some(&Gpu::Recreate(1280, 1024)));
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+        assert_eq!(rig.smooth(), (2500.0, 500.0));
+    }
+
+    #[test]
+    fn docked_cursor_hiding_follows_the_pointer_while_the_view_is_on_the_caret() {
+        let mut rig = docked_at_10x();
+        rig.host.cursor.clear();
+        rig.point_at(100, 100); // inside the panel
+        assert_eq!(rig.cursor_step(), [false]);
+        // Still for longer than the quiet time, so a caret can take the view.
+        for _ in 0..20 {
+            rig.caret_at(1500, 700);
+            assert!(rig.cursor_step().is_empty());
+        }
+        assert_eq!(rig.view.tracker.following(), cv_core::Following::Caret);
+        assert_eq!(rig.smooth(), (1500.0, 700.0));
+        assert!(rig.cursor_step().is_empty()); // still inside: still hidden
+
+        rig.point_at(100, 300); // out of the panel, and past the return threshold
+        assert_eq!(rig.cursor_step(), [true]);
+        assert_eq!(rig.smooth(), (100.0, 300.0));
+    }
+
+    #[test]
+    fn switching_modes_keeps_the_view_on_the_caret() {
+        let mut rig = fullscreen_at_10x();
+        rig.caret_at(1500, 300);
+        rig.step();
+
+        rig.set(|s| s.display_mode = DisplayMode::Docked(Edge::Top));
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]); // the default 50%
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+
+        rig.set(|s| s.display_mode = DisplayMode::Fullscreen);
+        rig.step();
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+    }
+
+    #[test]
+    fn disabled_drains_carets_and_coming_back_starts_on_the_pointer() {
+        let mut rig = fullscreen_at_10x();
+        rig.caret_at(1500, 300);
+        rig.step();
+        assert_eq!(rig.smooth(), (1500.0, 300.0));
+
+        rig.set(|s| s.enabled = false);
+        rig.caret_at(1600, 300);
+        rig.step();
+        assert!(rig.events_drained());
+
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        assert_eq!(rig.smooth(), (960.0, 540.0));
+    }
+
+    // ── Monitors connected or disconnected (ADR 0009) ───────────────────────────
+
+    #[test]
+    fn the_active_monitor_removed_falls_back_to_the_primary() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.point_at(2000, 100);
+        rig.step();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+
+        rig.view.outputs_changed(vec![primary()]);
+        // The view jumps to the primary's centre; it does not slide there.
+        assert_eq!(rig.smooth(), (960.0, 540.0));
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        // Windows moves the pointer onto the monitor that is left.
+        rig.point_at(100, 100);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: primary() }]);
+        assert_eq!(gpu[0], Gpu::Recreate(1920, 1080));
+        assert!(gpu.contains(&Gpu::Resize(1920, 1080)));
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_caret_left_on_the_removed_monitor_does_not_pull_the_view_off_screen() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.caret_at(2000, 100);
+        for _ in 0..30 {
+            rig.tick();
+        }
+        assert_eq!(rig.view.active.idx, 1, "the caret took the view to the second monitor");
+
+        rig.view.outputs_changed(vec![primary()]);
+        rig.tick();
+        assert_eq!(rig.view.target, (960.0, 540.0), "back on the pointer");
+        assert_eq!(rig.view.active.idx, 0);
+    }
+
+    #[test]
+    fn the_primary_removed_moves_the_docked_panel_and_rewrites_the_index() {
+        let mut rig = Rig::new();
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.enabled = true;
+        });
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [docked(primary(), Edge::Top, 540)]);
+
+        // The second monitor becomes output 0 at (0, 0), the same number as before.
+        let left = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 1024 };
+        rig.desired.store(7, Ordering::Relaxed);
+        rig.view.outputs_changed(vec![left.clone()]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 0);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [docked(left, Edge::Top, 512)]);
+        assert_eq!(gpu[0], Gpu::Recreate(1280, 1024));
+    }
+
+    #[test]
+    fn a_monitor_added_is_reachable_and_changes_no_layout() {
+        let mut rig = Rig::with(primary(), vec![primary()]);
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.point_at(2000, 100);
+        let (layouts, _) = rig.step();
+        assert!(layouts.is_empty(), "no monitor there yet");
+        assert_eq!(rig.view.active.idx, 0);
+
+        // The pointer comes back before the monitor appears.
+        rig.point_at(1900, 100);
+        rig.step();
+        rig.view.outputs_changed(vec![primary(), second()]);
+        let (layouts, gpu) = rig.step();
+        assert!(layouts.is_empty(), "the active monitor is unchanged: {layouts:?}");
+        assert_eq!(rig.view.active.idx, 0);
+        assert_eq!(rig.view.outputs.len(), 2);
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Resize(..))), 0);
+
+        // The view follows the pointer onto the new monitor as onto any other.
+        rig.point_at(2000, 100);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: second() }]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_active_monitor_changing_resolution_places_the_window_and_uploads_again() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.publish_frame();
+        rig.step();
+
+        let smaller = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 720 };
+        rig.view.outputs_changed(vec![smaller.clone(), second()]);
+        let (layouts, gpu) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: smaller }]);
+        assert_eq!(gpu[0], Gpu::Recreate(1280, 720));
+        assert!(gpu.contains(&Gpu::Resize(1280, 720)));
+
+        // The capture thread's next frame has the new size, and the texture takes it.
+        rig.publish_frame();
+        let (_, gpu) = rig.step();
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Upload(1280, 720))), 1);
+    }
+
+    #[test]
+    fn an_unchanged_list_does_nothing() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+        rig.desired.store(5, Ordering::Relaxed);
+        rig.view.outputs_changed(vec![primary(), second()]);
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 5);
+        assert!(rig.view.renderer.calls.is_empty(), "nothing reached the renderer");
+        let (layouts, gpu) = rig.step();
+        assert!(layouts.is_empty());
+        assert_eq!(count(&gpu, |c| matches!(c, Gpu::Recreate(..))), 0);
+    }
+
+    #[test]
+    fn a_change_while_the_window_is_shown_then_disabled_still_hides_it() {
+        let mut rig = Rig::new();
+        rig.set(|s| s.enabled = true);
+        rig.step();
+
+        let smaller = OutputInfo { idx: 0, left: 0, top: 0, width: 1280, height: 720 };
+        rig.view.outputs_changed(vec![smaller.clone(), second()]);
+        rig.set(|s| s.enabled = false);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Hidden]);
+
+        rig.set(|s| s.enabled = true);
+        let (layouts, _) = rig.step();
+        assert_eq!(layouts, [Layout::Fullscreen { monitor: smaller }]);
+    }
+
+    fn snap(following: Following, pending: Option<Instant>, target: (f32, f32)) -> TrackSnap {
+        TrackSnap { following, pending, target }
+    }
+
+    #[test]
+    fn track_changes_names_a_held_focus_rect_and_its_outcome() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(270);
+        let pointer = ScreenPoint { x: 1100, y: 500 };
+        let view = (256.0, 144.0);
+        let on_pointer = snap(Following::Pointer, None, (1100.0, 500.0));
+        let held = snap(Following::Pointer, Some(t0), (1100.0, 500.0));
+
+        let lines = track_changes(on_pointer, held, now, pointer, view);
+        assert_eq!(lines, ["[track] focus rect held (pointer moving)"]);
+
+        let applied = snap(Following::Caret, None, (2076.8, 815.0));
+        let lines = track_changes(held, applied, now, pointer, view);
+        assert_eq!(
+            lines,
+            [
+                "[track] held focus rect applied after 270 ms",
+                "[track] pointer -> caret, target (2077, 815), view 256x144, pointer (1100, 500)",
+            ]
+        );
+
+        let lines = track_changes(held, on_pointer, now, pointer, view);
+        assert_eq!(lines, ["[track] held focus rect dropped after 270 ms, pointer (1100, 500)"]);
+    }
+
+    #[test]
+    fn track_changes_names_a_return_to_the_pointer_and_a_new_caret_target() {
+        let now = Instant::now();
+        let pointer = ScreenPoint { x: 1030, y: 500 };
+        let caret = snap(Following::Caret, None, (1500.0, 500.0));
+        let moved = snap(Following::Caret, None, (1580.0, 500.0));
+        let back = snap(Following::Pointer, None, (1030.0, 500.0));
+        let view = (256.0, 144.0);
+
+        assert_eq!(track_changes(caret, moved, now, pointer, view), ["[track] caret target (1580, 500)"]);
+        assert_eq!(track_changes(caret, back, now, pointer, view), ["[track] caret -> pointer at (1030, 500)"]);
+        assert!(track_changes(caret, caret, now, pointer, view).is_empty());
     }
 }

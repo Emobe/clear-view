@@ -6,9 +6,11 @@
 
 mod capture;
 mod caret;
+mod display;
 mod dpi;
 mod hotkey;
 mod overlay;
+mod perf;
 mod pointer;
 mod sysinfo;
 

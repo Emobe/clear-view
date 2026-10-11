@@ -2,7 +2,8 @@
 // + edge_threshold 4 bytes + 12 bytes padding to a 16-byte multiple).
 // color_mode:     0=None, 1=Inverted, 2=Greyscale, 3=GreyscaleInverted
 // interp_mode:    0=Bilinear, 1=Bicubic (Catmull-Rom), 2=Sharp bilinear, 3=cleanEdge
-// cursor_x/y:     software cursor position in output window pixels
+// cursor_x/y:     software cursor position in output window pixels; 0xFFFFFFFF on both when the
+//                 pointer is out of view (magnifier.rs CURSOR_HIDDEN), which draws no circle
 // edge_threshold: cleanEdge colour similarity threshold (0–1), used by interp_mode 3 only
 //
 // gfx.rs appends clean_edge.wgsl to this file before compiling, which defines sample_clean_edge.

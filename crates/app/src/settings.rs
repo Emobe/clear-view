@@ -151,6 +151,7 @@ mod tests {
             zoom: 3.5,
             color_filter: ColorFilter::Greyscale,
             display_mode: DisplayMode::Docked(Edge::Bottom),
+            panel_follows_monitor: true,
             tts_rate: 4,
             ..AppState::default()
         };

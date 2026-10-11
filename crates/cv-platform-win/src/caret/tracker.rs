@@ -62,7 +62,8 @@ impl Tracker {
                 }
                 if self.logged_source != Some(found.1) {
                     self.logged_source = Some(found.1);
-                    outcome.log = Some(format!("[caret] {} in {}", found.1.name(), app.exe));
+                    outcome.log =
+                        Some(format!("[caret] {} in {} at {}", found.1.name(), app.exe, found.0));
                 }
                 let current = (found, app.clone());
                 if self.last.as_ref() != Some(&current) {
@@ -116,7 +117,7 @@ mod tests {
         let notepad = app("notepad.exe", 1);
         let o = t.update(Instant::now(), &notepad, Some((rect(10), CaretSource::Msaa)));
         assert!(is_moved(&o, rect(10), CaretSource::Msaa, &notepad));
-        assert_eq!(o.log.as_deref(), Some("[caret] msaa in notepad.exe"));
+        assert_eq!(o.log.as_deref(), Some("[caret] msaa in notepad.exe at (10, 100) 2x20"));
     }
 
     #[test]
@@ -145,7 +146,7 @@ mod tests {
         t.update(Instant::now(), &notepad, Some((rect(10), CaretSource::Msaa)));
         let o = t.update(Instant::now(), &notepad, Some((rect(10), CaretSource::Uia)));
         assert!(is_moved(&o, rect(10), CaretSource::Uia, &notepad));
-        assert_eq!(o.log.as_deref(), Some("[caret] uia in notepad.exe"));
+        assert_eq!(o.log.as_deref(), Some("[caret] uia in notepad.exe at (10, 100) 2x20"));
     }
 
     #[test]
@@ -228,7 +229,7 @@ mod tests {
         t.update(Instant::now(), &a, Some((rect(10), CaretSource::Msaa)));
         t.foreground_changed();
         let o = t.update(Instant::now(), &b, Some((rect(40), CaretSource::Msaa)));
-        assert_eq!(o.log.as_deref(), Some("[caret] msaa in notepad.exe"));
+        assert_eq!(o.log.as_deref(), Some("[caret] msaa in notepad.exe at (40, 100) 2x20"));
     }
 
     #[test]

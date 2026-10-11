@@ -5,6 +5,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
+        mpsc::Receiver,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -22,8 +23,8 @@ use windows::{
                 PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOZORDER, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity,
                 SetWindowPos, ShowWindow, TranslateMessage, UnregisterClassW,
-                WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_NCHITTEST, WM_TIMER,
-                WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
+                WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+                WM_NCHITTEST, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
                 WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
@@ -32,12 +33,19 @@ use windows::{
 };
 
 use cv_core::{
-    FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState, geometry,
+    CoreEvent, FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState,
+    geometry,
 };
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 
-use crate::pointer::CursorPointer;
+use crate::{
+    capture::try_enumerate_outputs,
+    display::DisplayWatch,
+    perf::PerfReporter,
+    pointer::CursorPointer,
+    sysinfo::log_outputs,
+};
 
 const CLASS_NAME: PCWSTR = w!("clear_view_overlay");
 
@@ -48,6 +56,8 @@ const TICK_MS: u32 = 16;
 /// The overlay window, as an integer so other threads can post `WM_CLOSE` to it. 0 = none.
 /// There is one overlay per process.
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+/// Set by `wnd_proc` on `WM_DISPLAYCHANGE`; the loop takes it before the next tick (ADR 0009).
+static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 /// Set when `teardown` has finished, so the console handler knows it may return.
 static TEARDOWN_DONE: AtomicBool = AtomicBool::new(false);
 
@@ -81,16 +91,19 @@ impl OverlayHandle {
 /// Starts the render thread: it creates the overlay window and runs its message loop.
 /// It also installs a console handler so Ctrl+C and closing the console window restore the
 /// machine before the process ends.
+///
+/// `events` is the render thread's core event subscription; each tick drains it (ADR 0008).
 pub fn spawn_overlay(
     frame_state: FrameState,
     app_state: SharedState,
     outputs: Vec<OutputInfo>,
     desired_output: Arc<AtomicU32>,
+    events: Receiver<CoreEvent>,
 ) -> OverlayHandle {
     // Best-effort: with no console attached there is nothing to hook.
     let _ = unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), true) };
     let thread = std::thread::spawn(move || {
-        run_overlay(frame_state, app_state, outputs, desired_output);
+        run_overlay(frame_state, app_state, outputs, desired_output, events);
     });
     OverlayHandle { thread }
 }
@@ -222,6 +235,7 @@ fn run_overlay(
     app_state: SharedState,
     outputs: Vec<OutputInfo>,
     desired_output: Arc<AtomicU32>,
+    events: Receiver<CoreEvent>,
 ) {
     // Use primary monitor (first in list) as the starting monitor.
     let primary = outputs.first().cloned().unwrap_or(OutputInfo {
@@ -273,13 +287,27 @@ fn run_overlay(
     // SAFETY: `magnifier` is declared after `host`, so it (and its wgpu surface) is dropped
     // first; the window is destroyed in `host`'s `Drop`.
     let mut magnifier = unsafe {
-        Magnifier::new(&host, primary, outputs, app_state, frame_state, desired_output)
+        Magnifier::new(
+            &host,
+            primary,
+            outputs.clone(),
+            app_state,
+            frame_state,
+            desired_output,
+            events,
+        )
     };
+    // The list the magnifier has, to tell whether a re-read differs (ADR 0009).
+    let mut known = outputs;
+    let mut watch = DisplayWatch::default();
 
     // Cursor hiding is best-effort: a failed Mag* call leaves nothing to act on.
     let _ = unsafe { MagInitialize() };
 
     unsafe { SetTimer(Some(hwnd), TIMER_ID, TICK_MS, None) };
+
+    // The `[perf]` line, only with CV_PERF=1 (roadmap 5.5a).
+    let mut perf_line = PerfReporter::new(Instant::now());
 
     // The loop runs the tick itself rather than dispatching WM_TIMER to `wnd_proc`, so the host
     // and magnifier are plain locals and `wnd_proc` never touches them.
@@ -294,7 +322,18 @@ fn run_overlay(
             break;
         }
         if msg.message == WM_TIMER && msg.hwnd == hwnd && msg.wParam.0 == TIMER_ID {
-            magnifier.tick(&mut host, Instant::now());
+            let now = Instant::now();
+            if DISPLAY_CHANGED.swap(false, Ordering::SeqCst) {
+                eprintln!("[display] WM_DISPLAYCHANGE received");
+                watch.on_message(now);
+            }
+            if watch.poll(now) {
+                refresh_outputs(&mut magnifier, &mut known, &mut watch, now);
+            }
+            magnifier.tick(&mut host, now);
+            if let Some(line) = &mut perf_line {
+                line.poll(now);
+            }
             continue;
         }
         unsafe {
@@ -304,6 +343,29 @@ fn run_overlay(
     }
 
     // `magnifier` then `host` drop here; `host` runs `teardown`.
+}
+
+/// Re-reads the monitor list and, if it differs from `known`, logs it and tells the magnifier
+/// (ADR 0009). Called from the loop between ticks, never from inside `apply_layout`.
+fn refresh_outputs(
+    magnifier: &mut Magnifier,
+    known: &mut Vec<OutputInfo>,
+    watch: &mut DisplayWatch,
+    now: Instant,
+) {
+    match try_enumerate_outputs() {
+        Some(list) if list != *known => {
+            eprintln!("[display] outputs changed: {} -> {}", known.len(), list.len());
+            log_outputs();
+            magnifier.outputs_changed(list.clone());
+            *known = list;
+        }
+        Some(_) => {}
+        None => {
+            eprintln!("[display] could not read the outputs; trying again shortly");
+            watch.retry(now);
+        }
+    }
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -324,6 +386,19 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         },
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+        // Sent when the window lands on a monitor with other scaling (fullscreen, or a docked
+        // panel that follows the target, roadmap 5.2). The suggested rect in lParam is the old
+        // size scaled for the new DPI; the magnifier places the window in physical pixels and
+        // already gave it the right rect, so the suggestion is ignored. The window is resized
+        // only if this handler calls `SetWindowPos` with it (Microsoft docs, WM_DPICHANGED), so
+        // `WM_GETDPISCALEDSIZE`, which only changes that suggestion, needs no handler (5.3).
+        WM_DPICHANGED => LRESULT(0),
+        // The topology changed (plug, unplug, resolution, primary). Only a flag: the loop
+        // re-reads the monitors between ticks (ADR 0009).
+        WM_DISPLAYCHANGE => {
+            DISPLAY_CHANGED.store(true, Ordering::SeqCst);
+            LRESULT(0)
+        }
         // The message loop runs the tick; nothing to do if a timer message is dispatched.
         WM_TIMER => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

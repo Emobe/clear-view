@@ -68,7 +68,11 @@ fn main() -> eframe::Result {
         desired_output.clone(),
     );
 
-    // Renderer thread: overlay window, reads frame_state + app state.
+    // Core events (ADR 0008). The caret thread publishes caret moves here and logs `[caret]`
+    // lines; the render thread subscribes for the tracking policy.
+    let events = Arc::new(cv_core::EventHub::new());
+
+    // Renderer thread: overlay window, reads frame_state + app state and drains its core events.
     // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the
     // console are handled inside the backend.
     let mut overlay = OverlayGuard(Some(platform::spawn_overlay(
@@ -76,11 +80,9 @@ fn main() -> eframe::Result {
         shared.clone(),
         outputs,
         desired_output.clone(),
+        events.subscribe(),
     )));
 
-    // Core events (ADR 0008). The caret thread publishes caret moves here and logs `[caret]`
-    // lines; nothing subscribes until the tracking policy is wired in (4.6).
-    let events = Arc::new(cv_core::EventHub::new());
     let mut caret = CaretGuard(Some(platform::spawn_caret_source(events.clone())));
 
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.

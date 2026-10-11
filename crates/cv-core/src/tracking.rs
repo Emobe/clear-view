@@ -11,7 +11,17 @@
 //! - The view holds while the caret stays inside the middle of the view ([`CARET_MARGIN`] off
 //!   each side) and re-centres on it when it leaves, per axis.
 //! - `CaretLost` holds the view where it is until the pointer moves or a new caret arrives.
+//! - A `FocusRect` event that comes while the pointer is still moving, as when clicking into a
+//!   box, is kept for [`PENDING_FOR`] and takes the view once the pointer has been still for
+//!   [`POINTER_QUIET`]. The source sends it once and never repeats it, so dropping it would lose
+//!   it for good (Explorer address bar, roadmap 4.8a).
+//! - While on the pointer, a `FocusRect` with the pointer inside it is a click into that box:
+//!   the view is already where the user clicked, so it stays on the pointer. Showing the box's
+//!   start instead pulled the view away from a click on the right of a wide box (roadmap 4.8a,
+//!   your choice 2026-10-11). Keyboard focus (Ctrl+L, Tab) with the pointer elsewhere, or while
+//!   on the caret, still moves the view to the box.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::events::{CaretSource, CoreEvent};
@@ -27,6 +37,16 @@ pub const POINTER_RETURN_PX: i32 = 24;
 /// Fraction of the view on each side outside the middle area. The view holds while the caret is
 /// inside the middle area. 0.5 always centres on the caret.
 pub const CARET_MARGIN: f32 = 0.2;
+/// How long a `FocusRect` event that came while the pointer was moving waits for the pointer to
+/// settle. After this the control is no longer what the user just went to.
+pub const PENDING_FOR: Duration = Duration::from_secs(1);
+
+/// True when `CV_TRACK_LOG=1`: the caret thread logs every event it publishes and the magnifier
+/// logs every event it drains and every tracking decision (roadmap 4.8a diagnostic). Read once.
+pub fn log_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CV_TRACK_LOG").is_ok_and(|v| v == "1"))
+}
 
 /// What the view follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +68,16 @@ enum Mode {
     },
 }
 
+/// A `FocusRect` event held back until the pointer is still.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    rect: ScreenRect,
+    /// When the event arrived.
+    since: Instant,
+    /// Where the pointer was then. Moving past [`POINTER_RETURN_PX`] from here drops the event.
+    pointer: ScreenPoint,
+}
+
 /// The tracking policy. One per view; call [`update`](Self::update) once per tick.
 #[derive(Debug, Default)]
 pub struct Tracker {
@@ -56,6 +86,7 @@ pub struct Tracker {
     rest: Option<ScreenPoint>,
     /// When the pointer last moved more than [`POINTER_JITTER_PX`] from `rest`. `None`: never.
     moved_at: Option<Instant>,
+    pending: Option<Pending>,
 }
 
 impl Tracker {
@@ -82,6 +113,7 @@ impl Tracker {
         {
             self.mode = Mode::Pointer;
         }
+        self.apply_pending(now, pointer, view);
         for event in events {
             self.handle(&event, now, pointer, view);
         }
@@ -98,6 +130,18 @@ impl Tracker {
         }
     }
 
+    /// When the `FocusRect` held back for the pointer to settle arrived; `None` when none is
+    /// held. For the `CV_TRACK_LOG` lines.
+    pub fn pending_since(&self) -> Option<Instant> {
+        self.pending.map(|p| p.since)
+    }
+
+    /// Whether the pointer has been still for [`POINTER_QUIET`] as of the last
+    /// [`update`](Self::update), measured at `now`.
+    pub fn pointer_still(&self, now: Instant) -> bool {
+        self.moved_at.is_none_or(|t| now.saturating_duration_since(t) >= POINTER_QUIET)
+    }
+
     fn observe_pointer(&mut self, now: Instant, pointer: ScreenPoint) {
         match self.rest {
             Some(rest) if distance(pointer, rest) <= POINTER_JITTER_PX => {}
@@ -109,15 +153,45 @@ impl Tracker {
         }
     }
 
-    fn pointer_still(&self, now: Instant) -> bool {
-        self.moved_at.is_none_or(|t| now.saturating_duration_since(t) >= POINTER_QUIET)
+    /// Gives a held `FocusRect` the view once the pointer is still, or drops it when it is stale
+    /// or the pointer has gone elsewhere.
+    fn apply_pending(&mut self, now: Instant, pointer: ScreenPoint, view: (f32, f32)) {
+        let Some(pending) = self.pending else { return };
+        if now.saturating_duration_since(pending.since) > PENDING_FOR
+            || distance(pointer, pending.pointer) > POINTER_RETURN_PX
+            || pending.rect.contains(pointer)
+            || !matches!(self.mode, Mode::Pointer)
+        {
+            self.pending = None;
+        } else if self.pointer_still(now) {
+            self.pending = None;
+            self.mode = Mode::Caret {
+                anchor: pointer,
+                target: caret_target(
+                    point(pointer),
+                    pending.rect,
+                    CaretSource::FocusRect,
+                    view,
+                    CARET_MARGIN,
+                ),
+            };
+        }
     }
 
     fn handle(&mut self, event: &CoreEvent, now: Instant, pointer: ScreenPoint, view: (f32, f32)) {
         match event {
             CoreEvent::CaretMoved { rect, source, .. } => {
                 let still = self.pointer_still(now);
+                let clicked = *source == CaretSource::FocusRect && rect.contains(pointer);
+                // The newest event is the one that counts.
+                self.pending = (!still
+                    && !clicked
+                    && *source == CaretSource::FocusRect
+                    && matches!(self.mode, Mode::Pointer))
+                .then_some(Pending { rect: *rect, since: now, pointer });
                 self.mode = match self.mode {
+                    // Clicked into a box: the view is already on the click.
+                    Mode::Pointer if clicked => Mode::Pointer,
                     // The view is on the pointer, so the caret is measured from there.
                     Mode::Pointer if still => Mode::Caret {
                         anchor: pointer,
@@ -132,7 +206,7 @@ impl Tracker {
             }
             // Hold: the view stays where the caret was until the pointer moves or a caret
             // comes back.
-            CoreEvent::CaretLost { .. } => {}
+            CoreEvent::CaretLost { .. } => self.pending = None,
         }
     }
 }
@@ -415,8 +489,63 @@ mod tests {
     fn a_focus_rect_ignores_the_current_view() {
         // Inside the pointer view's middle, but still centred on: it is a control, not a caret.
         let mut rig = Rig::new();
-        let t = rig.tick(300, p(1000, 500), [focus(1000, 500, 40, 20)]);
-        assert!(approx(t, (1020.0, 510.0)), "{t:?}");
+        let t = rig.tick(300, p(1000, 500), [focus(1010, 495, 40, 20)]);
+        assert!(approx(t, (1030.0, 505.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_focus_rect_under_the_resting_pointer_leaves_the_view_on_the_pointer() {
+        // Clicked on the right of a box wider than the view: no jump to its left edge.
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus(600, 490, 442, 32)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+        // Typing in the box keeps it there; a caret elsewhere later still takes the view.
+        rig.tick(300, p(1000, 500), [focus(600, 490, 442, 33)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        rig.tick(300, p(1000, 500), [caret(1500, 500)]);
+        assert_eq!(rig.following(), Following::Caret);
+    }
+
+    #[test]
+    fn a_focus_rect_under_the_moving_pointer_is_not_held() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []); // moving to click
+        rig.tick(20, p(1100, 500), [focus(1000, 490, 442, 32)]);
+        assert_eq!(rig.tracker.pending_since(), None);
+        rig.tick(400, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn a_held_focus_rect_is_dropped_when_the_pointer_settles_inside_it() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(1110, 490, 400, 32)]);
+        assert!(rig.tracker.pending_since().is_some());
+        rig.tick(16, p(1115, 500), []); // drifts into the box
+        rig.tick(300, p(1115, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert_eq!(rig.tracker.pending_since(), None);
+    }
+
+    #[test]
+    fn a_focus_rect_with_the_pointer_far_away_still_takes_the_view() {
+        // Ctrl+L with the mouse parked elsewhere: the box's start is shown.
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus(1241, 203, 442, 32)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1241.0 + 76.8, 219.0)), "{t:?}");
+    }
+
+    #[test]
+    fn on_the_caret_a_focus_rect_under_the_pointer_still_takes_the_view() {
+        // Typing in Notepad with the mouse resting over the address bar, then Ctrl+L.
+        let mut rig = Rig::new();
+        rig.on_far_caret();
+        let t = rig.tick(300, p(1000, 500), [focus(900, 490, 442, 32)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (976.8, 506.0)), "{t:?}");
     }
 
     #[test]
@@ -458,6 +587,89 @@ mod tests {
         let t = rig.tick(300, p(1200, 500), [caret(1700, 500)]);
         assert_eq!(rig.following(), Following::Caret);
         assert!(approx(t, (1700.0, 500.0)));
+    }
+
+    #[test]
+    fn a_focus_rect_during_pointer_motion_takes_the_view_once_the_pointer_settles() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []); // moving to click
+        let t = rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1100.0, 500.0)));
+        rig.tick(200, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+        let t = rig.tick(50, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (2050.0, 815.0)), "{t:?}");
+        // Applied once: the pointer going back is not undone by it.
+        rig.tick(16, p(1100, 600), []);
+        assert_eq!(rig.following(), Following::Pointer);
+        rig.tick(600, p(1100, 600), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn a_held_focus_rect_expires() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        // The pointer keeps twitching within the return distance, so it never settles.
+        for i in 0..70 {
+            rig.tick(16, p(1100 + (i % 2) * 5, 500), []);
+        }
+        rig.tick(300, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn a_held_focus_rect_is_dropped_when_the_pointer_goes_elsewhere() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        rig.tick(100, p(1100 + POINTER_RETURN_PX + 1, 500), []);
+        rig.tick(400, p(1100 + POINTER_RETURN_PX + 1, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn a_held_focus_rect_is_replaced_by_a_newer_event_and_cleared_by_caret_lost() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        rig.tick(20, p(1100, 500), [focus(3000, 800, 100, 30)]);
+        let t = rig.tick(300, p(1100, 500), []);
+        assert!(approx(t, (3050.0, 815.0)), "{t:?}");
+
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        rig.tick(20, p(1100, 500), [lost()]);
+        rig.tick(300, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn pending_since_and_pointer_still_report_the_held_focus_rect() {
+        let mut rig = Rig::new();
+        assert!(rig.tracker.pointer_still(rig.now));
+        assert_eq!(rig.tracker.pending_since(), None);
+        rig.tick(100, p(1100, 500), []);
+        assert!(!rig.tracker.pointer_still(rig.now));
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        assert_eq!(rig.tracker.pending_since(), Some(rig.now));
+        rig.tick(300, p(1100, 500), []);
+        assert!(rig.tracker.pointer_still(rig.now));
+        assert_eq!(rig.tracker.pending_since(), None);
+        assert_eq!(rig.following(), Following::Caret);
+    }
+
+    #[test]
+    fn a_real_caret_during_pointer_motion_is_still_dropped() {
+        let mut rig = Rig::new();
+        rig.tick(100, p(1100, 500), []);
+        rig.tick(20, p(1100, 500), [caret(1500, 500)]);
+        rig.tick(400, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
     }
 
     #[test]
