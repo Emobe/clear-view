@@ -45,7 +45,7 @@ Costs in that log: gui 0.0 ms; msaa 0.1–0.7 ms (74.9 ms on the very first call
 
 ### Re-measured in 4.8b (2026-10-11, search box, `caret_probe` with the neighbour-text tries)
 
-The statement above that mid-text gives nothing was too broad. Mid-text, expanding the caret range to one character does give that character's rectangle (for example `3331,313 8x19`). It fails only at the end of the text, which is where typing happens. There, two tries both work and agree:
+This differs from the 4.2 result above, where no blue outline ever showed in these boxes. The probe's one-character expansion is the same code as in 4.2, so the probe did not change; Explorer or Windows behaves differently now, or the box was in another state then (cause not known). Now, mid-text, expanding the caret range to one character does give that character's rectangle (for example `3331,313 8x19`). It still fails at the end of the text, which is where typing happens. Because Explorer's behaviour here has varied, the fallback below is worth keeping even if the mid-text case now works. There, two tries both work and agree:
 
 - A, the character before the caret (clone the caret range, `MoveEndpointByUnit(Start, Character, -1)`): one rectangle, for example `3550,313 6x19`; the caret is its right edge, `3556,313 1x19`.
 - B, the text from the start to the caret (`DocumentRange` with its end moved to the caret): one rectangle, `3157,313 399x19`; the same caret.
