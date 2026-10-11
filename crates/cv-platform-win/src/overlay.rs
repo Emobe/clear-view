@@ -33,7 +33,7 @@ use windows::{
 };
 
 use cv_core::{
-    CoreEvent, FrameState, OutputInfo, PointerSource, ScreenPoint, ScreenRect, SharedState,
+    CoreEvent, FrameState, OutputInfo, PointerLook, PointerSource, ScreenPoint, ScreenRect, SharedState,
     geometry,
 };
 use cv_magnifier::{Layout, Magnifier, OverlayHost};
@@ -157,11 +157,17 @@ struct WinHost {
     hwnd: HWND,
     /// What `apply_layout` last made the window.
     applied: Layout,
+    /// Reads the pointer's position and shape; keeps the last shape between ticks.
+    pointer: CursorPointer,
 }
 
 impl PointerSource for WinHost {
     fn position(&self) -> Option<ScreenPoint> {
-        CursorPointer.position()
+        self.pointer.position()
+    }
+
+    fn look(&mut self) -> PointerLook {
+        self.pointer.look()
     }
 }
 
@@ -281,7 +287,7 @@ fn run_overlay(
     OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     // From here on, any exit from this function (including a panic) restores the machine when
     // `host` is dropped.
-    let mut host = WinHost { hwnd, applied: Layout::Hidden };
+    let mut host = WinHost { hwnd, applied: Layout::Hidden, pointer: CursorPointer::new() };
 
     // wgpu init (blocking): the window starts primary-monitor-sized.
     // SAFETY: `magnifier` is declared after `host`, so it (and its wgpu surface) is dropped

@@ -246,10 +246,39 @@ impl std::fmt::Display for ScreenRect {
     }
 }
 
-/// Where the pointer is (ADR 0004). Sampled when needed, not sent as events.
+/// The pointer's shape as a coverage mask (ADR 0010): which pixels the pointer draws, with the
+/// platform's AND/XOR/alpha rules already resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerShape {
+    pub width: u32,
+    pub height: u32,
+    /// The pixel that sits on the pointer position, from the top-left of the mask.
+    pub hotspot: (u32, u32),
+    /// `width * height` bytes, row-major, top-down: 255 where the pointer is drawn, 0 elsewhere.
+    pub mask: Vec<u8>,
+}
+
+/// What the pointer looks like right now (ADR 0010).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PointerLook {
+    /// The system says there is no pointer to show (hidden, or suppressed by touch or pen).
+    Hidden,
+    /// The platform cannot say, for example a failed call. Callers fall back to a marker.
+    Unknown,
+    /// The same `Arc` comes back while the shape is unchanged, so callers compare with
+    /// `Arc::ptr_eq` to skip re-uploads.
+    Shape(Arc<PointerShape>),
+}
+
+/// Where the pointer is and what it looks like (ADR 0004, ADR 0010). Sampled when needed, not
+/// sent as events.
 pub trait PointerSource {
     /// `None` when the platform cannot say, for example while another desktop has input.
     fn position(&self) -> Option<ScreenPoint>;
+
+    /// The pointer's shape, also while the system cursor is hidden. A backend with no way to
+    /// read it answers `Unknown`.
+    fn look(&mut self) -> PointerLook;
 }
 
 /// Information about a single DXGI output (monitor).
@@ -578,5 +607,16 @@ mod tests {
         let before = s.clone();
         s.sanitize();
         assert_eq!(s, before);
+    }
+
+    #[test]
+    fn pointer_look_compares_by_shape_and_by_arc() {
+        let shape = PointerShape { width: 2, height: 1, hotspot: (0, 0), mask: vec![255, 0] };
+        let a = Arc::new(shape.clone());
+        let b = Arc::new(shape);
+        assert_eq!(PointerLook::Shape(a.clone()), PointerLook::Shape(b.clone()));
+        assert!(Arc::ptr_eq(&a, &a.clone()));
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_ne!(PointerLook::Hidden, PointerLook::Unknown);
     }
 }
