@@ -10,13 +10,13 @@ Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45),
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-State: ready
-State: waiting-on-owner (2026-10-11, your decision)
-Item: none for the agent. 6.3 to 6.6 (UIAccess, signing, installer) are on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. When you are back at your PC, the open items are yours:
+State: owner-testing (2026-10-11, your instruction: you are back at your PC and can test everything)
+Item: you test the whole integration branch step/4.6-fullscreen-tracking (PR #42), everything on it, in one go. The "cannot test" skip is over: /next no longer skips hands-on (you) items (4.8, 5.5b, 6.2b; 4.2a is skipped, see below). Stacking stays on until you say otherwise, and nothing is merged into master by the agent. 6.3 to 6.6 (UIAccess, signing, installer) are still on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. The open items, all yours:
+- Test the integration branch (PR #42): 4.6 and 4.7 are coded but not approved; 5.4 and 5.5a were approved without hand testing, so their by-hand lists below are owed. Say "I approve" for what passes; STATUS and this file change only then.
 - 6.2b: run the pointer probe (below); 6.2c then builds the cursor.
 - 5.5b: run the performance matrix; 5.6 then fixes what it finds.
-- 4.8 (and 4.2a): hands-on tracking checks; also test the integration branch (PR #42) and the by-hand lists below.
-Model: n/a. Once one of those is done, /next picks the item it unlocks (Sonnet high for /step).
+- 4.8 (partial, 2026-10-11, not Done): admin Notepad was tried first and tracks the caret from a non-elevated clear-view; the console said `[caret] msaa in notepad.exe` (STATUS Finding 20, better than ADR 0008 option a assumed). Still to do, when you choose: Notepad, Explorer rename, address bar and search box, Brave or Edge, Terminal, LibreOffice. Say "I approve" or "4.8 done" when finished; failures become sub-items. Hands-on tracking checks with the apps you have (Notepad, Explorer, Brave or Edge, Terminal, admin Notepad, LibreOffice). 4.2a is skipped, not Done (2026-10-11, your decision): you have no Word, and Brave stands in for Chrome (same engine, measured in 4.2). Word is an open gap, to be measured later with `caret_probe` on a machine that has it (docs/prototypes/caret-sources.md). /next must not offer 4.2a again.
+Model: n/a. /next should route to these (in "Before that" or as the Item) rather than to a new agent item, and picks what each unlocks once you report it (Sonnet high for /step).
 
 6.1 and 6.2a are approved (2026-10-10, PRs #52 and #53). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
 - The shape is read with `GetCursorInfo` + `GetIconInfo` on the render thread and passed through cv-core as a coverage mask.

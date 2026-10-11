@@ -26,10 +26,10 @@ Which UIA method Brave, Edge and Terminal used (`GetCaretRange` or `GetSelection
 
 Not measured:
 
-- **Word**: not installed on your machine. It is a v1 Must app (PRODUCT.md), so it is still unmeasured.
-- **Chrome**: not installed. Brave and Edge are Chromium and gave the same result, so Chrome is expected to match. That is unconfirmed.
+- **Word**: not installed on your machine, no copy available (2026-10-11). It is a v1 Must app (PRODUCT.md), so it stays unmeasured and is an open gap. Measure it later, on a machine that has it (the tester's, when tester work resumes), with `caret_probe`: body text, a table cell, a header, a long document scrolled down. If it needs a source outside ADR 0008's chain, that is a new ADR first.
+- **Chrome**: not installed. Brave and Edge are Chromium and gave the same result, so Chrome is expected to match. You agreed on 2026-10-11 that Brave covers it; not run.
 - **The tester's email app**: on hold with the other tester items.
-- **Elevated windows** (admin Notepad, Task Manager): not tried.
+- **Elevated windows**: admin Notepad, tried in 4.8 (2026-10-11) with a non-elevated clear-view started by `cargo run`. The console showed `[caret] msaa in notepad.exe` and tracking worked in fullscreen and docked (STATUS Finding 20). Not measured with `caret_probe`, so uia, gui and the costs are unknown. Task Manager: not tried.
 
 ## File Explorer address bar and search box
 
@@ -48,4 +48,4 @@ Costs in that log: gui 0.0 ms; msaa 0.1–0.7 ms (74.9 ms on the very first call
 - No single source covers the list. gui is missing in Chromium and Terminal, msaa is missing in Terminal, and uia covers everything measured except the Explorer XAML boxes and LibreOffice.
 - Every app that had a caret position had it from uia.
 - The Explorer XAML boxes need a non-caret fallback.
-- Word is unmeasured. Measure it before 4.8 at the latest.
+- Word is unmeasured and stays so for now (no copy available). 4.8 runs without it.
