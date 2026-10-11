@@ -67,6 +67,7 @@ Current roadmap:
 - 6.2c3 Settings for the magnified pointer (ADR 0010, branch step/6.2c3-pointer-settings, PR #75). Approved 2026-10-11 ("Verified. I approve."), with the panel made scrollable and taller after your report that the window was too small. 6.2c is complete.
 - 7.1 Docked pan ADR (ADR 0011, Accepted by you 2026-10-12; branch step/7.1-docked-pan-adr, PR #77, docs only).
 - 7.2a PRODUCT.md docked pan wording and the pure pan geometry (ADR 0011, branch step/7.2a-pan-geometry, PR #78). Approved 2026-10-12 ("Tests all pass, docked still work, wording right. I approve."). 7.2b and 7.2c follow.
+- 7.2b The pan window in cv-platform-win and `OverlayHost::set_pan_visible` and `pan_handles`, never shown (ADR 0011, branch step/7.2b-pan-window, PR #79). Approved 2026-10-12 ("Tested, approve."). 7.2c follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -272,6 +273,10 @@ Current roadmap:
   - PRODUCT.md v1 Must 2 now says the unmagnified area pans to show the strip the panel covers, without moving real windows, with clicks landing where the pointer is drawn, and that the panel and the pan view are excluded from capture.
   - cv-core `geometry::uncovered_rect` (monitor rect minus `docked_rect`, empty when the panel covers the monitor) and `geometry::pan_offset` ("pinned push", `clamp(T + m - p, 0, T)`, all four edges, 0 off the panel's monitor; thickness clamped to the monitor, margin clamped to 0..=uncovered dimension-1, NaN or negative is 0).
   - Proven by 12 unit tests in geometry.rs (each edge, monitor origin, tiling with `docked_rect`, ramp, pinned pointer, monotonic, off-monitor, clamps); `cargo test --workspace` passes, clippy 0 warnings.
+- The pan window (7.2b, approved by you 2026-10-12 after your hand test; which Verify cases you ran were not itemised). No visible change: the window is never shown.
+  - cv-platform-win creates a second overlay window with the panel's styles and capture exclusion (shared `create_overlay_window`), hidden. `apply_layout` hides it and, when docked, places it over `geometry::uncovered_rect`. `teardown` destroys it before the panel and before `UnregisterClassW`.
+  - `OverlayHost::set_pan_visible` (`SW_SHOWNA` or `SW_HIDE`, ignored unless docked with an uncovered area) and `pan_handles`. The magnifier does not call them yet.
+  - Proven by 3 unit tests of `pan_placement` (each edge, hidden and fullscreen, panel covering the monitor) and the test that the magnifier never shows the pan window; `cargo test --workspace` passes, clippy 0 warnings.
 
 ## Broken
 
