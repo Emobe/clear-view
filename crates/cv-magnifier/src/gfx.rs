@@ -6,7 +6,7 @@ use crate::magnifier::{Renderer, Uniforms};
 const SHADER: &str = concat!(include_str!("shader.wgsl"), "\n", include_str!("clean_edge.wgsl"));
 
 /// Size of the `Uniforms` struct in shader.wgsl.
-const UNIFORM_SIZE: u64 = 48;
+const UNIFORM_SIZE: u64 = 96;
 
 #[allow(dead_code)] // fields kept alive for GPU resource lifetime
 pub struct WgpuState {
@@ -21,6 +21,10 @@ pub struct WgpuState {
     uniform_buf:    wgpu::Buffer,
     bgl:            wgpu::BindGroupLayout,
     bind_group:     wgpu::BindGroup,
+    /// The pointer mask (ADR 0010), R8: 255 where the pointer is drawn. 1x1 and empty until the
+    /// first shape arrives.
+    mask_tex:       wgpu::Texture,
+    mask_view:      wgpu::TextureView,
     pub tex_w:      u32,
     pub tex_h:      u32,
 }
@@ -107,12 +111,15 @@ impl WgpuState {
         let (frame_tex, frame_view) = Self::make_frame_texture(&device, tex_w, tex_h);
         let sampler = Self::make_sampler(&device);
         let uniform_buf = Self::make_uniform_buf(&device);
-        let bind_group = Self::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf);
+        let (mask_tex, mask_view) = Self::make_mask_texture(&device, 1, 1);
+        let bind_group =
+            Self::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf, &mask_view);
 
         Self {
             device, queue, surface, surface_config,
             pipeline, frame_tex, frame_view, sampler,
             uniform_buf, bgl, bind_group,
+            mask_tex, mask_view,
             tex_w, tex_h,
         }
     }
@@ -127,7 +134,7 @@ impl WgpuState {
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("magnify-bgl"),
             entries: &[
-                // binding 0 — Uniforms (48 bytes: crop + modes + cursor + edge threshold + padding)
+                // binding 0 — Uniforms (96 bytes: crop + modes + cursor + edge threshold + pointer)
                 wgpu::BindGroupLayoutEntry {
                     binding:    0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -155,6 +162,17 @@ impl WgpuState {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty:         wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count:      None,
+                },
+                // binding 3 — pointer mask texture (R8)
+                wgpu::BindGroupLayoutEntry {
+                    binding:    3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled:   false,
+                    },
+                    count: None,
                 },
             ],
         });
@@ -229,12 +247,28 @@ impl WgpuState {
         (tex, view)
     }
 
+    fn make_mask_texture(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("pointer-mask"),
+            size:            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::R8Unorm,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        let view = tex.create_view(&Default::default());
+        (tex, view)
+    }
+
     fn make_bind_group(
         device:      &wgpu::Device,
         bgl:         &wgpu::BindGroupLayout,
         frame_view:  &wgpu::TextureView,
         sampler:     &wgpu::Sampler,
         uniform_buf: &wgpu::Buffer,
+        mask_view:   &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("magnify-bg"),
@@ -243,6 +277,7 @@ impl WgpuState {
                 wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(frame_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(mask_view) },
             ],
         })
     }
@@ -252,12 +287,42 @@ impl WgpuState {
     pub fn recreate_frame_texture(&mut self, w: u32, h: u32) {
         let (frame_tex, frame_view) = Self::make_frame_texture(&self.device, w, h);
         self.bind_group = Self::make_bind_group(
-            &self.device, &self.bgl, &frame_view, &self.sampler, &self.uniform_buf,
+            &self.device, &self.bgl, &frame_view, &self.sampler, &self.uniform_buf, &self.mask_view,
         );
         self.frame_tex  = frame_tex;
         self.frame_view = frame_view;
         self.tex_w = w;
         self.tex_h = h;
+    }
+
+    /// Put a pointer mask (`w * h` bytes, top-down) in the mask texture, replacing the texture
+    /// first when the size differs. `write_texture` has no row alignment rule (wgpu-types
+    /// `COPY_BYTES_PER_ROW_ALIGNMENT` is for buffer copies), so rows are `w` bytes.
+    pub fn upload_pointer_mask(&mut self, data: &[u8], w: u32, h: u32) {
+        if data.len() != w as usize * h as usize || w == 0 || h == 0 { return; }
+        if (self.mask_tex.width(), self.mask_tex.height()) != (w, h) {
+            let (mask_tex, mask_view) = Self::make_mask_texture(&self.device, w, h);
+            self.bind_group = Self::make_bind_group(
+                &self.device, &self.bgl, &self.frame_view, &self.sampler, &self.uniform_buf, &mask_view,
+            );
+            self.mask_tex  = mask_tex;
+            self.mask_view = mask_view;
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:   &self.mask_tex,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset:         0,
+                bytes_per_row:  Some(w),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
     }
 
     /// Reconfigure the surface after a window resize.
@@ -290,24 +355,9 @@ impl WgpuState {
         );
     }
 
-    /// Write all uniforms to the 48-byte buffer.
-    /// crop:           [src_x, src_y, src_w, src_h] normalised to [0, 1].
-    /// color_mode:     ColorFilter::as_u32()   — 0=None,1=Inverted,2=Greyscale,3=GreyscaleInverted.
-    /// interp_mode:    Interpolation::as_u32() — 0=Bilinear, 1=Bicubic, 2=Sharp, 3=CleanEdge.
-    /// cursor_x/y:     software cursor position in output window pixels; `CURSOR_HIDDEN` on both
-    ///                 when the pointer is out of view (no circle).
-    /// edge_threshold: cleanEdge colour similarity threshold (0–1).
-    pub fn write_uniforms(
-        &self,
-        crop: [f32; 4],
-        color_mode: u32,
-        interp_mode: u32,
-        cursor_x: u32,
-        cursor_y: u32,
-        edge_threshold: f32,
-    ) {
-        let bytes = uniform_bytes(crop, color_mode, interp_mode, cursor_x, cursor_y, edge_threshold);
-        self.queue.write_buffer(&self.uniform_buf, 0, &bytes);
+    /// Write all uniforms to the 96-byte buffer; see `uniform_bytes` for the layout.
+    pub fn write_uniforms(&self, u: &Uniforms) {
+        self.queue.write_buffer(&self.uniform_buf, 0, &uniform_bytes(u));
     }
 
     /// Execute the render pass and present.
@@ -347,10 +397,12 @@ impl Renderer for WgpuState {
         WgpuState::upload_frame(self, data, width, height);
     }
 
+    fn upload_pointer_mask(&mut self, data: &[u8], width: u32, height: u32) {
+        WgpuState::upload_pointer_mask(self, data, width, height);
+    }
+
     fn write_uniforms(&mut self, u: &Uniforms) {
-        WgpuState::write_uniforms(
-            self, u.crop, u.color_mode, u.interp_mode, u.cursor_x, u.cursor_y, u.edge_threshold,
-        );
+        WgpuState::write_uniforms(self, u);
     }
 
     fn render(&mut self) -> bool {
@@ -374,25 +426,33 @@ fn dx12_instance() -> wgpu::Instance {
     })
 }
 
-/// The uniform buffer contents; layout matches `Uniforms` in shader.wgsl.
-fn uniform_bytes(
-    crop: [f32; 4],
-    color_mode: u32,
-    interp_mode: u32,
-    cursor_x: u32,
-    cursor_y: u32,
-    edge_threshold: f32,
-) -> [u8; UNIFORM_SIZE as usize] {
+/// The uniform buffer contents; layout matches `Uniforms` in shader.wgsl (the two `vec4`s sit
+/// on 16-byte offsets, so there is no padding).
+fn uniform_bytes(u: &Uniforms) -> [u8; UNIFORM_SIZE as usize] {
     let mut bytes = [0u8; UNIFORM_SIZE as usize];
-    for (i, &f) in crop.iter().enumerate() {
-        bytes[i * 4..(i + 1) * 4].copy_from_slice(&f.to_ne_bytes());
+    let mut put = |at: usize, v: [u8; 4]| bytes[at..at + 4].copy_from_slice(&v);
+    for (i, f) in u.crop.iter().enumerate() {
+        put(i * 4, f.to_ne_bytes());
     }
-    bytes[16..20].copy_from_slice(&color_mode.to_ne_bytes());
-    bytes[20..24].copy_from_slice(&interp_mode.to_ne_bytes());
-    bytes[24..28].copy_from_slice(&cursor_x.to_ne_bytes());
-    bytes[28..32].copy_from_slice(&cursor_y.to_ne_bytes());
-    bytes[32..36].copy_from_slice(&edge_threshold.to_ne_bytes());
-    // 36..48: padding
+    put(16, u.color_mode.to_ne_bytes());
+    put(20, u.interp_mode.to_ne_bytes());
+    put(24, u.cursor_x.to_ne_bytes());
+    put(28, u.cursor_y.to_ne_bytes());
+    put(32, u.edge_threshold.to_ne_bytes());
+    let p = &u.pointer;
+    put(36, p.kind.to_ne_bytes());
+    put(40, p.mask.0.to_ne_bytes());
+    put(44, p.mask.1.to_ne_bytes());
+    put(48, p.hotspot.0.to_ne_bytes());
+    put(52, p.hotspot.1.to_ne_bytes());
+    put(56, p.size.to_ne_bytes());
+    put(60, p.outline.to_ne_bytes());
+    for (i, f) in p.fill.iter().enumerate() {
+        put(64 + i * 4, f.to_ne_bytes());
+    }
+    for (i, f) in p.outline_colour.iter().enumerate() {
+        put(80 + i * 4, f.to_ne_bytes());
+    }
     bytes
 }
 
@@ -427,6 +487,7 @@ fn encode_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::magnifier::{CURSOR_HIDDEN, POINTER_NONE, POINTER_SHAPE, PointerDraw};
     use std::time::Instant;
     use wgpu::naga;
 
@@ -477,7 +538,9 @@ mod tests {
         let (frame_tex, frame_view) = WgpuState::make_frame_texture(&device, W, H);
         let sampler = WgpuState::make_sampler(&device);
         let uniform_buf = WgpuState::make_uniform_buf(&device);
-        let bind_group = WgpuState::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf);
+        let (_mask_tex, mask_view) = WgpuState::make_mask_texture(&device, 1, 1);
+        let bind_group =
+            WgpuState::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf, &mask_view);
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label:           Some("bench-target"),
@@ -511,8 +574,16 @@ mod tests {
                 let side = 1.0 / zoom;
                 let crop = [0.5 - side / 2.0, 0.5 - side / 2.0, side, side];
                 for (mode_name, mode) in modes {
-                    let bytes = uniform_bytes(crop, 0, mode, 0, 0, edge_threshold);
-                    queue.write_buffer(&uniform_buf, 0, &bytes);
+                    let uniforms = Uniforms {
+                        crop,
+                        color_mode: 0,
+                        interp_mode: mode,
+                        cursor_x: CURSOR_HIDDEN,
+                        cursor_y: CURSOR_HIDDEN,
+                        edge_threshold,
+                        pointer: PointerDraw::marker(POINTER_NONE),
+                    };
+                    queue.write_buffer(&uniform_buf, 0, &uniform_bytes(&uniforms));
 
                     // Warm up, then time.
                     for _ in 0..10 {
@@ -603,6 +674,143 @@ mod tests {
             "upload to GPU copy finished: avg {:.2} ms",
             total.as_secs_f64() * 1000.0 / FRAMES as f64,
         );
+    }
+
+    /// The pointer shader (roadmap 6.2c2) on a tiny offscreen target: a 4x4 all-drawn mask with
+    /// its hotspot at (1, 1), drawn at 2 output pixels per mask pixel with a 2 px outline, at
+    /// output pixel (16, 16). Needs a GPU, so it is ignored by `cargo test`. Run with
+    /// `cargo test -p cv-magnifier pointer_shader_draws_the_mask -- --ignored --nocapture`.
+    ///
+    /// The mask covers output pixels 14..22 on both axes; the outline adds two more on each side
+    /// (12, 13 and 22, 23), and the disc leaves the corner (12, 12) out.
+    #[test]
+    #[ignore]
+    fn pointer_shader_draws_the_mask() {
+        const SIDE: u32 = 32;
+        const ROW: u32 = 256; // SIDE * 4 bytes, padded to COPY_BYTES_PER_ROW_ALIGNMENT
+
+        let Some((device, queue, adapter_name)) = pollster::block_on(headless_device()) else {
+            println!("no DX12 adapter; skipped");
+            return;
+        };
+        println!("adapter: {adapter_name}");
+
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let (pipeline, bgl) = WgpuState::make_pipeline(&device, format);
+        let (_frame_tex, frame_view) = WgpuState::make_frame_texture(&device, 4, 4);
+        let sampler = WgpuState::make_sampler(&device);
+        let uniform_buf = WgpuState::make_uniform_buf(&device);
+        let (mask_tex, mask_view) = WgpuState::make_mask_texture(&device, 4, 4);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:   &mask_tex,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            &[255u8; 16],
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: None },
+            wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+        );
+        let bind_group =
+            WgpuState::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf, &mask_view);
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("pointer-target"),
+            size:            wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format,
+            usage:           wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats:    &[],
+        });
+        let target_view = target.create_view(&Default::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("pointer-readback"),
+            size:               (ROW * SIDE) as u64,
+            usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        // Renders once and returns the target as BGRA rows of `ROW` bytes.
+        let render = |uniforms: &Uniforms| -> Vec<u8> {
+            queue.write_buffer(&uniform_buf, 0, &uniform_bytes(uniforms));
+            let mut enc = device.create_command_encoder(&Default::default());
+            encode_pass(&mut enc, &target_view, &pipeline, &bind_group);
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &target,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset:         0,
+                        bytes_per_row:  Some(ROW),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+            );
+            queue.submit([enc.finish()]);
+            readback.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let bytes = readback.slice(..).get_mapped_range().expect("mapped range").to_vec();
+            readback.unmap();
+            bytes
+        };
+        let rgb = |bytes: &[u8], x: u32, y: u32| {
+            let at = (y * ROW + x * 4) as usize;
+            [bytes[at + 2], bytes[at + 1], bytes[at]]
+        };
+
+        let pointer = PointerDraw {
+            kind: POINTER_SHAPE,
+            mask: (4, 4),
+            hotspot: (1, 1),
+            size: 2.0,
+            outline: 2.0,
+            fill: [1.0, 0.0, 0.0, 1.0],
+            outline_colour: [1.0, 1.0, 1.0, 1.0],
+        };
+        let uniforms = Uniforms {
+            crop: [0.0, 0.0, 1.0, 1.0],
+            color_mode: 0,
+            interp_mode: 0,
+            cursor_x: 16,
+            cursor_y: 16,
+            edge_threshold: 0.1,
+            pointer,
+        };
+
+        let out = render(&uniforms);
+        let (red, white, black) = ([255, 0, 0], [255, 255, 255], [0, 0, 0]);
+        assert_eq!(rgb(&out, 16, 16), red, "inside the mask");
+        assert_eq!(rgb(&out, 14, 14), red, "mask corner, the first pixel left and above the hotspot");
+        assert_eq!(rgb(&out, 21, 21), red, "mask corner, last pixel");
+        assert_eq!(rgb(&out, 13, 16), white, "outline, left");
+        assert_eq!(rgb(&out, 12, 16), white, "outline, two pixels out");
+        assert_eq!(rgb(&out, 11, 16), black, "past the outline");
+        assert_eq!(rgb(&out, 22, 16), white, "outline, right");
+        assert_eq!(rgb(&out, 23, 16), white, "outline, two pixels out on the right");
+        assert_eq!(rgb(&out, 24, 16), black, "past the outline, right");
+        assert_eq!(rgb(&out, 13, 13), white, "outline, diagonal");
+        assert_eq!(rgb(&out, 12, 12), black, "the disc leaves this corner out");
+        assert_eq!(rgb(&out, 2, 2), black, "far from the pointer");
+
+        let out = render(&Uniforms { cursor_x: CURSOR_HIDDEN, cursor_y: CURSOR_HIDDEN, ..uniforms });
+        assert_eq!(rgb(&out, 16, 16), black, "out of view draws nothing");
+
+        let out = render(&Uniforms { pointer: PointerDraw::marker(POINTER_NONE), ..uniforms });
+        assert_eq!(rgb(&out, 16, 16), black, "kind none draws nothing");
+
+        let circle = PointerDraw::marker(crate::magnifier::POINTER_CIRCLE);
+        let out = render(&Uniforms { pointer: circle, ..uniforms });
+        assert_eq!(rgb(&out, 16, 16), white, "the circle fallback");
+        assert_eq!(rgb(&out, 16, 27), black, "the circle's ring");
     }
 
     async fn headless_device() -> Option<(wgpu::Device, wgpu::Queue, String)> {
