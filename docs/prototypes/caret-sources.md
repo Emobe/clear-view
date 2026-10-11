@@ -43,6 +43,18 @@ You typed in both boxes and moved the caret around, and no outline appeared at a
 
 Costs in that log: gui 0.0 ms; msaa 0.1–0.7 ms (74.9 ms on the very first call); uia 2.6–12 ms (36 ms on the first call), 6–9 ms on the XAML text box.
 
+### Re-measured in 4.8b (2026-10-11, search box, `caret_probe` with the neighbour-text tries)
+
+The statement above that mid-text gives nothing was too broad. Mid-text, expanding the caret range to one character does give that character's rectangle (for example `3331,313 8x19`). It fails only at the end of the text, which is where typing happens. There, two tries both work and agree:
+
+- A, the character before the caret (clone the caret range, `MoveEndpointByUnit(Start, Character, -1)`): one rectangle, for example `3550,313 6x19`; the caret is its right edge, `3556,313 1x19`.
+- B, the text from the start to the caret (`DocumentRange` with its end moved to the caret): one rectangle, `3157,313 399x19`; the same caret.
+- Control, the bounding rectangles of the whole text: not empty (`3157,313 399x19`), so the provider gives rectangles for non-degenerate ranges.
+- An empty box: no rectangle from the caret, the character or any try (nothing before it, and the whole text is empty). It stays on the focus rectangle.
+- Cost: 5–7 ms for a uia read with the tries, as before (spikes of 16 and 22 ms seen twice).
+
+4.8b uses A: it measures one character, not the whole text.
+
 ## For 4.3
 
 - No single source covers the list. gui is missing in Chromium and Terminal, msaa is missing in Terminal, and uia covers everything measured except the Explorer XAML boxes and LibreOffice.
