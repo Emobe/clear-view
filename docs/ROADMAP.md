@@ -139,7 +139,10 @@ Wanted: the unmagnified area pans visually, smoothly and continuously as the poi
 - The magnified panel must keep showing the real desktop, not the shifted overlay: the new overlay must be excluded from capture.
 - A constantly presenting overlay and the 24H2 extra-frames issue (ADR 0007); the cost.
 - The taskbar, the system cursor hiding rules, and how the tracking policy (pointer or caret target) interacts with the shifted view.
-7.2 Build 7.1. Split into sub-items in docs/NEXT.md if the ADR makes it bigger than one step (pending ADR from 7.1).
+7.2 Build 7.1. Split into sub-items in docs/NEXT.md if the ADR makes it bigger than one step (pending ADR from 7.1). ADR 0011 (Proposed) splits it:
+7.2a PRODUCT.md v1 Must 2 wording from ADR 0011; `geometry::uncovered_rect` and `geometry::pan_offset` (pinned push, all four edges) in cv-core with unit tests. No behaviour change (pending ADR 0011).
+7.2b The pan window in cv-platform-win: created hidden with the panel's styles and capture exclusion, placed over the uncovered area by `apply_layout`, destroyed in teardown; `OverlayHost::set_pan_visible` and `pan_handles`, recorded by the fake host. Never shown yet (pending ADR 0011).
+7.2c The second surface on the same device, the eased whole-pixel offset, show and hide (only while docked and the panel's monitor is captured), the system cursor hidden while panning, and our pointer at 1x at the real pointer plus the offset, in `Magnifier::tick`, with fake-host and fake-renderer tests (pending ADR 0011).
 7.3 (you) Verify by hand on all four edges: the covered strip is reachable by panning, the pan is smooth, clicks land where the pointer is drawn, and exit leaves nothing behind.
 
 ## Open decisions
