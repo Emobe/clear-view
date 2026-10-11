@@ -25,28 +25,46 @@ pub struct WgpuState {
     /// first shape arrives.
     mask_tex:       wgpu::Texture,
     mask_view:      wgpu::TextureView,
+    /// The pan window's surface (ADR 0011) on the same device, or `None` when it could not be
+    /// made: the magnifier then never pans.
+    pan:            Option<PanSurface>,
     pub tex_w:      u32,
     pub tex_h:      u32,
 }
 
+/// The pan window's side of the renderer: its own surface, uniforms and bind group over the
+/// shared frame and mask textures and pipeline (ADR 0011).
+struct PanSurface {
+    surface:     wgpu::Surface<'static>,
+    config:      wgpu::SurfaceConfiguration,
+    /// False until `resize_pan` configures it: the window is only sized once a docked layout is
+    /// applied, and `get_current_texture` panics on a surface that was never configured.
+    configured:  bool,
+    uniform_buf: wgpu::Buffer,
+    bind_group:  wgpu::BindGroup,
+}
+
 impl WgpuState {
     /// # Safety
-    /// `display` and `window` must be valid, and must stay valid until this `WgpuState` is
-    /// dropped (wgpu `SurfaceTargetUnsafe::RawHandle`).
+    /// `display` and `window`, and the handles of the pan window in `pan`, must be valid, and
+    /// must stay valid until this `WgpuState` is dropped (wgpu
+    /// `SurfaceTargetUnsafe::RawHandle`).
     pub unsafe fn new(
         display: RawDisplayHandle,
         window: RawWindowHandle,
+        pan: (RawDisplayHandle, RawWindowHandle),
         win_w: u32,
         win_h: u32,
         tex_w: u32,
         tex_h: u32,
     ) -> Self {
-        pollster::block_on(Self::init(display, window, win_w, win_h, tex_w, tex_h))
+        pollster::block_on(Self::init(display, window, pan, win_w, win_h, tex_w, tex_h))
     }
 
     async fn init(
         display: RawDisplayHandle,
         window: RawWindowHandle,
+        pan: (RawDisplayHandle, RawWindowHandle),
         win_w: u32,
         win_h: u32,
         tex_w: u32,
@@ -115,12 +133,86 @@ impl WgpuState {
         let bind_group =
             Self::make_bind_group(&device, &bgl, &frame_view, &sampler, &uniform_buf, &mask_view);
 
+        // SAFETY: the caller of `new` keeps the pan handles valid for the surface's lifetime.
+        let pan = unsafe {
+            Self::make_pan_surface(
+                &instance, &adapter, &device, pan, surface_format,
+                &bgl, &frame_view, &sampler, &mask_view,
+            )
+        };
+
         Self {
             device, queue, surface, surface_config,
             pipeline, frame_tex, frame_view, sampler,
             uniform_buf, bgl, bind_group,
             mask_tex, mask_view,
+            pan,
             tex_w, tex_h,
+        }
+    }
+
+    /// The pan window's surface on the existing device (ADR 0011). Not configured yet. `None`,
+    /// with one `[pan]` line, if the window can't take a surface or the surface can't draw in the
+    /// panel's format (the pipeline is built for that one).
+    ///
+    /// # Safety
+    /// `pan` must be valid until the returned surface is dropped.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn make_pan_surface(
+        instance:   &wgpu::Instance,
+        adapter:    &wgpu::Adapter,
+        device:     &wgpu::Device,
+        pan:        (RawDisplayHandle, RawWindowHandle),
+        format:     wgpu::TextureFormat,
+        bgl:        &wgpu::BindGroupLayout,
+        frame_view: &wgpu::TextureView,
+        sampler:    &wgpu::Sampler,
+        mask_view:  &wgpu::TextureView,
+    ) -> Option<PanSurface> {
+        // SAFETY: forwarded from the caller.
+        let surface = match unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: Some(pan.0),
+                raw_window_handle:  pan.1,
+            })
+        } {
+            Ok(surface) => surface,
+            Err(e) => {
+                eprintln!("[pan] no surface for the pan window, panning is off: {e}");
+                return None;
+            }
+        };
+        let caps = surface.get_capabilities(adapter);
+        if !caps.formats.contains(&format) || caps.alpha_modes.is_empty() {
+            eprintln!("[pan] the pan surface cannot draw in {format:?}, panning is off");
+            return None;
+        }
+        let config = wgpu::SurfaceConfiguration {
+            usage:                          wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width:                          1,
+            height:                         1,
+            present_mode:                   wgpu::PresentMode::Fifo,
+            alpha_mode:                     caps.alpha_modes[0],
+            view_formats:                   vec![],
+            desired_maximum_frame_latency:  2,
+            color_space:                    wgpu::SurfaceColorSpace::Auto,
+        };
+        let uniform_buf = Self::make_uniform_buf(device);
+        let bind_group = Self::make_bind_group(device, bgl, frame_view, sampler, &uniform_buf, mask_view);
+        Some(PanSurface { surface, config, configured: false, uniform_buf, bind_group })
+    }
+
+    /// Makes both bind groups again over the current frame and mask textures; a bind group holds
+    /// the views it was made with.
+    fn rebuild_bind_groups(&mut self) {
+        self.bind_group = Self::make_bind_group(
+            &self.device, &self.bgl, &self.frame_view, &self.sampler, &self.uniform_buf, &self.mask_view,
+        );
+        if let Some(pan) = &mut self.pan {
+            pan.bind_group = Self::make_bind_group(
+                &self.device, &self.bgl, &self.frame_view, &self.sampler, &pan.uniform_buf, &self.mask_view,
+            );
         }
     }
 
@@ -286,13 +378,11 @@ impl WgpuState {
     /// Called when switching to a monitor with different resolution.
     pub fn recreate_frame_texture(&mut self, w: u32, h: u32) {
         let (frame_tex, frame_view) = Self::make_frame_texture(&self.device, w, h);
-        self.bind_group = Self::make_bind_group(
-            &self.device, &self.bgl, &frame_view, &self.sampler, &self.uniform_buf, &self.mask_view,
-        );
         self.frame_tex  = frame_tex;
         self.frame_view = frame_view;
         self.tex_w = w;
         self.tex_h = h;
+        self.rebuild_bind_groups();
     }
 
     /// Put a pointer mask (`w * h` bytes, top-down) in the mask texture, replacing the texture
@@ -302,11 +392,9 @@ impl WgpuState {
         if data.len() != w as usize * h as usize || w == 0 || h == 0 { return; }
         if (self.mask_tex.width(), self.mask_tex.height()) != (w, h) {
             let (mask_tex, mask_view) = Self::make_mask_texture(&self.device, w, h);
-            self.bind_group = Self::make_bind_group(
-                &self.device, &self.bgl, &self.frame_view, &self.sampler, &self.uniform_buf, &mask_view,
-            );
             self.mask_tex  = mask_tex;
             self.mask_view = mask_view;
+            self.rebuild_bind_groups();
         }
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -360,10 +448,41 @@ impl WgpuState {
         self.queue.write_buffer(&self.uniform_buf, 0, &uniform_bytes(u));
     }
 
+    /// Reconfigure the pan surface for the pan window's size (ADR 0011). Does nothing without a
+    /// pan surface.
+    pub fn resize_pan(&mut self, new_w: u32, new_h: u32) {
+        let Some(pan) = &mut self.pan else { return };
+        pan.config.width  = new_w.max(1);
+        pan.config.height = new_h.max(1);
+        pan.surface.configure(&self.device, &pan.config);
+        pan.configured = true;
+    }
+
+    /// Write the pan window's uniforms; see `uniform_bytes` for the layout.
+    pub fn write_pan_uniforms(&self, u: &Uniforms) {
+        if let Some(pan) = &self.pan {
+            self.queue.write_buffer(&pan.uniform_buf, 0, &uniform_bytes(u));
+        }
+    }
+
+    /// Draw and present the pan window. False on a surface error, or when there is no configured
+    /// pan surface (caller should call `resize_pan` to recover).
+    pub fn render_pan(&self) -> bool {
+        match &self.pan {
+            Some(pan) if pan.configured => self.present(&pan.surface, &pan.bind_group),
+            _ => false,
+        }
+    }
+
     /// Execute the render pass and present.
     /// Returns false on surface error (caller should call resize to recover).
     pub fn render(&self) -> bool {
-        let output = match self.surface.get_current_texture() {
+        self.present(&self.surface, &self.bind_group)
+    }
+
+    /// One pass into `surface`'s next texture, then present.
+    fn present(&self, surface: &wgpu::Surface<'static>, bind_group: &wgpu::BindGroup) -> bool {
+        let output = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
             other => {
                 eprintln!("[render] surface error: {other:?}");
@@ -373,7 +492,7 @@ impl WgpuState {
 
         let view = output.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        encode_pass(&mut enc, &view, &self.pipeline, &self.bind_group);
+        encode_pass(&mut enc, &view, &self.pipeline, bind_group);
         self.queue.submit([enc.finish()]);
         self.queue.present(output);
         true
@@ -407,6 +526,22 @@ impl Renderer for WgpuState {
 
     fn render(&mut self) -> bool {
         WgpuState::render(self)
+    }
+
+    fn pan_available(&self) -> bool {
+        self.pan.is_some()
+    }
+
+    fn resize_pan(&mut self, width: u32, height: u32) {
+        WgpuState::resize_pan(self, width, height);
+    }
+
+    fn write_pan_uniforms(&mut self, u: &Uniforms) {
+        WgpuState::write_pan_uniforms(self, u);
+    }
+
+    fn render_pan(&mut self) -> bool {
+        WgpuState::render_pan(self)
     }
 }
 
