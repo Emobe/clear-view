@@ -12,6 +12,7 @@ mod hotkey;
 mod overlay;
 mod perf;
 mod pointer;
+mod pointer_shape;
 mod sysinfo;
 
 pub use capture::{Capturer, enumerate_outputs};

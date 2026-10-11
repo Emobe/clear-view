@@ -62,6 +62,7 @@ Current roadmap:
 - 4.8 Tracking checked by hand in the apps you have (you; 2026-10-11, "4.8 done"). LibreOffice and Word are postponed by your decision, not tested.
 - 6.2b Pointer probe run (you; 2026-10-11, you sent the probe.txt output as the finished run). Result in Works.
 - 5.5b Performance matrix (you; 2026-10-11, "I approve"). Approved as done for basic purposes, on the partial run below; the matrix was not filled in. A proper test is a later item, 5.5c.
+- 6.2c1 Read the pointer shape, no drawing change (ADR 0010, branch step/6.2c1-pointer-shape, PR #73). Approved 2026-10-11 ("Tests fine. I approve."). 6.2c2 and 6.2c3 follow.
 
 ## Works (a command proved it, or you verified it)
 
@@ -252,6 +253,7 @@ Current roadmap:
   - cv-magnifier 72: `gfx::tests::shader_parses_and_validates`, `uniform_size_matches_the_shader_struct`, 12 in `capture::tests` for the capture loop with a scripted fake source (including reconnect and factory retries), 54 in `magnifier::tests` for the tick with a fake host and renderer (including the docked system cursor on every edge, caret tracking, docked multi-monitor and monitors changing), 4 in `perf::tests`, plus the ignored GPU benches `bench_modes_4k` and `bench_upload_4k`.
   - cv-platform-win 22: 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls), 1 in `sysinfo::tests` for `scale_percent`, 4 in `display::tests` for the re-read timing, 3 in `perf::tests` for the `[perf]` line, plus the ignored `bench_readback_4k`. cv-tts has none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
+- Pointer shape is read (6.2c1, approved by you 2026-10-11 after your hand test: "Tests fine"; the cursors you visited and what the lines said were not itemised, so whether an animated cursor changes handle every frame is not recorded). cv-core has PointerShape, PointerLook and PointerSource::look; cv-platform-win reads GetCursorInfo each tick and converts the cursor bitmaps to a coverage mask only when hCursor changes, with one [pointer] stderr line per change; Magnifier::tick calls look and ignores the answer, so nothing is drawn differently. Unit tests: the mask conversions (monochrome and colour) in pointer_shape::tests, the flags test in pointer::tests, and two magnifier tests for the call count and for unchanged drawing.
 
 ## Broken
 

@@ -208,6 +208,9 @@ impl<R: Renderer> View<R> {
             if let Some(p) = host.position() {
                 self.pointer = p;
             }
+            // Read every enabled tick so the host notices a shape change. Nothing draws it yet
+            // (roadmap 6.2c2), so the circle stays as it was.
+            let _look = host.look();
             self.target = self.track(&state, now, events);
             self.follow_target();
         } else {
@@ -503,7 +506,9 @@ fn track_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cv_core::{AppId, CaretSource, ColorFilter, Interpolation, PointerSource};
+    use cv_core::{
+        AppId, CaretSource, ColorFilter, Interpolation, PointerLook, PointerShape, PointerSource,
+    };
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     use std::{
         sync::{
@@ -555,6 +560,10 @@ mod tests {
     /// get.
     struct FakeHost {
         pointer: Option<ScreenPoint>,
+        /// What `look` answers.
+        look: PointerLook,
+        /// How many times `look` was called.
+        looks: u32,
         layouts: Vec<Layout>,
         cursor: Vec<bool>,
     }
@@ -562,6 +571,11 @@ mod tests {
     impl PointerSource for FakeHost {
         fn position(&self) -> Option<ScreenPoint> {
             self.pointer
+        }
+
+        fn look(&mut self) -> PointerLook {
+            self.looks += 1;
+            self.look.clone()
         }
     }
 
@@ -637,6 +651,8 @@ mod tests {
             let now = view.last_tick;
             let host = FakeHost {
                 pointer: Some(ScreenPoint { x: 960, y: 540 }),
+                look: PointerLook::Unknown,
+                looks: 0,
                 layouts: Vec::new(),
                 cursor: Vec::new(),
             };
@@ -1153,6 +1169,49 @@ mod tests {
         rig.step();
         let (_, gpu) = rig.step();
         assert_eq!(gpu, [Gpu::Render, Gpu::Resize(1920, 540)]);
+    }
+
+    #[test]
+    fn the_pointer_look_is_read_once_per_enabled_tick() {
+        let mut rig = Rig::new();
+        rig.tick();
+        rig.tick();
+        assert_eq!(rig.host.looks, 0, "not while disabled");
+
+        rig.set(|s| s.enabled = true);
+        rig.tick();
+        rig.tick();
+        rig.tick();
+        assert_eq!(rig.host.looks, 3);
+
+        rig.set(|s| s.enabled = false);
+        rig.tick();
+        assert_eq!(rig.host.looks, 3);
+    }
+
+    #[test]
+    fn what_the_pointer_looks_like_changes_nothing_drawn_yet() {
+        let arrow = Arc::new(PointerShape {
+            width: 2,
+            height: 2,
+            hotspot: (0, 0),
+            mask: vec![255, 0, 255, 255],
+        });
+        let mut runs = Vec::new();
+        for look in [PointerLook::Hidden, PointerLook::Unknown, PointerLook::Shape(arrow)] {
+            let mut rig = Rig::new();
+            rig.host.look = look;
+            rig.set(|s| s.enabled = true);
+            rig.publish_frame();
+            rig.point_at(700, 300);
+            let mut calls = rig.step().1;
+            rig.point_at(710, 305);
+            calls.extend(rig.step().1);
+            runs.push(calls);
+        }
+        assert!(uniform_writes(&runs[0]) > 0);
+        assert_eq!(runs[0], runs[1]);
+        assert_eq!(runs[0], runs[2]);
     }
 
     #[test]
