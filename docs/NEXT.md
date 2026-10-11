@@ -11,8 +11,12 @@ Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45),
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
 State: ready
-Item: 6.3 (ADR first) UIAccess, signing and installer. Run /adr 6.3. 6.2b (you) is open and /next skips it while you cannot test.
-Model: Opus high (CLAUDE.md model guide for /adr: new dependency, build and platform seam, more than one crate).
+State: waiting-on-owner (2026-10-11, your decision)
+Item: none for the agent. 6.3 to 6.6 (UIAccess, signing, installer) are on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. When you are back at your PC, the open items are yours:
+- 6.2b: run the pointer probe (below); 6.2c then builds the cursor.
+- 5.5b: run the performance matrix; 5.6 then fixes what it finds.
+- 4.8 (and 4.2a): hands-on tracking checks; also test the integration branch (PR #42) and the by-hand lists below.
+Model: n/a. Once one of those is done, /next picks the item it unlocks (Sonnet high for /step).
 
 6.1 and 6.2a are approved (2026-10-10, PRs #52 and #53). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
 - The shape is read with `GetCursorInfo` + `GetIconInfo` on the render thread and passed through cv-core as a coverage mask.
