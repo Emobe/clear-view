@@ -94,6 +94,7 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 4.7 Wire the policy into docked mode.
 4.8 (you) Run the app list from 4.2 with tracking on, plus Word (4.2a) and an admin Notepad (elevated, ADR 0008 option a). Failures become sub-items of 4.8 (pending ADR 0008).
 4.8a Explorer address bar and search box do not move the view (STATUS Finding 21, found in 4.8 on 2026-10-11): find the root cause by reading the code and the `[caret]` log, then fix. ADR 0008 chain i already ends in the focus rectangle for these boxes, so no new ADR is expected.
+4.8b Follow the text while typing in the Explorer address bar and search box (STATUS Finding 22, found approving 4.8a on 2026-10-11). Try the uia ranges Finding 22 lists first, with the `caret_probe` or `CV_TRACK_LOG=1`; they stay inside ADR 0008's uia source. If none gives a rectangle, stop: another source is a new ADR (pending ADR 0008).
 4.9 Tester build 3, tag v0.3.0. (you) Feedback into docs/FEEDBACK.md.
 
 ## Phase 5: Multiple monitors and performance (M4)
