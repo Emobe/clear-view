@@ -126,9 +126,26 @@ The riskiest part of v1. Every app reports the caret differently, so this phase 
 6.7 (you) Test on a clean Windows 11 install.
 6.8 (you) One week of normal use by the tester instead of ZoomText. v1 is done when this passes.
 
+## Phase 7: Docked pan (found 2026-10-11)
+
+A gap in docked mode, found by you after 6.2c3: the overlay panel hides its share of the real desktop (25% at a 25% panel) and the unmagnified area does not pan to show it. The mouse can reach under the panel (ADR 0007) and the panel shows that spot magnified, but the normal view of the covered strip is gone. This is the "fake pan underneath it" from STATUS Finding 11, which the overlay design did not deliver. It is a gap in PRODUCT.md v1 Must 2, so it belongs before v1 closes (6.7 and 6.8). The numbering is only an id; run it when you choose.
+
+Wanted: the unmagnified area pans visually, smoothly and continuously as the pointer nears the edge beside the panel, up to the width of the covered strip. It does not jump to show everything at once. Real windows are not moved or resized (the AppBar approach stays rejected, ADR 0007). A second overlay is expected, excluded from capture like the panel, showing a shifted copy of the captured desktop.
+
+7.1 (ADR first, Opus high) Docked pan design, superseding the part of ADR 0007 that leaves the unmagnified area as the plain desktop, and changing PRODUCT.md v1 Must 2 (the ADR step records that change). Questions for it:
+- The shifted image and the real desktop disagree by the pan offset. One candidate: leave the real pointer alone and draw our own pointer displaced by the offset (6.2c already draws the shape), so no clicks are forwarded. Does that work, or does it break something?
+- What triggers the pan: how near the edge, how fast, and whether it returns when the pointer leaves.
+- The range (the covered strip) on all four edges, on several monitors and with `panel_follows_monitor`.
+- The magnified panel must keep showing the real desktop, not the shifted overlay: the new overlay must be excluded from capture.
+- A constantly presenting overlay and the 24H2 extra-frames issue (ADR 0007); the cost.
+- The taskbar, the system cursor hiding rules, and how the tracking policy (pointer or caret target) interacts with the shifted view.
+7.2 Build 7.1. Split into sub-items in docs/NEXT.md if the ADR makes it bigger than one step (pending ADR from 7.1).
+7.3 (you) Verify by hand on all four edges: the covered strip is reachable by panning, the pan is smooth, clicks land where the pointer is drawn, and exit leaves nothing behind.
+
 ## Open decisions
 
 - Hotkey scheme and defaults (1.2).
 - Docked behaviour on multiple monitors (5.1).
 - Performance thresholds (5.5).
 - When to upgrade wgpu and eframe: decided in ADR 0004, after the refactor and before 3.1 (items 2.6 and 2.7).
+- How the unmagnified area pans in docked mode (7.1).
