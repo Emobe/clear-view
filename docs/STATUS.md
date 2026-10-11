@@ -63,6 +63,7 @@ Current roadmap:
 - 6.2b Pointer probe run (you; 2026-10-11, you sent the probe.txt output as the finished run). Result in Works.
 - 5.5b Performance matrix (you; 2026-10-11, "I approve"). Approved as done for basic purposes, on the partial run below; the matrix was not filled in. A proper test is a later item, 5.5c.
 - 6.2c1 Read the pointer shape, no drawing change (ADR 0010, branch step/6.2c1-pointer-shape, PR #73). Approved 2026-10-11 ("Tests fine. I approve."). 6.2c2 and 6.2c3 follow.
+- 6.2c2 Draw the pointer shape (ADR 0010, branch step/6.2c2-draw-pointer, PR #74). Approved 2026-10-11 ("I verified it, works"). 6.2c3 follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -254,6 +255,12 @@ Current roadmap:
   - cv-platform-win 22: 14 in `caret::tracker::tests` (what the caret thread publishes, logs and polls), 1 in `sysinfo::tests` for `scale_percent`, 4 in `display::tests` for the re-read timing, 3 in `perf::tests` for the `[perf]` line, plus the ignored `bench_readback_4k`. cv-tts has none.
 - The workspace has 5 crates (cv-core, cv-platform-win, cv-magnifier, cv-tts, app), 4403 lines of Rust in total (`cat crates/*/src/*.rs | wc -l`, 2.5a).
 - Pointer shape is read (6.2c1, approved by you 2026-10-11 after your hand test: "Tests fine"; the cursors you visited and what the lines said were not itemised, so whether an animated cursor changes handle every frame is not recorded). cv-core has PointerShape, PointerLook and PointerSource::look; cv-platform-win reads GetCursorInfo each tick and converts the cursor bitmaps to a coverage mask only when hCursor changes, with one [pointer] stderr line per change; Magnifier::tick calls look and ignores the answer, so nothing is drawn differently. Unit tests: the mask conversions (monochrome and colour) in pointer_shape::tests, the flags test in pointer::tests, and two magnifier tests for the call count and for unchanged drawing.
+- Pointer shape drawn (6.2c2, approved by you 2026-10-11: "I verified it, works"; which of the Verify cases you ran (shapes, 100% and 150%, docked edges, colour filters) were not itemised, so none is recorded separately). The magnified view shows the real pointer shape, recoloured and outlined, instead of the circle:
+  - `Magnifier::tick` keeps the `PointerLook`. `Hidden` draws nothing, `Unknown` or an unusable shape (zero size, wrong mask length, a side over 512) keeps the circle, `Shape` draws the shape; out of view draws nothing.
+  - cv-magnifier gfx.rs has a second R8 mask texture (binding 3), recreated only when the size changes and uploaded only for a new `Arc`. Uniforms are 96 bytes.
+  - shader.wgsl places the mask with its hotspot on the pointer, `size` output pixels per mask pixel, after the colour filter, with an outline made by dilating the mask over a disc of up to 8 output pixels.
+  - Fixed defaults in magnifier.rs until 6.2c3: size 2x, fill blue (0.10, 0.40, 1.0), outline 2 px white.
+  - Proven by tests: fake-renderer tests for upload only on a new shape, the three looks, the fixed defaults and docked; the naga validation and uniform-size tests; and the ignored `pointer_shader_draws_the_mask`, which renders the pointer offscreen on a GPU (passed on an RTX 3070).
 
 ## Broken
 
