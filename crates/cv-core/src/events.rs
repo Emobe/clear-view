@@ -19,6 +19,19 @@ pub enum CoreEvent {
     CaretLost { at: Instant, app: AppId },
 }
 
+impl CoreEvent {
+    /// One line for logs, for example `focus rect (812, 64) 1240x32 in explorer.exe` or
+    /// `lost in explorer.exe`.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::CaretMoved { rect, source, app, .. } => {
+                format!("{} {rect} in {}", source.name(), app.exe)
+            }
+            Self::CaretLost { app, .. } => format!("lost in {}", app.exe),
+        }
+    }
+}
+
 /// Which API gave a caret position.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,5 +176,12 @@ mod tests {
             hub.publish(moved(i));
         }
         assert_eq!(hub.subscribers(), 1);
+    }
+
+    #[test]
+    fn describe_names_source_rect_and_app() {
+        assert_eq!(moved(5).describe(), "msaa (5, 10) 2x20 in notepad.exe");
+        let lost = CoreEvent::CaretLost { at: Instant::now(), app: app() };
+        assert_eq!(lost.describe(), "lost in notepad.exe");
     }
 }

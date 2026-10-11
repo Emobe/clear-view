@@ -286,6 +286,9 @@ fn read_once(
         eprintln!("{line}");
     }
     if let Some(event) = outcome.event {
+        if cv_core::tracking::log_enabled() {
+            eprintln!("[caret] published {}", event.describe());
+        }
         hub.publish(event);
     }
 }

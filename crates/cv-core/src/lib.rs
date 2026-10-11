@@ -232,6 +232,20 @@ impl ScreenRect {
     }
 }
 
+/// For logs: `(x, y)`.
+impl std::fmt::Display for ScreenPoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+/// For logs: `(left, top) WxH`.
+impl std::fmt::Display for ScreenRect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {}) {}x{}", self.left, self.top, self.width, self.height)
+    }
+}
+
 /// Where the pointer is (ADR 0004). Sampled when needed, not sent as events.
 pub trait PointerSource {
     /// `None` when the platform cannot say, for example while another desktop has input.
@@ -526,6 +540,13 @@ mod tests {
     fn empty_screen_rect_contains_nothing() {
         let r = ScreenRect { left: 0, top: 0, width: 0, height: 0 };
         assert!(!r.contains(ScreenPoint { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn screen_point_and_rect_display_for_logs() {
+        assert_eq!(ScreenPoint { x: -5, y: 7 }.to_string(), "(-5, 7)");
+        let r = ScreenRect { left: 812, top: -64, width: 1240, height: 32 };
+        assert_eq!(r.to_string(), "(812, -64) 1240x32");
     }
 
     #[test]

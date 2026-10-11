@@ -16,6 +16,7 @@
 //!   [`POINTER_QUIET`]. The source sends it once and never repeats it, so dropping it would lose
 //!   it for good (Explorer address bar, roadmap 4.8a).
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::events::{CaretSource, CoreEvent};
@@ -34,6 +35,13 @@ pub const CARET_MARGIN: f32 = 0.2;
 /// How long a `FocusRect` event that came while the pointer was moving waits for the pointer to
 /// settle. After this the control is no longer what the user just went to.
 pub const PENDING_FOR: Duration = Duration::from_secs(1);
+
+/// True when `CV_TRACK_LOG=1`: the caret thread logs every event it publishes and the magnifier
+/// logs every event it drains and every tracking decision (roadmap 4.8a diagnostic). Read once.
+pub fn log_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CV_TRACK_LOG").is_ok_and(|v| v == "1"))
+}
 
 /// What the view follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +125,18 @@ impl Tracker {
         }
     }
 
+    /// When the `FocusRect` held back for the pointer to settle arrived; `None` when none is
+    /// held. For the `CV_TRACK_LOG` lines.
+    pub fn pending_since(&self) -> Option<Instant> {
+        self.pending.map(|p| p.since)
+    }
+
+    /// Whether the pointer has been still for [`POINTER_QUIET`] as of the last
+    /// [`update`](Self::update), measured at `now`.
+    pub fn pointer_still(&self, now: Instant) -> bool {
+        self.moved_at.is_none_or(|t| now.saturating_duration_since(t) >= POINTER_QUIET)
+    }
+
     fn observe_pointer(&mut self, now: Instant, pointer: ScreenPoint) {
         match self.rest {
             Some(rest) if distance(pointer, rest) <= POINTER_JITTER_PX => {}
@@ -126,10 +146,6 @@ impl Tracker {
             }
             None => self.rest = Some(pointer),
         }
-    }
-
-    fn pointer_still(&self, now: Instant) -> bool {
-        self.moved_at.is_none_or(|t| now.saturating_duration_since(t) >= POINTER_QUIET)
     }
 
     /// Gives a held `FocusRect` the view once the pointer is still, or drops it when it is stale
@@ -565,6 +581,21 @@ mod tests {
         rig.tick(20, p(1100, 500), [lost()]);
         rig.tick(300, p(1100, 500), []);
         assert_eq!(rig.following(), Following::Pointer);
+    }
+
+    #[test]
+    fn pending_since_and_pointer_still_report_the_held_focus_rect() {
+        let mut rig = Rig::new();
+        assert!(rig.tracker.pointer_still(rig.now));
+        assert_eq!(rig.tracker.pending_since(), None);
+        rig.tick(100, p(1100, 500), []);
+        assert!(!rig.tracker.pointer_still(rig.now));
+        rig.tick(20, p(1100, 500), [focus(2000, 800, 100, 30)]);
+        assert_eq!(rig.tracker.pending_since(), Some(rig.now));
+        rig.tick(300, p(1100, 500), []);
+        assert!(rig.tracker.pointer_still(rig.now));
+        assert_eq!(rig.tracker.pending_since(), None);
+        assert_eq!(rig.following(), Following::Caret);
     }
 
     #[test]

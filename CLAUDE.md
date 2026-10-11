@@ -63,6 +63,8 @@ Windows only for now. Will not compile on other platforms.
 
 Performance: `CV_PERF=1` makes the app print a `[perf]` line a second; `scripts/perf-sample.ps1` samples CPU and GPU of the running app. Method in docs/prototypes/performance.md.
 
+Tracking: `CV_TRACK_LOG=1` makes the caret thread log every event it publishes (`[caret] published …`) and the magnifier log every event it drains and every tracking decision (`[track] …`, roadmap 4.8a). The `[caret] <source> in <exe>` line always gives the rectangle.
+
 ### Gate before every PR
 
 All three must pass before a PR is opened. Steps that change only docs skip the gate.
