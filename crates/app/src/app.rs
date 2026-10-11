@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cv_core::{
     AppState, ColorFilter, DisplayMode, Edge, Interpolation, PANEL_SIZE_MAX, PANEL_SIZE_MIN,
-    SharedState, ZOOM_MAX, ZOOM_MIN,
+    POINTER_OUTLINE_MAX, POINTER_SIZE_MAX, POINTER_SIZE_MIN, SharedState, ZOOM_MAX, ZOOM_MIN,
 };
 use eframe::egui;
 
@@ -38,144 +38,174 @@ impl ClearViewApp {
 impl eframe::App for ClearViewApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("clear-view");
-            ui.separator();
-
-            // Draw against a local copy so no lock is held while egui runs. Only fields the
-            // panel changed are written back, so a hotkey toggle of `enabled` is never overwritten.
-            let mut s = self.state.read().clone();
-            let before = s.clone();
-
-            // Enable / disable toggle
-            ui.horizontal(|ui| {
-                ui.label("Magnifier");
-                let label = if s.enabled { "On" } else { "Off" };
-                if ui.button(label).clicked() {
-                    s.enabled = !s.enabled;
-                }
-                ui.label(format!("  ({TOGGLE_LABEL} to toggle)"));
-            });
-
-            // Set once at startup by the hotkey thread; a lock failure just hides the lines.
-            if let Ok(failures) = self.hotkey_failures.lock() {
-                for line in failures.iter() {
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("Hotkey {line}"));
-                }
-            }
-
-            ui.add_space(8.0);
-
-            // Zoom slider
-            ui.add(
-                egui::Slider::new(&mut s.zoom, ZOOM_MIN..=ZOOM_MAX)
-                    .step_by(0.1)
-                    .text("Zoom"),
-            );
-
-            ui.add_space(4.0);
-
-            // Smooth follow speed
-            ui.add(
-                egui::Slider::new(&mut s.smooth_speed, 0.01..=1.0)
-                    .step_by(0.01)
-                    .text("Follow speed"),
-            );
-
-            ui.add_space(8.0);
-
-            // Display mode
-            ui.label("Display mode");
-            ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut s.display_mode, DisplayMode::Fullscreen,        "Fullscreen");
-                ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Top),    "Top");
-                ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Bottom), "Bottom");
-                ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Left),   "Left");
-                ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Right),  "Right");
-            });
-
-            // Panel size — only shown when docked
-            if s.display_mode != DisplayMode::Fullscreen {
-                ui.add_space(4.0);
-                ui.add(
-                    egui::Slider::new(&mut s.panel_size, PANEL_SIZE_MIN..=PANEL_SIZE_MAX)
-                        .text("Panel size (%)"),
-                );
-                // Off: the panel stays on the primary monitor (roadmap 5.2).
-                ui.checkbox(
-                    &mut s.panel_follows_monitor,
-                    "Move the panel to the monitor being magnified",
-                );
-            }
-
-            ui.add_space(8.0);
-
-            // Colour filter
-            ui.label("Colour filter");
-            ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut s.color_filter, ColorFilter::None,              "None");
-                ui.radio_value(&mut s.color_filter, ColorFilter::Inverted,          "Inverted");
-                ui.radio_value(&mut s.color_filter, ColorFilter::Greyscale,         "Greyscale");
-                ui.radio_value(&mut s.color_filter, ColorFilter::GreyscaleInverted, "Grey+Inv");
-            });
-
-            ui.add_space(8.0);
-
-            // Interpolation selector
-            ui.label("Interpolation");
-            ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut s.interpolation, Interpolation::Bilinear,  "Bilinear");
-                ui.radio_value(&mut s.interpolation, Interpolation::Bicubic,   "Bicubic");
-                ui.radio_value(&mut s.interpolation, Interpolation::Sharp,     "Sharp");
-                ui.radio_value(&mut s.interpolation, Interpolation::CleanEdge, "Smooth edges");
-            });
-
-            // cleanEdge similarity threshold — only shown for that mode
-            if s.interpolation == Interpolation::CleanEdge {
-                ui.add_space(4.0);
-                ui.add(
-                    egui::Slider::new(&mut s.edge_threshold, 0.0..=1.0)
-                        .step_by(0.01)
-                        .text("Edge threshold"),
-                );
-            }
-
-            #[cfg(feature = "tts")]
-            {
-                ui.add_space(8.0);
+            // The panel is taller than a small window once everything is shown (docked, smooth
+            // edges, pointer settings), so it scrolls instead of cutting controls off.
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.heading("clear-view");
                 ui.separator();
-                ui.heading("Screen Reader");
-                ui.add_space(4.0);
 
+                // Draw against a local copy so no lock is held while egui runs. Only fields the
+                // panel changed are written back, so a hotkey toggle of `enabled` is never overwritten.
+                let mut s = self.state.read().clone();
+                let before = s.clone();
+
+                // Enable / disable toggle
                 ui.horizontal(|ui| {
-                    ui.label("TTS");
-                    let label = if s.tts_enabled { "On" } else { "Off" };
+                    ui.label("Magnifier");
+                    let label = if s.enabled { "On" } else { "Off" };
                     if ui.button(label).clicked() {
-                        s.tts_enabled = !s.tts_enabled;
+                        s.enabled = !s.enabled;
                     }
+                    ui.label(format!("  ({TOGGLE_LABEL} to toggle)"));
                 });
 
-                ui.add_space(4.0);
+                // Set once at startup by the hotkey thread; a lock failure just hides the lines.
+                if let Ok(failures) = self.hotkey_failures.lock() {
+                    for line in failures.iter() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Hotkey {line}"));
+                    }
+                }
 
-                ui.add_enabled(
-                    s.tts_enabled,
-                    egui::Checkbox::new(&mut s.tts_hover_enabled, "Hover echo"),
+                ui.add_space(8.0);
+
+                // Zoom slider
+                ui.add(
+                    egui::Slider::new(&mut s.zoom, ZOOM_MIN..=ZOOM_MAX)
+                        .step_by(0.1)
+                        .text("Zoom"),
                 );
 
                 ui.add_space(4.0);
 
-                ui.add_enabled(
-                    s.tts_enabled,
-                    egui::Slider::new(&mut s.tts_volume, 0..=100).text("Volume"),
+                // Smooth follow speed
+                ui.add(
+                    egui::Slider::new(&mut s.smooth_speed, 0.01..=1.0)
+                        .step_by(0.01)
+                        .text("Follow speed"),
                 );
-                ui.add_enabled(
-                    s.tts_enabled,
-                    egui::Slider::new(&mut s.tts_rate, -10..=10).text("Rate"),
-                );
-            }
 
-            if s != before {
-                apply_changes(&mut self.state.write(), &before, &s);
-            }
+                ui.add_space(8.0);
+
+                // Display mode
+                ui.label("Display mode");
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut s.display_mode, DisplayMode::Fullscreen,        "Fullscreen");
+                    ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Top),    "Top");
+                    ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Bottom), "Bottom");
+                    ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Left),   "Left");
+                    ui.radio_value(&mut s.display_mode, DisplayMode::Docked(Edge::Right),  "Right");
+                });
+
+                // Panel size — only shown when docked
+                if s.display_mode != DisplayMode::Fullscreen {
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Slider::new(&mut s.panel_size, PANEL_SIZE_MIN..=PANEL_SIZE_MAX)
+                            .text("Panel size (%)"),
+                    );
+                    // Off: the panel stays on the primary monitor (roadmap 5.2).
+                    ui.checkbox(
+                        &mut s.panel_follows_monitor,
+                        "Move the panel to the monitor being magnified",
+                    );
+                }
+
+                ui.add_space(8.0);
+
+                // Colour filter
+                ui.label("Colour filter");
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut s.color_filter, ColorFilter::None,              "None");
+                    ui.radio_value(&mut s.color_filter, ColorFilter::Inverted,          "Inverted");
+                    ui.radio_value(&mut s.color_filter, ColorFilter::Greyscale,         "Greyscale");
+                    ui.radio_value(&mut s.color_filter, ColorFilter::GreyscaleInverted, "Grey+Inv");
+                });
+
+                ui.add_space(8.0);
+
+                // Interpolation selector
+                ui.label("Interpolation");
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut s.interpolation, Interpolation::Bilinear,  "Bilinear");
+                    ui.radio_value(&mut s.interpolation, Interpolation::Bicubic,   "Bicubic");
+                    ui.radio_value(&mut s.interpolation, Interpolation::Sharp,     "Sharp");
+                    ui.radio_value(&mut s.interpolation, Interpolation::CleanEdge, "Smooth edges");
+                });
+
+                // cleanEdge similarity threshold — only shown for that mode
+                if s.interpolation == Interpolation::CleanEdge {
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Slider::new(&mut s.edge_threshold, 0.0..=1.0)
+                            .step_by(0.01)
+                            .text("Edge threshold"),
+                    );
+                }
+
+                ui.add_space(8.0);
+
+                // Pointer in the magnified view (ADR 0010). Off: the circle, which has no settings.
+                ui.label("Pointer");
+                ui.checkbox(&mut s.pointer_shape, "Draw the real pointer shape (off: circle)");
+                ui.add_enabled_ui(s.pointer_shape, |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut s.pointer_size, POINTER_SIZE_MIN..=POINTER_SIZE_MAX)
+                            .step_by(0.5)
+                            .text("Pointer size"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut s.pointer_outline, 0.0..=POINTER_OUTLINE_MAX)
+                            .step_by(0.5)
+                            .text("Outline width (px)"),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.color_edit_button_srgb(&mut s.pointer_fill);
+                        ui.label("Fill colour");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.color_edit_button_srgb(&mut s.pointer_outline_colour);
+                        ui.label("Outline colour");
+                    });
+                });
+
+                #[cfg(feature = "tts")]
+                {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.heading("Screen Reader");
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("TTS");
+                        let label = if s.tts_enabled { "On" } else { "Off" };
+                        if ui.button(label).clicked() {
+                            s.tts_enabled = !s.tts_enabled;
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    ui.add_enabled(
+                        s.tts_enabled,
+                        egui::Checkbox::new(&mut s.tts_hover_enabled, "Hover echo"),
+                    );
+
+                    ui.add_space(4.0);
+
+                    ui.add_enabled(
+                        s.tts_enabled,
+                        egui::Slider::new(&mut s.tts_volume, 0..=100).text("Volume"),
+                    );
+                    ui.add_enabled(
+                        s.tts_enabled,
+                        egui::Slider::new(&mut s.tts_rate, -10..=10).text("Rate"),
+                    );
+                }
+
+                if s != before {
+                    apply_changes(&mut self.state.write(), &before, &s);
+                }
+            });
         });
     }
 }
@@ -198,6 +228,11 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         panel_size,
         panel_follows_monitor,
         color_filter,
+        pointer_shape,
+        pointer_size,
+        pointer_outline,
+        pointer_fill,
+        pointer_outline_colour,
         tts_enabled,
         tts_hover_enabled,
         tts_volume,
@@ -246,6 +281,32 @@ mod tests {
         let mut live = before.clone();
         apply_changes(&mut live, &before, &after);
         assert_eq!(live, after);
+    }
+
+    #[test]
+    fn the_pointer_settings_are_copied() {
+        let before = AppState::default();
+        let after = AppState {
+            pointer_shape: false,
+            pointer_size: 4.0,
+            pointer_outline: 5.5,
+            pointer_fill: [1, 2, 3],
+            pointer_outline_colour: [4, 5, 6],
+            ..before.clone()
+        };
+        let mut live = AppState { enabled: true, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, AppState { enabled: true, ..after });
+    }
+
+    #[test]
+    fn one_pointer_setting_leaves_the_others_live() {
+        let before = AppState::default();
+        let after = AppState { pointer_outline: 7.0, ..before.clone() };
+        let mut live = AppState { pointer_size: 3.0, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live.pointer_outline, 7.0);
+        assert_eq!(live.pointer_size, 3.0);
     }
 
     #[test]

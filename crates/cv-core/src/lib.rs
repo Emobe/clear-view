@@ -88,6 +88,13 @@ pub const ZOOM_COARSE_FROM: f32 = 4.0;
 pub const PANEL_SIZE_MIN: u32 = 10;
 pub const PANEL_SIZE_MAX: u32 = 90;
 
+/// Pointer size limits: output pixels per pixel of the cursor Windows draws (ADR 0010).
+pub const POINTER_SIZE_MIN: f32 = 1.0;
+pub const POINTER_SIZE_MAX: f32 = 6.0;
+/// Widest pointer outline in output pixels. The shader's `MAX_OUTLINE` is the same number
+/// (a test in cv-magnifier checks).
+pub const POINTER_OUTLINE_MAX: f32 = 8.0;
+
 /// Persisted to settings.json except `enabled`, which always starts false.
 /// `#[serde(default)]` lets a file written by an older version load: missing fields take defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +120,19 @@ pub struct AppState {
     /// the target's monitor, same edge, `panel_size` percent of that monitor.
     pub panel_follows_monitor: bool,
     pub color_filter: ColorFilter,
+    /// The magnified view's pointer (ADR 0010, roadmap 6.2c3). On: the real cursor shape. Off:
+    /// the circle for every look except a hidden pointer. The other `pointer_*` fields only
+    /// affect the shape.
+    pub pointer_shape: bool,
+    /// Output pixels per pixel of the cursor Windows draws
+    /// (`POINTER_SIZE_MIN`–`POINTER_SIZE_MAX`).
+    pub pointer_size: f32,
+    /// Outline width in output pixels (0–`POINTER_OUTLINE_MAX`).
+    pub pointer_outline: f32,
+    /// Fill colour, sRGB bytes (what the shader writes to the surface).
+    pub pointer_fill: [u8; 3],
+    /// Outline colour, sRGB bytes.
+    pub pointer_outline_colour: [u8; 3],
     /// Master TTS on/off switch.
     pub tts_enabled: bool,
     /// Speak the name of the element under the cursor.
@@ -135,6 +155,11 @@ impl Default for AppState {
             panel_size: 50,
             panel_follows_monitor: false,
             color_filter: ColorFilter::None,
+            pointer_shape: true,
+            pointer_size: 2.0,
+            pointer_outline: 2.0,
+            pointer_fill: [26, 102, 255],
+            pointer_outline_colour: [255, 255, 255],
             tts_enabled: false,
             tts_hover_enabled: true,
             tts_volume: 80,
@@ -151,10 +176,14 @@ impl AppState {
         if !self.zoom.is_finite() { self.zoom = d.zoom; }
         if !self.smooth_speed.is_finite() { self.smooth_speed = d.smooth_speed; }
         if !self.edge_threshold.is_finite() { self.edge_threshold = d.edge_threshold; }
+        if !self.pointer_size.is_finite() { self.pointer_size = d.pointer_size; }
+        if !self.pointer_outline.is_finite() { self.pointer_outline = d.pointer_outline; }
         self.zoom = self.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
         self.smooth_speed = self.smooth_speed.clamp(0.01, 1.0);
         self.edge_threshold = self.edge_threshold.clamp(0.0, 1.0);
         self.panel_size = self.panel_size.clamp(PANEL_SIZE_MIN, PANEL_SIZE_MAX);
+        self.pointer_size = self.pointer_size.clamp(POINTER_SIZE_MIN, POINTER_SIZE_MAX);
+        self.pointer_outline = self.pointer_outline.clamp(0.0, POINTER_OUTLINE_MAX);
         self.tts_volume = self.tts_volume.min(100);
         self.tts_rate = self.tts_rate.clamp(-10, 10);
     }
@@ -309,6 +338,11 @@ mod tests {
             panel_size: 30,
             panel_follows_monitor: true,
             color_filter: ColorFilter::GreyscaleInverted,
+            pointer_shape: false,
+            pointer_size: 3.5,
+            pointer_outline: 4.0,
+            pointer_fill: [200, 30, 10],
+            pointer_outline_colour: [0, 0, 0],
             tts_enabled: true,
             tts_hover_enabled: false,
             tts_volume: 55,
@@ -358,6 +392,48 @@ mod tests {
         let s: AppState = serde_json::from_str(r#"{"display_mode": {"Docked": "Top"}}"#).unwrap();
         assert!(!s.panel_follows_monitor);
         assert_eq!(s.display_mode, DisplayMode::Docked(Edge::Top));
+    }
+
+    #[test]
+    fn a_file_without_pointer_settings_loads_the_defaults() {
+        // Every settings file written before 6.2c3.
+        let s: AppState = serde_json::from_str(r#"{"zoom": 3.0}"#).unwrap();
+        let d = AppState::default();
+        assert!(s.pointer_shape);
+        assert_eq!(s.pointer_size, d.pointer_size);
+        assert_eq!(s.pointer_outline, d.pointer_outline);
+        assert_eq!(s.pointer_fill, d.pointer_fill);
+        assert_eq!(s.pointer_outline_colour, d.pointer_outline_colour);
+    }
+
+    #[test]
+    fn pointer_defaults_are_inside_their_ranges() {
+        let d = AppState::default();
+        assert!((POINTER_SIZE_MIN..=POINTER_SIZE_MAX).contains(&d.pointer_size));
+        assert!((0.0..=POINTER_OUTLINE_MAX).contains(&d.pointer_outline));
+        let mut s = d.clone();
+        s.sanitize();
+        assert_eq!(s, d);
+    }
+
+    #[test]
+    fn sanitize_clamps_the_pointer_settings() {
+        let mut s = AppState { pointer_size: 0.1, pointer_outline: -3.0, ..AppState::default() };
+        s.sanitize();
+        assert_eq!(s.pointer_size, POINTER_SIZE_MIN);
+        assert_eq!(s.pointer_outline, 0.0);
+
+        s.pointer_size = 50.0;
+        s.pointer_outline = 50.0;
+        s.sanitize();
+        assert_eq!(s.pointer_size, POINTER_SIZE_MAX);
+        assert_eq!(s.pointer_outline, POINTER_OUTLINE_MAX);
+
+        let d = AppState::default();
+        let mut s = AppState { pointer_size: f32::NAN, pointer_outline: f32::INFINITY, ..d.clone() };
+        s.sanitize();
+        assert_eq!(s.pointer_size, d.pointer_size);
+        assert_eq!(s.pointer_outline, d.pointer_outline);
     }
 
     #[test]

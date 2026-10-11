@@ -130,8 +130,8 @@ fn main() -> eframe::Result {
         "clear-view settings",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([320.0, 340.0])
-                .with_resizable(false)
+                .with_inner_size([340.0, 560.0])
+                .with_min_inner_size([300.0, 240.0])
                 .with_always_on_top(),
             ..Default::default()
         },

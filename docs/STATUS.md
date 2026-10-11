@@ -64,6 +64,7 @@ Current roadmap:
 - 5.5b Performance matrix (you; 2026-10-11, "I approve"). Approved as done for basic purposes, on the partial run below; the matrix was not filled in. A proper test is a later item, 5.5c.
 - 6.2c1 Read the pointer shape, no drawing change (ADR 0010, branch step/6.2c1-pointer-shape, PR #73). Approved 2026-10-11 ("Tests fine. I approve."). 6.2c2 and 6.2c3 follow.
 - 6.2c2 Draw the pointer shape (ADR 0010, branch step/6.2c2-draw-pointer, PR #74). Approved 2026-10-11 ("I verified it, works"). 6.2c3 follows.
+- 6.2c3 Settings for the magnified pointer (ADR 0010, branch step/6.2c3-pointer-settings, PR #75). Approved 2026-10-11 ("Verified. I approve."), with the panel made scrollable and taller after your report that the window was too small. 6.2c is complete.
 
 ## Works (a command proved it, or you verified it)
 
@@ -259,8 +260,12 @@ Current roadmap:
   - `Magnifier::tick` keeps the `PointerLook`. `Hidden` draws nothing, `Unknown` or an unusable shape (zero size, wrong mask length, a side over 512) keeps the circle, `Shape` draws the shape; out of view draws nothing.
   - cv-magnifier gfx.rs has a second R8 mask texture (binding 3), recreated only when the size changes and uploaded only for a new `Arc`. Uniforms are 96 bytes.
   - shader.wgsl places the mask with its hotspot on the pointer, `size` output pixels per mask pixel, after the colour filter, with an outline made by dilating the mask over a disc of up to 8 output pixels.
-  - Fixed defaults in magnifier.rs until 6.2c3: size 2x, fill blue (0.10, 0.40, 1.0), outline 2 px white.
+  - Fixed defaults in magnifier.rs until 6.2c3: size 2x, fill blue (0.10, 0.40, 1.0), outline 2 px white (6.2c3 made them settings).
   - Proven by tests: fake-renderer tests for upload only on a new shape, the three looks, the fixed defaults and docked; the naga validation and uniform-size tests; and the ignored `pointer_shader_draws_the_mask`, which renders the pointer offscreen on a GPU (passed on an RTX 3070).
+- Pointer settings (6.2c3, approved by you 2026-10-11: "Verified. I approve."; which of the Verify cases you ran were not itemised). The panel has a Pointer section that replaces the fixed 6.2c2 defaults:
+  - Saved `AppState` fields: `pointer_shape` (checkbox; on draws the real shape, off draws the circle, a hidden pointer still draws nothing), `pointer_size` (1–6, default 2), `pointer_outline` (0–8 px, default 2), `pointer_fill` (default blue 26,102,255) and `pointer_outline_colour` (default white), colours as sRGB bytes. They are clamped in `sanitize`, a settings file from before 6.2c3 loads with the defaults, and the panel writes them back through `apply_changes`. With the checkbox off the size, outline and colour controls are greyed out and no mask is uploaded.
+  - The settings panel is a vertical scroll area in a 340x560 window that can be resized (minimum 300x240); the fixed 320x340 window cut the new section off.
+  - Proven by tests: round trip, old file, clamping and non-finite values in cv-core; `apply_changes` and save/load/clamp on load in app; fake-renderer tests in cv-magnifier for the settings reaching the shader with no new mask upload, the circle with the checkbox off, and no re-upload when switching back; and a test that `POINTER_OUTLINE_MAX` equals the shader's `MAX_OUTLINE`.
 
 ## Broken
 

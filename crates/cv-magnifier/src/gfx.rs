@@ -513,6 +513,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_outline_limit_matches_the_shader() {
+        let line = SHADER
+            .lines()
+            .find(|l| l.starts_with("const MAX_OUTLINE"))
+            .expect("MAX_OUTLINE in shader.wgsl");
+        let value: f32 = line
+            .split('=')
+            .nth(1)
+            .and_then(|v| v.trim().trim_end_matches(';').parse().ok())
+            .expect("MAX_OUTLINE is an integer literal");
+        assert_eq!(value, cv_core::POINTER_OUTLINE_MAX);
+    }
+
     /// GPU cost of each interpolation mode at 3840x2160 (roadmap 1.9). Needs a GPU, so it is
     /// ignored by `cargo test`. Run with
     /// `cargo test --release -p cv-magnifier bench_modes_4k -- --ignored --nocapture`.

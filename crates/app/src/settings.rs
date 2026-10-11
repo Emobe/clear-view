@@ -190,6 +190,39 @@ mod tests {
     }
 
     #[test]
+    fn pointer_settings_are_kept_across_a_save_and_load() {
+        let dir = TempDir::new("pointer");
+        let state = AppState {
+            pointer_shape: false,
+            pointer_size: 4.5,
+            pointer_outline: 0.0,
+            pointer_fill: [200, 10, 30],
+            pointer_outline_colour: [0, 0, 0],
+            ..AppState::default()
+        };
+        save_to(&dir.file(), &state).unwrap();
+        assert_eq!(load_from(&dir.file()), state);
+    }
+
+    #[test]
+    fn a_file_from_before_the_pointer_settings_loads_with_their_defaults() {
+        let dir = TempDir::new("oldpointer");
+        std::fs::write(dir.file(), r#"{"zoom": 6.0}"#).unwrap();
+        let s = load_from(&dir.file());
+        assert_eq!(s, AppState { zoom: 6.0, ..AppState::default() });
+        assert!(s.pointer_shape);
+    }
+
+    #[test]
+    fn out_of_range_pointer_values_are_clamped_on_load() {
+        let dir = TempDir::new("pointerclamp");
+        std::fs::write(dir.file(), r#"{"pointer_size": 99, "pointer_outline": -4}"#).unwrap();
+        let s = load_from(&dir.file());
+        assert_eq!(s.pointer_size, cv_core::POINTER_SIZE_MAX);
+        assert_eq!(s.pointer_outline, 0.0);
+    }
+
+    #[test]
     fn enabled_is_not_saved_or_loaded() {
         let dir = TempDir::new("enabled");
         save_to(&dir.file(), &AppState { enabled: true, ..AppState::default() }).unwrap();
