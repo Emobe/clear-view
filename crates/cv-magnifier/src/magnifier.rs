@@ -12,9 +12,10 @@ use std::{
 };
 
 use cv_core::{
-    AppState, CoreEvent, DisplayMode, Edge, Frame, FrameState, OutputInfo, ScreenPoint,
-    ScreenRect, SharedState, Tracker,
+    AppState, CoreEvent, DisplayMode, Edge, Following, Frame, FrameState, OutputInfo,
+    ScreenPoint, ScreenRect, SharedState, Tracker,
     geometry::{self, panel_pct_to_px, window_dims},
+    tracking,
 };
 
 use crate::{
@@ -264,7 +265,33 @@ impl<R: Renderer> View<R> {
     fn track(&mut self, state: &AppState, now: Instant, events: Vec<CoreEvent>) -> (f32, f32) {
         let (win_w, win_h) = self.window_size(state);
         let view = (win_w as f32 / state.zoom, win_h as f32 / state.zoom);
-        self.tracker.update(now, self.pointer, events, view)
+        if !tracking::log_enabled() {
+            return self.tracker.update(now, self.pointer, events, view);
+        }
+        // The `CV_TRACK_LOG` diagnostic (roadmap 4.8a): every event drained and every decision.
+        let before = self.snap(self.target);
+        let lines: Vec<String> = events.iter().map(CoreEvent::describe).collect();
+        let target = self.tracker.update(now, self.pointer, events, view);
+        // The tracker reads the pointer before the events, so this is what they were judged by.
+        let pointer = if self.tracker.pointer_still(now) { "still" } else { "moving" };
+        for line in lines {
+            eprintln!(
+                "[track] event {line}; pointer {} {pointer}, was following {:?}",
+                self.pointer, before.following
+            );
+        }
+        for line in track_changes(before, self.snap(target), now, self.pointer, view) {
+            eprintln!("{line}");
+        }
+        target
+    }
+
+    fn snap(&self, target: (f32, f32)) -> TrackSnap {
+        TrackSnap {
+            following: self.tracker.following(),
+            pending: self.tracker.pending_since(),
+            target,
+        }
     }
 
     /// The window size the view is drawn into: the active monitor in fullscreen, or the docked
@@ -422,6 +449,55 @@ impl<R: Renderer> View<R> {
             self.renderer.resize(win_w, win_h);
         }
     }
+}
+
+/// The tracker before or after one update, for the `CV_TRACK_LOG` lines.
+#[derive(Debug, Clone, Copy)]
+struct TrackSnap {
+    following: Following,
+    /// When the held `FocusRect` arrived, if one is held.
+    pending: Option<Instant>,
+    target: (f32, f32),
+}
+
+/// The `[track]` lines for what one update decided: a focus rect held, replaced, applied or
+/// dropped, and a switch between pointer and caret or a new caret target.
+fn track_changes(
+    before: TrackSnap,
+    after: TrackSnap,
+    now: Instant,
+    pointer: ScreenPoint,
+    view: (f32, f32),
+) -> Vec<String> {
+    let ms = |since: Instant| now.saturating_duration_since(since).as_millis();
+    let mut lines = Vec::new();
+    let became_caret = before.following == Following::Pointer && after.following == Following::Caret;
+    match (before.pending, after.pending) {
+        (None, Some(_)) => lines.push("[track] focus rect held (pointer moving)".to_string()),
+        (Some(a), Some(b)) if a != b => lines.push("[track] held focus rect replaced".to_string()),
+        (Some(a), None) if became_caret => {
+            lines.push(format!("[track] held focus rect applied after {} ms", ms(a)));
+        }
+        (Some(a), None) => {
+            lines.push(format!("[track] held focus rect dropped after {} ms, pointer {pointer}", ms(a)));
+        }
+        _ => {}
+    }
+    let (x, y) = after.target;
+    match (before.following, after.following) {
+        (Following::Pointer, Following::Caret) => lines.push(format!(
+            "[track] pointer -> caret, target ({x:.0}, {y:.0}), view {:.0}x{:.0}, pointer {pointer}",
+            view.0, view.1
+        )),
+        (Following::Caret, Following::Pointer) => {
+            lines.push(format!("[track] caret -> pointer at {pointer}"));
+        }
+        (Following::Caret, Following::Caret) if before.target != after.target => {
+            lines.push(format!("[track] caret target ({x:.0}, {y:.0})"));
+        }
+        _ => {}
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -1580,5 +1656,49 @@ mod tests {
         rig.set(|s| s.enabled = true);
         let (layouts, _) = rig.step();
         assert_eq!(layouts, [Layout::Fullscreen { monitor: smaller }]);
+    }
+
+    fn snap(following: Following, pending: Option<Instant>, target: (f32, f32)) -> TrackSnap {
+        TrackSnap { following, pending, target }
+    }
+
+    #[test]
+    fn track_changes_names_a_held_focus_rect_and_its_outcome() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(270);
+        let pointer = ScreenPoint { x: 1100, y: 500 };
+        let view = (256.0, 144.0);
+        let on_pointer = snap(Following::Pointer, None, (1100.0, 500.0));
+        let held = snap(Following::Pointer, Some(t0), (1100.0, 500.0));
+
+        let lines = track_changes(on_pointer, held, now, pointer, view);
+        assert_eq!(lines, ["[track] focus rect held (pointer moving)"]);
+
+        let applied = snap(Following::Caret, None, (2076.8, 815.0));
+        let lines = track_changes(held, applied, now, pointer, view);
+        assert_eq!(
+            lines,
+            [
+                "[track] held focus rect applied after 270 ms",
+                "[track] pointer -> caret, target (2077, 815), view 256x144, pointer (1100, 500)",
+            ]
+        );
+
+        let lines = track_changes(held, on_pointer, now, pointer, view);
+        assert_eq!(lines, ["[track] held focus rect dropped after 270 ms, pointer (1100, 500)"]);
+    }
+
+    #[test]
+    fn track_changes_names_a_return_to_the_pointer_and_a_new_caret_target() {
+        let now = Instant::now();
+        let pointer = ScreenPoint { x: 1030, y: 500 };
+        let caret = snap(Following::Caret, None, (1500.0, 500.0));
+        let moved = snap(Following::Caret, None, (1580.0, 500.0));
+        let back = snap(Following::Pointer, None, (1030.0, 500.0));
+        let view = (256.0, 144.0);
+
+        assert_eq!(track_changes(caret, moved, now, pointer, view), ["[track] caret target (1580, 500)"]);
+        assert_eq!(track_changes(caret, back, now, pointer, view), ["[track] caret -> pointer at (1030, 500)"]);
+        assert!(track_changes(caret, caret, now, pointer, view).is_empty());
     }
 }
