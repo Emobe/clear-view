@@ -80,4 +80,4 @@ What the first two mean on their own: at 4K one captured frame takes about 6 ms 
 
 ## Thresholds
 
-Not set. They are decided with you after the matrix is filled in (5.5b), then recorded here and in PRODUCT.md's open questions.
+Not set. 5.5b was approved on 2026-10-11 as done for basic purposes without the matrix being filled in, so the table above is still empty. The matrix and the thresholds move to roadmap 5.5c; they are decided with you after the matrix is filled in, then recorded here and in PRODUCT.md's open questions.

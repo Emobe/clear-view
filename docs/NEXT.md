@@ -9,17 +9,17 @@ Also on the integration branch, approved: 5.1 (docs only, PR #44), 5.2 (PR #45),
 
 What 5.3 built (STATUS "Works" has the full list): no alignment fix was needed for mixed scaling; each `[system] output N` startup line now gives the display scale and physical desktop rect. Finding 19 (msaa caret rect in DPI-unaware or system-aware apps, undocumented) is open for a by-hand check with `caret_probe`.
 
-State: waiting on the owner (2026-10-11, after "4.8 done")
-Item: no agent item is ready. 6.2c waits on 6.2b, 5.6 waits on 5.5b, 4.9 is on hold with the tester items, and 6.3 to 6.6 are on hold. /next offers the owner items below. The "cannot test" skip is over, so /next does not skip hands-on (you) items (5.5b, 6.2b; 4.2a is skipped, see below). Stacking stays on until you say otherwise, and nothing is merged into master by the agent. 6.3 to 6.6 (UIAccess, signing, installer) are still on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. The open owner items:
+State: waiting on the owner (2026-10-11, after "4.8 done" and "5.5b done, performance on hold")
+Item: no agent item is ready. 6.2c waits on 6.2b, 4.9 is on hold with the tester items, 6.3 to 6.6 are on hold, and all performance work is on hold (5.5c and 5.6, see below). /next offers the owner items below. The "cannot test" skip is over, so /next does not skip hands-on (you) items (6.2b; 4.2a is skipped, see below). Stacking stays on until you say otherwise, and nothing is merged into master by the agent. 6.3 to 6.6 (UIAccess, signing, installer) are still on hold until you raise them: PRODUCT.md needs them before public release, not before tester builds, and nothing else depends on them. /next must not recommend them. The open owner items:
 - 5.4 and 5.5a: nothing owed. You reported (2026-10-11) that you switched the monitors and the rest of the 5.4 list, that a plain launch prints no `[perf]` line, and that the pointer inside a docked panel worked; the cases and outcomes were not itemised (STATUS says so).
 - 6.2b: run the pointer probe (below); 6.2c then builds the cursor.
-- 5.5b: run the performance matrix; 5.6 then fixes what it finds.
+- 5.5b is Done (2026-10-11, "I approve") for basic purposes, on the partial run in STATUS; the matrix was not filled in. Your decision, same day: ANY more performance work is held off for a while. That puts 5.5c (the proper test, ROADMAP) and 5.6 (the Finding 4 fix) on hold, and Finding 4 stays open (24% in the partial run against 100–170% from the 3.1 prototype). /next must not offer 5.5c, 5.6 or any other performance item until you raise it.
 - 4.8 is Done (2026-10-11, "4.8 done"; STATUS Done and Works). You tested Notepad, Explorer, Brave, Terminal and admin Notepad; the modes and per-app results were not itemised. LibreOffice did not work (no caret source, as 4.2 measured) and Word is not installed: both are postponed by your decision ("we do libreoffice way later and word later"). /next must not offer either until you raise it. A LibreOffice fix needs a source outside ADR 0008's chain, so an ADR first. 4.2a is skipped, not Done (2026-10-11, your decision): you have no Word, and Brave stands in for Chrome (same engine, measured in 4.2). Word is an open gap, to be measured later with `caret_probe` on a machine that has it (docs/prototypes/caret-sources.md). /next must not offer 4.2a again.
 Test run of the integration branch, 2026-10-11 (you, by hand; Windows, regular non-elevated terminal windows; approved the same day for what passed, now in STATUS Done and Works):
 - Pass: `[system] output` lines (scale and rect match your monitors) and the Windows build line; fullscreen: mouse follow, system cursor hidden, caret follow in Notepad, return to the pointer, drag-select does not fight the mouse; docked on all four edges, same; docked on a second monitor: the panel stays on the primary, and with `panel_follows_monitor` it moves when you cross; a monitor turned off and on: access lost, `[display] WM_DISPLAYCHANGE received`, outputs changed, recovered as before (5.4 by-hand items 1, 2 and 4); resolution change did not freeze the view; `CV_PERF=1` prints `[perf]` lines; `perf-sample.ps1` shows CPU and GPU columns with and without `-Move`; exit left the system cursor back (paths not itemised).
 - Fail: the Explorer address bar does not move the view (Finding 21, roadmap 4.8a; resolved by 4.8a, approved 2026-10-11).
 - Not tested or not itemised: the Finding 19 `caret_probe` check; the other 4.8 apps; whether Notepad really ran elevated (Finding 20).
-- Perf numbers (a video was playing, so not for thresholds): docked with `-Move`, process CPU mean 24% of one core, max 42.5%, Gpu3D 4.4%, GpuCopy and GpuOther 0. A run without `-Move` gave 64–88% for 7 s then 15–32%, probably your mouse and the video. This does not match Finding 4's 100–170% from the 3.1 prototype; 5.5b without the video, with `CV_PERF=1` beside it, settles it.
+- Perf numbers (a video was playing, so not for thresholds): docked with `-Move`, process CPU mean 24% of one core, max 42.5%, Gpu3D 4.4%, GpuCopy and GpuOther 0. A run without `-Move` gave 64–88% for 7 s then 15–32%, probably your mouse and the video. This does not match Finding 4's 100–170% from the 3.1 prototype; a run without the video, with `CV_PERF=1` beside it (now 5.5c, on hold), would settle it.
 Model: no agent item to run. /next may offer the owner items above in "Before that", and picks what each unlocks once you report it (Sonnet high for /step).
 
 6.1 and 6.2a are approved (2026-10-10, PRs #52 and #53). ADR 0010 (Accepted) draws the real cursor shape in the magnified view, replacing the circle:
@@ -34,7 +34,7 @@ Model: no agent item to run. /next may offer the owner items above in "Before th
 
 While you cannot test, 6.2b and 6.2c wait; the next agent item is 6.3 (ADR first).
 
-5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b (you) is open and /next skips it while you cannot test: run the matrix in docs/prototypes/performance.md and send the numbers; thresholds are set with you then. 5.6 fixes what 5.5b finds (Finding 4 already has the pointer-only capture cost from 3.1).
+5.5 was split on 2026-10-10: 5.5a (the tools, PR #50) is approved without hand testing. 5.5b is Done for basic purposes (2026-10-11) without the matrix. The proper test is 5.5c (you) and 5.6 fixes what it finds (Finding 4 already has the pointer-only capture cost from 3.1); both are on hold by your decision, along with any other performance work.
 
 5.4 is approved (2026-10-10) without hand testing; STATUS Works says so. Still owed, by hand, when you can test (ADR 0009 / PR #48):
 1. Plug or unplug a second monitor with no resolution change: does `[display] WM_DISPLAYCHANGE received` print? If not, tell the agent; another signal is an ADR change.
@@ -48,8 +48,8 @@ What 5.5a built (approved 2026-10-10 without hand testing; 5.5 was split into 5.
 - `scripts/perf-sample.ps1` samples CPU and GPU (GPU Engine counters) of the running app, with `-Move` to circle the pointer. Dry-run only on other processes.
 - Ignored benches `bench_readback_4k` (cv-platform-win, 6.0 ms per 4K frame) and `bench_upload_4k` (cv-magnifier, 1.5 ms call, 3.0 ms to the GPU copy), run once on a machine not confirmed idle.
 - docs/prototypes/performance.md has the method and the empty matrix.
-- Still owed, by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then 5.5b: fill in the matrix and tell me the numbers so we set thresholds.
-- 5.6 waits for the 5.5b numbers.
+- Still owed, by hand (at home): `$env:CV_PERF=1; .\target\release\clear-view.exe` prints `[perf]` lines and plain launch prints none; with the app running, `.\scripts\perf-sample.ps1 -Seconds 15` shows CPU and GPU columns; then the matrix (now 5.5c, on hold).
+- 5.6 waits for the 5.5c numbers and is on hold.
 
 4.6 and 4.7 are approved (2026-10-11); their notes stay below for 4.8 and 4.8a.
 
@@ -86,7 +86,7 @@ What comes next:
 - 4.5 (PR #41) added the tracking policy (cv-core `tracking`); not wired yet.
 - 1.8 (you) is still on hold until the tester is free. When they are, `/step 1.8` records their feedback in docs/FEEDBACK.md. Ask which app they compare ZoomText in, whether ClearType is on, which ZoomText hotkeys they rely on and which email app they use (4.2).
 - Contour sharpening and toggleable text enhancements (docs/later/text-smoothing.md) still have no roadmap item; adding a "1.10 (ADR first)" is your call.
-- Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6; moving it earlier is your call.
+- Side finding from 3.1: pointer-only capture frames are copied in full and cost about one CPU core while the mouse moves (STATUS Finding 4). Planned for 5.6 (on hold with all performance work); moving it earlier is your call.
 
 Still true:
 - Display scaling (1.6): the process is Per-Monitor v2, so all cursor, monitor, frame and window coordinates are physical pixels. Keep it that way; a `[dpi]` line on stderr means it isn't. Mixed scaling across monitors is 5.3.
