@@ -7,6 +7,10 @@
 //! green msaa, blue uia, each a little further out so overlapping outlines stay visible. 4.2 runs it across the app list and records
 //! which sources are right in docs/prototypes/caret-sources.md.
 //!
+//! Roadmap 4.8b: when uia finds a caret range with no rectangle (the Explorer address bar and
+//! search box), the uia line is followed by three tries on the text next to the caret (A, B and
+//! a control). The first of A and B that gives a rectangle is outlined in blue.
+//!
 //! Run: `cargo run -p cv-platform-win --example caret_probe` (add `> probe.txt` to keep the
 //! output). Ctrl+C stops it and the outlines go with the process; it changes nothing
 //! system-wide, so there is nothing to restore.
@@ -47,7 +51,8 @@ mod probe {
                 Accessibility::{
                     AccessibleObjectFromWindow, CUIAutomation8, IAccessible, IUIAutomation,
                     IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationTextPattern2,
-                    IUIAutomationTextRange, TextUnit_Character, UIA_TextPattern2Id,
+                    IUIAutomationTextRange, TextPatternRangeEndpoint_End,
+                    TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id,
                     UIA_TextPatternId,
                 },
                 HiDpi::{
@@ -300,9 +305,19 @@ mod probe {
                 }
                 Reading::found(rect, format!("{how}{notes}  {about}"))
             }
-            Ok(None) => Reading::missing(format!(
-                "none (no rectangle: off-screen or hidden)  {how}  {about}"
-            )),
+            Ok(None) => {
+                let tries = neighbour_tries(&element, &range);
+                match tries.rect {
+                    Some(rect) => Reading::found(
+                        rect,
+                        format!("{how} (neighbour text, see tries)  {about}{}", tries.log),
+                    ),
+                    None => Reading::missing(format!(
+                        "none (no rectangle: off-screen or hidden)  {how}  {about}{}",
+                        tries.log
+                    )),
+                }
+            }
             Err(e) => Reading::missing(format!(
                 "{} (GetBoundingRectangles)  {how}  {about}",
                 describe(&e)
@@ -354,6 +369,118 @@ mod probe {
         unsafe { wide.ExpandToEnclosingUnit(TextUnit_Character) }?;
         let rects = bounding_rects(&wide)?;
         Ok(rects.first().map(|first| (*first, rects.len(), true)))
+    }
+
+    /// What the neighbour-text tries gave (roadmap 4.8b): the rectangle to outline, if a try
+    /// found one, and log lines for the block.
+    struct Tries {
+        rect: Option<ScreenRect>,
+        log: String,
+    }
+
+    /// Roadmap 4.8b. The caret range and the character at the caret have no rectangle in the
+    /// Explorer XAML boxes (4.2). Tries text next to the caret instead, each reported on its
+    /// own line so one run shows which work:
+    /// - A: the character before the caret (start moved back one character); the caret is put
+    ///   on the right edge of its last rectangle.
+    /// - B: the text from the start of the document to the caret; same rule.
+    /// - control: the whole document range. If this has no rectangle either, the provider
+    ///   gives none for any range and A and B cannot work.
+    fn neighbour_tries(element: &IUIAutomationElement, caret: &IUIAutomationTextRange) -> Tries {
+        let mut log = String::new();
+        let pattern =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) };
+
+        let (line_a, rect_a) = try_char_before(caret);
+        log.push_str(&format!("\n          A char before caret:  {line_a}"));
+
+        let (line_b, rect_b) = match &pattern {
+            Ok(pattern) => try_start_to_caret(pattern, caret),
+            Err(e) => (format!("error {} (TextPattern)", describe(e)), None),
+        };
+        log.push_str(&format!("\n          B start to caret:     {line_b}"));
+
+        let control = match &pattern {
+            Ok(pattern) => document_rects(pattern),
+            Err(e) => format!("error {} (TextPattern)", describe(e)),
+        };
+        log.push_str(&format!("\n          control document:     {control}"));
+
+        Tries { rect: rect_a.or(rect_b), log }
+    }
+
+    /// The caret as a 1 px wide rectangle on the right edge of the last of `rects`.
+    fn caret_after(rects: &[ScreenRect]) -> Option<ScreenRect> {
+        let last = rects.iter().rev().find(|r| r.width > 0 || r.height > 0)?;
+        Some(ScreenRect {
+            left: last.left + last.width as i32,
+            top: last.top,
+            width: 1,
+            height: last.height,
+        })
+    }
+
+    fn try_char_before(caret: &IUIAutomationTextRange) -> (String, Option<ScreenRect>) {
+        let range = match unsafe { caret.Clone() } {
+            Ok(range) => range,
+            Err(e) => return (format!("error {} (Clone)", describe(&e)), None),
+        };
+        let moved = match unsafe {
+            range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1)
+        } {
+            Ok(moved) => moved,
+            Err(e) => return (format!("error {} (MoveEndpointByUnit)", describe(&e)), None),
+        };
+        if moved == 0 {
+            return ("nothing before the caret (moved 0)".into(), None);
+        }
+        report_rects(&range, moved)
+    }
+
+    fn try_start_to_caret(
+        pattern: &IUIAutomationTextPattern,
+        caret: &IUIAutomationTextRange,
+    ) -> (String, Option<ScreenRect>) {
+        let range = match unsafe { pattern.DocumentRange() } {
+            Ok(range) => range,
+            Err(e) => return (format!("error {} (DocumentRange)", describe(&e)), None),
+        };
+        if let Err(e) = unsafe {
+            range.MoveEndpointByRange(TextPatternRangeEndpoint_End, caret, TextPatternRangeEndpoint_Start)
+        } {
+            return (format!("error {} (MoveEndpointByRange)", describe(&e)), None);
+        }
+        report_rects(&range, 0)
+    }
+
+    fn report_rects(range: &IUIAutomationTextRange, moved: i32) -> (String, Option<ScreenRect>) {
+        match bounding_rects(range) {
+            Err(e) => (format!("error {} (GetBoundingRectangles)", describe(&e)), None),
+            Ok(rects) => match caret_after(&rects) {
+                Some(caret) => (
+                    format!(
+                        "{} rect(s), last {}, caret {}  (moved {moved})",
+                        rects.len(),
+                        fmt_rect(*rects.last().unwrap()),
+                        fmt_rect(caret)
+                    ),
+                    Some(caret),
+                ),
+                None => (format!("no rectangle  (moved {moved})"), None),
+            },
+        }
+    }
+
+    fn document_rects(pattern: &IUIAutomationTextPattern) -> String {
+        let range = match unsafe { pattern.DocumentRange() } {
+            Ok(range) => range,
+            Err(e) => return format!("error {} (DocumentRange)", describe(&e)),
+        };
+        match bounding_rects(&range) {
+            Err(e) => format!("error {} (GetBoundingRectangles)", describe(&e)),
+            Ok(rects) if rects.is_empty() => "no rectangle".into(),
+            Ok(rects) => format!("{} rect(s), first {}", rects.len(), fmt_rect(rects[0])),
+        }
     }
 
     /// `GetBoundingRectangles` gives doubles, four per line of text: left, top, width, height.

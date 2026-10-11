@@ -23,7 +23,8 @@ use windows::{
             Accessibility::{
                 AccessibleObjectFromWindow, IAccessible, IUIAutomation, IUIAutomationElement,
                 IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
-                TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId,
+                TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id,
+                UIA_TextPatternId,
             },
             HiDpi::{
                 GetWindowDpiAwarenessContext, LogicalToPhysicalPointForPerMonitorDPI,
@@ -241,14 +242,42 @@ fn caret_range(element: &IUIAutomationElement) -> Option<std::result::Result<IUI
 }
 
 /// The first bounding rectangle of `range`. A degenerate range has none (Microsoft docs), so
-/// the character at the caret is measured instead.
+/// the character at the caret is measured instead, and at the end of the text, where there is
+/// no such character, the character before it (roadmap 4.8b, measured in the Explorer XAML
+/// boxes: the caret range and the end-of-text character have no rectangle, the previous
+/// character does).
 fn range_rect(range: &IUIAutomationTextRange) -> Option<ScreenRect> {
     if let Some(first) = bounding_rects(range).ok()?.first() {
         return Some(*first);
     }
-    let wide = unsafe { range.Clone() }.ok()?;
-    unsafe { wide.ExpandToEnclosingUnit(TextUnit_Character) }.ok()?;
-    bounding_rects(&wide).ok()?.first().copied()
+    if let Ok(wide) = unsafe { range.Clone() }
+        && unsafe { wide.ExpandToEnclosingUnit(TextUnit_Character) }.is_ok()
+        && let Some(first) = bounding_rects(&wide).ok().and_then(|r| r.first().copied())
+    {
+        return Some(first);
+    }
+    let before = unsafe { range.Clone() }.ok()?;
+    // 0 units moved: the caret is at the start of the text and there is no character before it.
+    let moved = unsafe {
+        before.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -1)
+    }
+    .ok()?;
+    if moved == 0 {
+        return None;
+    }
+    caret_after(&bounding_rects(&before).ok()?)
+}
+
+/// The caret as a 1 px wide rectangle on the right edge of the last of `rects`, the text the
+/// caret follows. `None` when there is no rectangle.
+fn caret_after(rects: &[ScreenRect]) -> Option<ScreenRect> {
+    let last = rects.last()?;
+    Some(ScreenRect {
+        left: last.left.saturating_add(last.width.min(i32::MAX as u32) as i32),
+        top: last.top,
+        width: 1,
+        height: last.height,
+    })
 }
 
 /// `GetBoundingRectangles` gives doubles, four per line of text: left, top, width, height.
@@ -306,5 +335,38 @@ pub(super) fn exe_name(pid: u32) -> String {
             path.rsplit('\\').next().unwrap_or(&path).to_string()
         }
         Err(_) => "?".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(left: i32, top: i32, width: u32, height: u32) -> ScreenRect {
+        ScreenRect { left, top, width, height }
+    }
+
+    #[test]
+    fn caret_after_sits_on_the_right_edge_of_the_last_character() {
+        // Measured in the Explorer search box: the character before the caret was 3550,313 6x19
+        // and the caret 3556,313 1x19.
+        assert_eq!(caret_after(&[rect(3550, 313, 6, 19)]), Some(rect(3556, 313, 1, 19)));
+    }
+
+    #[test]
+    fn caret_after_uses_the_last_line() {
+        let lines = [rect(100, 50, 400, 20), rect(100, 70, 30, 20)];
+        assert_eq!(caret_after(&lines), Some(rect(130, 70, 1, 20)));
+    }
+
+    #[test]
+    fn caret_after_needs_a_rectangle() {
+        assert_eq!(caret_after(&[]), None);
+    }
+
+    #[test]
+    fn caret_after_does_not_overflow() {
+        let r = caret_after(&[rect(i32::MAX, 0, u32::MAX, 10)]).unwrap();
+        assert_eq!(r.left, i32::MAX);
     }
 }
