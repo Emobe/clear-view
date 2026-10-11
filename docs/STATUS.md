@@ -65,6 +65,8 @@ Current roadmap:
 - 6.2c1 Read the pointer shape, no drawing change (ADR 0010, branch step/6.2c1-pointer-shape, PR #73). Approved 2026-10-11 ("Tests fine. I approve."). 6.2c2 and 6.2c3 follow.
 - 6.2c2 Draw the pointer shape (ADR 0010, branch step/6.2c2-draw-pointer, PR #74). Approved 2026-10-11 ("I verified it, works"). 6.2c3 follows.
 - 6.2c3 Settings for the magnified pointer (ADR 0010, branch step/6.2c3-pointer-settings, PR #75). Approved 2026-10-11 ("Verified. I approve."), with the panel made scrollable and taller after your report that the window was too small. 6.2c is complete.
+- 7.1 Docked pan ADR (ADR 0011, Accepted by you 2026-10-12; branch step/7.1-docked-pan-adr, PR #77, docs only).
+- 7.2a PRODUCT.md docked pan wording and the pure pan geometry (ADR 0011, branch step/7.2a-pan-geometry, PR #78). Approved 2026-10-12 ("Tests all pass, docked still work, wording right. I approve."). 7.2b and 7.2c follow.
 
 ## Works (a command proved it, or you verified it)
 
@@ -266,6 +268,10 @@ Current roadmap:
   - Saved `AppState` fields: `pointer_shape` (checkbox; on draws the real shape, off draws the circle, a hidden pointer still draws nothing), `pointer_size` (1–6, default 2), `pointer_outline` (0–8 px, default 2), `pointer_fill` (default blue 26,102,255) and `pointer_outline_colour` (default white), colours as sRGB bytes. They are clamped in `sanitize`, a settings file from before 6.2c3 loads with the defaults, and the panel writes them back through `apply_changes`. With the checkbox off the size, outline and colour controls are greyed out and no mask is uploaded.
   - The settings panel is a vertical scroll area in a 340x560 window that can be resized (minimum 300x240); the fixed 320x340 window cut the new section off.
   - Proven by tests: round trip, old file, clamping and non-finite values in cv-core; `apply_changes` and save/load/clamp on load in app; fake-renderer tests in cv-magnifier for the settings reaching the shader with no new mask upload, the circle with the checkbox off, and no re-upload when switching back; and a test that `POINTER_OUTLINE_MAX` equals the shader's `MAX_OUTLINE`.
+- Docked pan wording and geometry (7.2a, approved by you 2026-10-12: you ran the tests, docked mode still works, the wording is right; edges and monitors tried were not itemised). No behaviour change; nothing calls the new functions yet.
+  - PRODUCT.md v1 Must 2 now says the unmagnified area pans to show the strip the panel covers, without moving real windows, with clicks landing where the pointer is drawn, and that the panel and the pan view are excluded from capture.
+  - cv-core `geometry::uncovered_rect` (monitor rect minus `docked_rect`, empty when the panel covers the monitor) and `geometry::pan_offset` ("pinned push", `clamp(T + m - p, 0, T)`, all four edges, 0 off the panel's monitor; thickness clamped to the monitor, margin clamped to 0..=uncovered dimension-1, NaN or negative is 0).
+  - Proven by 12 unit tests in geometry.rs (each edge, monitor origin, tiling with `docked_rect`, ramp, pinned pointer, monotonic, off-monitor, clamps); `cargo test --workspace` passes, clippy 0 warnings.
 
 ## Broken
 
