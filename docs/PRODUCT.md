@@ -37,7 +37,7 @@ Platform code stays behind a seam so Linux can be added later, but no Linux work
 ### Must
 
 1. **Fullscreen mode.**
-2. **Docked mode, overlay style.** The panel sits on one screen edge on top of the desktop. The desktop is not resized and windows do not shrink. The mouse can move under the panel, and the panel shows that area magnified. The panel is excluded from capture so it never magnifies itself. This replaces the current AppBar docking.
+2. **Docked mode, overlay style.** The panel sits on one screen edge on top of the desktop. The desktop is not resized and windows do not shrink. The mouse can move under the panel, and the panel shows that area magnified. As the pointer nears the panel, the unmagnified area pans smoothly to show the strip the panel covers, without moving real windows; clicks land where the pointer is drawn. The panel and the pan view are excluded from capture so they never magnify themselves. This replaces the current AppBar docking.
 3. **Zoom 1x to 20x**, smooth at 10x and above.
 4. **Hotkeys**: on/off, zoom in, zoom out. Ctrl+Alt+Shift+Z stays for on/off until the hotkey ADR decides the scheme.
 5. **Tracking**: follow the mouse by default; follow the text caret while typing; go back to the mouse when it moves. Must work in Chrome, Edge, File Explorer, Word, Notepad and the tester's email app.

@@ -1,7 +1,7 @@
 //! Pure view math: smoothing, crop and zoom, cursor mapping, panel sizing.
 //! No platform types; the render loop feeds in plain numbers.
 
-use crate::{DisplayMode, Edge, OutputInfo, ScreenRect};
+use crate::{DisplayMode, Edge, OutputInfo, ScreenPoint, ScreenRect};
 
 /// Frame-rate-independent lerp factor for one tick of `dt` seconds.
 /// `smooth_speed` is the per-tick factor at a logical 60 Hz.
@@ -55,6 +55,66 @@ pub fn docked_rect(monitor: &OutputInfo, edge: Edge, thickness: u32) -> ScreenRe
             ScreenRect { left: left + (w - t) as i32, top, width: t, height: h }
         }
     }
+}
+
+/// The part of `monitor` the docked panel does not cover: the monitor rect minus `docked_rect`,
+/// in virtual-screen pixels (ADR 0011). Empty (zero width or height) when the thickness covers
+/// the whole monitor.
+pub fn uncovered_rect(monitor: &OutputInfo, edge: Edge, thickness: u32) -> ScreenRect {
+    let (left, top, w, h) = (monitor.left, monitor.top, monitor.width, monitor.height);
+    match edge {
+        Edge::Top => {
+            let t = thickness.min(h);
+            ScreenRect { left, top: top + t as i32, width: w, height: h - t }
+        }
+        Edge::Bottom => ScreenRect { left, top, width: w, height: h - thickness.min(h) },
+        Edge::Left => {
+            let t = thickness.min(w);
+            ScreenRect { left: left + t as i32, top, width: w - t, height: h }
+        }
+        Edge::Right => ScreenRect { left, top, width: w - thickness.min(w), height: h },
+    }
+}
+
+/// How far the unmagnified area is panned, in pixels, for a pointer at `pointer` (ADR 0011,
+/// rule "pinned push"). A magnitude: the direction of the shift follows from `edge`.
+///
+/// With p the pointer's distance from the monitor edge the panel sits on (the edge row is 0),
+/// T the thickness and m the margin, the offset is `clamp(T + m - p, 0, T)`: 0 while the pointer
+/// is farther than T + m from that edge, then growing one pixel per pixel toward the panel, so
+/// the pointer drawn at p + offset stays at T + m, until the whole strip is shown at p = m.
+/// 0 when the pointer is not on `monitor`. The thickness is clamped to the monitor and the margin
+/// to `0 ..= uncovered dimension - 1`, so while any part of the monitor is uncovered the offset
+/// is 0 on the far row.
+pub fn pan_offset(
+    pointer: ScreenPoint,
+    monitor: &OutputInfo,
+    edge: Edge,
+    thickness: u32,
+    margin: f32,
+) -> f32 {
+    let on_monitor = ScreenRect {
+        left: monitor.left,
+        top: monitor.top,
+        width: monitor.width,
+        height: monitor.height,
+    };
+    if !on_monitor.contains(pointer) {
+        return 0.0;
+    }
+    let x = i64::from(pointer.x) - i64::from(monitor.left);
+    let y = i64::from(pointer.y) - i64::from(monitor.top);
+    let (w, h) = (i64::from(monitor.width), i64::from(monitor.height));
+    let (p, dim) = match edge {
+        Edge::Top => (y, h),
+        Edge::Bottom => (h - 1 - y, h),
+        Edge::Left => (x, w),
+        Edge::Right => (w - 1 - x, w),
+    };
+    let t = i64::from(thickness).min(dim);
+    // `max` first: it turns a NaN margin into 0.
+    let m = margin.max(0.0).min((dim - t - 1).max(0) as f32);
+    (t as f32 + m - p as f32).clamp(0.0, t as f32)
 }
 
 /// Overlay window size for a display mode on a `sw` x `sh` monitor.
@@ -377,6 +437,164 @@ mod tests {
                 "{edge:?}"
             );
         }
+    }
+
+    #[test]
+    fn uncovered_rect_on_each_edge_of_the_primary() {
+        let m = out(0, 0, 0, 1920, 1080);
+        assert_eq!(uncovered_rect(&m, Edge::Top, 270), rect(0, 270, 1920, 810));
+        assert_eq!(uncovered_rect(&m, Edge::Bottom, 270), rect(0, 0, 1920, 810));
+        assert_eq!(uncovered_rect(&m, Edge::Left, 480), rect(480, 0, 1440, 1080));
+        assert_eq!(uncovered_rect(&m, Edge::Right, 480), rect(0, 0, 1440, 1080));
+    }
+
+    #[test]
+    fn uncovered_rect_includes_the_monitor_origin() {
+        let m = out(1, -1280, -200, 1280, 1024);
+        assert_eq!(uncovered_rect(&m, Edge::Top, 100), rect(-1280, -100, 1280, 924));
+        assert_eq!(uncovered_rect(&m, Edge::Bottom, 100), rect(-1280, -200, 1280, 924));
+        assert_eq!(uncovered_rect(&m, Edge::Left, 100), rect(-1180, -200, 1180, 1024));
+        assert_eq!(uncovered_rect(&m, Edge::Right, 100), rect(-1280, -200, 1180, 1024));
+    }
+
+    #[test]
+    fn uncovered_rect_is_empty_when_the_panel_covers_the_monitor() {
+        let m = out(0, 0, 0, 1920, 1080);
+        for edge in [Edge::Top, Edge::Bottom] {
+            assert_eq!(uncovered_rect(&m, edge, 1080).height, 0, "{edge:?}");
+            assert_eq!(uncovered_rect(&m, edge, 5000).height, 0, "{edge:?}");
+        }
+        for edge in [Edge::Left, Edge::Right] {
+            assert_eq!(uncovered_rect(&m, edge, 1920).width, 0, "{edge:?}");
+            assert_eq!(uncovered_rect(&m, edge, 5000).width, 0, "{edge:?}");
+        }
+    }
+
+    #[test]
+    fn uncovered_rect_and_docked_rect_tile_the_monitor() {
+        let m = out(1, -1280, -200, 1280, 1024);
+        for edge in EDGES {
+            let (d, u) = (docked_rect(&m, edge, 300), uncovered_rect(&m, edge, 300));
+            let area = |r: ScreenRect| u64::from(r.width) * u64::from(r.height);
+            assert_eq!(area(d) + area(u), 1280 * 1024, "{edge:?}");
+            // Each point of the monitor lies in exactly one of the two.
+            for (x, y) in [(-1280, -200), (-1, 823), (-640, 312), (-1280, 823), (-1, -200)] {
+                let p = ScreenPoint { x, y };
+                assert_ne!(d.contains(p), u.contains(p), "{edge:?} at ({x}, {y})");
+            }
+        }
+    }
+
+    const EDGES: [Edge; 4] = [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right];
+
+    /// `pan_offset` on a 1920x1080 monitor at the origin, a 300 px panel and a 100 px margin,
+    /// for the pointer at distance `p` from the edge the panel sits on.
+    fn pan_at(edge: Edge, p: i32) -> f32 {
+        let m = out(0, 0, 0, 1920, 1080);
+        let (x, y) = match edge {
+            Edge::Top => (700, p),
+            Edge::Bottom => (700, 1079 - p),
+            Edge::Left => (p, 500),
+            Edge::Right => (1919 - p, 500),
+        };
+        pan_offset(ScreenPoint { x, y }, &m, edge, 300, 100.0)
+    }
+
+    #[test]
+    fn pan_offset_is_zero_beyond_the_margin() {
+        for edge in EDGES {
+            for p in [400, 401, 700, 1000] {
+                assert_eq!(pan_at(edge, p), 0.0, "{edge:?} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_ramps_one_pixel_per_pixel() {
+        for edge in EDGES {
+            for (p, want) in [(399, 1.0), (350, 50.0), (300, 100.0), (200, 200.0), (101, 299.0)] {
+                assert_eq!(pan_at(edge, p), want, "{edge:?} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_shows_the_whole_strip_in_the_last_margin() {
+        for edge in EDGES {
+            for p in [100, 50, 1, 0] {
+                assert_eq!(pan_at(edge, p), 300.0, "{edge:?} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_pins_the_drawn_pointer_while_it_ramps() {
+        // The pointer is drawn at p + offset; between m and T + m that stays at T + m.
+        for edge in EDGES {
+            for p in 100..=400 {
+                assert_eq!(p as f32 + pan_at(edge, p), 400.0, "{edge:?} p={p}");
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_never_drops_as_the_pointer_nears_the_panel() {
+        for edge in EDGES {
+            let mut last = 0.0;
+            for p in (0..=500).rev() {
+                let now = pan_at(edge, p);
+                assert!(now >= last, "{edge:?} p={p}: {now} < {last}");
+                last = now;
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_is_zero_off_the_panels_monitor() {
+        let m = out(0, 0, 0, 1920, 1080);
+        for (x, y) in [(-1, 10), (1920, 10), (10, -1), (10, 1080), (-500, 5), (2500, 5)] {
+            for edge in EDGES {
+                let p = ScreenPoint { x, y };
+                assert_eq!(pan_offset(p, &m, edge, 300, 100.0), 0.0, "{edge:?} ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn pan_offset_uses_the_monitor_origin() {
+        let m = out(1, -1280, -200, 1280, 1024);
+        let off = |x, y, edge| pan_offset(ScreenPoint { x, y }, &m, edge, 300, 100.0);
+        // T = 300, m = 100: a pointer 250 px from the panel's edge is panned 150.
+        assert_eq!(off(-600, 50, Edge::Top), 150.0);
+        assert_eq!(off(-1280 + 250, 0, Edge::Left), 150.0);
+        // The last row or column of the monitor is p = 0: the whole strip.
+        assert_eq!(off(-600, 823, Edge::Bottom), 300.0);
+        assert_eq!(off(-1, 0, Edge::Right), 300.0);
+        assert_eq!(off(-1 - 250, 0, Edge::Right), 150.0);
+        // Another monitor's point is off this panel's monitor.
+        assert_eq!(off(250, 250, Edge::Top), 0.0);
+    }
+
+    #[test]
+    fn pan_offset_clamps_thickness_and_margin() {
+        let m = out(0, 0, 0, 1920, 1080);
+        let at = |y, thickness, margin| {
+            pan_offset(ScreenPoint { x: 5, y }, &m, Edge::Top, thickness, margin)
+        };
+        // A panel as big as the monitor: the strip is the whole monitor (and no row is
+        // uncovered, so there is nothing to pan; the formula still gives a value).
+        assert_eq!(at(0, 5000, 100.0), 1080.0);
+        assert_eq!(at(1079, 5000, 100.0), 1.0);
+        // A margin past the uncovered dimension still reaches 0 on the far row.
+        assert_eq!(at(1079, 300, 5000.0), 0.0);
+        assert!(at(1078, 300, 5000.0) > 0.0);
+        // No margin: the offset starts only under the panel.
+        assert_eq!(at(300, 300, 0.0), 0.0);
+        assert_eq!(at(299, 300, 0.0), 1.0);
+        assert_eq!(at(0, 300, 0.0), 300.0);
+        // A negative or NaN margin is no margin.
+        assert_eq!(at(300, 300, -50.0), 0.0);
+        assert_eq!(at(300, 300, f32::NAN), 0.0);
     }
 
     #[test]
