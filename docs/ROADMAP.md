@@ -145,6 +145,85 @@ Wanted: the unmagnified area pans visually, smoothly and continuously as the poi
 7.2c The second surface on the same device, the eased whole-pixel offset, show and hide (only while docked and the panel's monitor is captured), the system cursor hidden while panning, and our pointer at 1x at the real pointer plus the offset, in `Magnifier::tick`, with fake-host and fake-renderer tests (ADR 0011, Accepted).
 7.3 (you) Verify by hand on all four edges: the covered strip is reachable by panning, the pan is smooth, clicks land where the pointer is drawn, and exit leaves nothing behind.
 
+## Speech track (v1.1)
+
+Speech is the next release after v1 (v1.1). It does not change the v1 gate. It is built in stages, each ending in a tester build, so the tester can use one stage while the next is built. Order: what's on the window and what has focus, then typing, then the pointer, then reading whole documents.
+
+### Rules for speech steps
+
+Once 8.2 is merged, these replace "No speech work" in "Rules for every step". All other rules stay.
+
+- Speech work happens only in steps that name it. With speech switched off, the magnifier behaves exactly as before. Every speech step's Verify list includes a run with speech off.
+- Password fields are never spoken: no characters, no words, no length. Use the field's password property, and treat "can't tell" as a password field.
+- No UI Automation or MSAA call runs on the render thread. A hung or slow app must not freeze the magnifier or stop speech from being silenced.
+- The text that gets spoken (built from a control's name, role, state and value) is pure logic in cv-core with unit tests, so wording can change without touching Windows code.
+- Defaults follow what the tester actually uses (8.3), not what ZoomText ships with.
+
+## Phase 8: Speech groundwork
+
+8.1 Audit what exists: docs/later/tts-plan.md, ADR 0003, the cv-tts crate and the tts_* settings fields. Record in docs/STATUS.md what is reusable, what conflicts with later decisions (UIA now lives on the core caret thread; ADR 0004's core event API), and what should be deleted. No code changes. Move tts-plan.md to docs/archive/ once its useful parts are recorded.
+8.2 Update docs/PRODUCT.md: move speech out of "Later" into a "Speech (v1.1)" section listing the stages in this track and what stays later ("Later, not planned here" at the end of this track). Update CLAUDE.md and the rules list as above.
+8.3 (you) Write down how the tester uses ZoomText's speech today, in docs/prototypes/zoomtext-speech-usage.md: which echo modes are on (typing, mouse, program), voice and rate, which hotkeys she uses (for example Ctrl to stop speech), and what annoys her.
+8.4 (ADR first) Voice engine: SAPI 5, OneCore voices through Windows.Media.SpeechSynthesis, or both; how voices are listed and chosen; rate, volume and pitch ranges; what happens with no voices or a voice that's been removed; audio output device. Check whether Windows natural (Narrator) voices can be used by third-party apps. As of October 2026 the NaturalVoiceSAPIAdapter project says Microsoft hasn't allowed this and that its adapter can stop working after updates: https://github.com/gexgd0419/NaturalVoiceSAPIAdapter. Decide whether cv-tts is kept, rewritten or replaced.
+8.5 (ADR first) Speech pipeline: queue, priorities and interruption (what cuts off what), which thread talks to the engine, how speech receives events from the core, and timeouts for hung apps. Supersedes ADR 0003 where they disagree.
+8.6 (ADR first) Speech hotkeys: revisit the scheme from 1.2 now that many more bindings are coming; whether to add a Caps Lock modifier like ZoomText's; how a single Ctrl press is detected to silence speech without breaking Ctrl shortcuts in other apps; default bindings for every command in this track.
+8.7 Engine per 8.4: speak a string, stop, list voices, set voice, rate and volume. The panel's speech controls come back when the `tts` feature is on: speech on/off, voice, rate, volume and a "Test voice" button. Verify: test voice speaks and can be stopped; with the feature off, nothing changes.
+8.8 Pipeline per 8.5 and hotkeys per 8.6: speech on/off and silence. Verify: a long sentence stops at once on silence; the magnifier stays smooth while speaking.
+8.9 Speech settings persist. Reconcile the old tts_* fields with the ADRs; an old settings file still loads.
+
+## Phase 9: Focus and program echo (speech stage 1)
+
+Goal: hear what has focus and which window you're in. Everything after this builds on it.
+
+9.1 Focus probe: extend the caret probe from 4.1, or add a dev binary, that logs on every focus change the control's name, role, value, state and window title from UIA and MSAA. Not shipped.
+9.2 (you) Run the probe in the 4.2 app list plus Settings, a Save As dialog, the Start menu, the taskbar and desktop icons. Record what each source gets right in docs/prototypes/focus-sources.md.
+9.3 (ADR first) Focus events in the core: sources and fallback order per app type, what an event carries, filtering duplicate and noisy events, and how it shares UIA with the caret thread.
+9.4 Core focus events per 9.3. No speech yet. Unit tests for the filtering logic.
+9.5 What gets spoken for a focused control, as pure logic in cv-core with unit tests: name, role, state and value, at two or three verbosity levels decided with you. Wire it to speech.
+9.6 Window and dialog changes: speak the title when the foreground window changes, and the dialog's text when a dialog opens.
+9.7 Menus, list and tree items, tabs, checkboxes and radio buttons: position ("3 of 7"), checked state, expanded state. Split into sub-items if large.
+9.8 Reading commands on hotkeys: read window title, repeat focused item, read the whole active window or dialog in order.
+9.9 Magnifier follows keyboard focus using the same events, with a setting to turn it off. Skip this and move it to "Later" if you'd rather keep this track to speech only.
+9.10 (you) Run the app list with program echo on. Failures become sub-items of 9.10.
+9.11 Tester build with speech stage 1, next minor tag. TESTER.md gets the speech hotkeys. (you) Feedback into docs/FEEDBACK.md.
+
+## Phase 10: Typing echo (speech stage 2)
+
+10.1 (ADR first) Typing echo: where typed input comes from (keyboard hook, UIA text events, or both); characters, words or both; shortcut keys; dead keys and the UK layout; Backspace and Delete; how the password rule is enforced.
+10.2 Character echo. Verify includes a browser login form and an app's password field: nothing about the password is spoken.
+10.3 Word echo. Word boundary logic in cv-core with unit tests.
+10.4 Decide with you what moving the caret speaks (arrows, Home, End, Ctrl+arrows: character, word or line). Implement it.
+10.5 (you) App list run. Tester build, next minor tag. Feedback into docs/FEEDBACK.md.
+
+## Phase 11: Mouse echo (speech stage 3)
+
+11.1 Pointer probe: log what UIA returns for the word, line and element under the pointer. Reuse the 9.1 probe.
+11.2 (you) Run it in the app list. Record results in docs/prototypes/pointer-text.md.
+11.3 (ADR first) Mouse echo: hover delay; word, line or element; not repeating the same text; fast pointer movement; what happens over our own docked panel and during docked pan; how it shares the queue with program echo.
+11.4 Mouse echo per 11.3: off, word and line modes, with a hotkey to cycle them.
+11.5 (you) App list run. Tester build. Feedback into docs/FEEDBACK.md.
+
+## Phase 12: Reading documents (speech stage 4, AppReader-style)
+
+12.1 (ADR first) Reading: where reading starts (caret, pointer, top of document); continuous reading and pausing; stepping by word, line, sentence and paragraph; which apps come first; how the magnifier follows and highlights the spoken word.
+12.2 Continuous reading from the caret in Notepad, stopped by the silence key.
+12.3 Step by word, line, sentence and paragraph.
+12.4 The magnifier follows the word being spoken, in fullscreen and docked.
+12.5 Highlight the spoken word in the magnified view, with colour and shape settings.
+12.6 Word, Edge, Chrome and the tester's email app. Failures become sub-items.
+12.7 (you) Tester build. Feedback into docs/FEEDBACK.md.
+
+## Phase 13: Speech release (v1.1)
+
+13.1 Speech on by default: remove the `tts` feature or flip its default, per 8.4 and 8.5. On first run, pick a working voice, and say so in the panel if there is none.
+13.2 Check speech in elevated windows with the UIAccess build from Phase 6. Record what doesn't work.
+13.3 (you) Clean Windows 11 install test with speech.
+13.4 (you) One week of normal use by the tester with Clearview's speech instead of ZoomText's. v1.1 is done when this passes.
+
+## Speech track: later, not planned here
+
+DocReader-style reformatted reading view, Background Reader, Recorder, OCR and camera, Braille, per-app scripting, Linux speech.
+
 ## Open decisions
 
 - Hotkey scheme and defaults (1.2).
@@ -152,3 +231,8 @@ Wanted: the unmagnified area pans visually, smoothly and continuously as the poi
 - Performance thresholds (5.5).
 - When to upgrade wgpu and eframe: decided in ADR 0004, after the refactor and before 3.1 (items 2.6 and 2.7).
 - How the unmagnified area pans in docked mode (7.1).
+- Speech: voice engine and natural voices (8.4).
+- Speech: how speech is silenced, and the speech hotkey scheme (8.5, 8.6).
+- Speech: verbosity levels (9.5).
+- Speech: whether magnifier focus tracking joins the track (9.9).
+- Speech: what caret movement speaks (10.4).
