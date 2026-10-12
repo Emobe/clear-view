@@ -1,9 +1,11 @@
 pub mod events;
 pub mod geometry;
+pub mod speech;
 pub mod tracking;
 pub mod voice;
 
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
+pub use speech::{Kind, Level, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for};
 pub use tracking::{Following, Tracker};
 pub use voice::{Engine, VoiceChoice, VoiceId, VoiceInfo};
 
@@ -211,6 +213,11 @@ pub enum Action {
     Toggle,
     ZoomIn,
     ZoomOut,
+    /// Stop speaking and clear the speech queue (ADR 0013). Changes no `AppState` field: the
+    /// caller sends it to the speech thread. No key is bound to it before roadmap 8.6.
+    Silence,
+    /// Speech on or off (`tts_enabled`). No key is bound to it before roadmap 8.6.
+    ToggleSpeech,
 }
 
 impl AppState {
@@ -219,6 +226,8 @@ impl AppState {
             Action::Toggle => self.enabled = !self.enabled,
             Action::ZoomIn => self.step_zoom(1),
             Action::ZoomOut => self.step_zoom(-1),
+            Action::Silence => {}
+            Action::ToggleSpeech => self.tts_enabled = !self.tts_enabled,
         }
     }
 }
@@ -628,6 +637,24 @@ mod tests {
             assert_ne!(s.zoom, before.zoom, "{a:?}");
             assert_eq!(s, AppState { zoom: s.zoom, ..before.clone() }, "{a:?}");
         }
+    }
+
+    #[test]
+    fn apply_toggle_speech_flips_only_tts_enabled() {
+        let before = non_default();
+        let mut s = before.clone();
+        s.apply(Action::ToggleSpeech);
+        assert_eq!(s, AppState { tts_enabled: !before.tts_enabled, ..before.clone() });
+        s.apply(Action::ToggleSpeech);
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn apply_silence_changes_nothing() {
+        let before = non_default();
+        let mut s = before.clone();
+        s.apply(Action::Silence);
+        assert_eq!(s, before);
     }
 
     #[test]
