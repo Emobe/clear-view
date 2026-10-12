@@ -3,6 +3,7 @@
 //! [`EventHub`]: each consumer has its own receiver and never blocks a source.
 
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
@@ -67,11 +68,19 @@ pub struct AppId {
     pub exe: String,
 }
 
+/// Called after an event is sent to a receiver made by [`EventHub::subscribe_with_wake`].
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+struct Subscriber {
+    tx: Sender<CoreEvent>,
+    wake: Option<Wake>,
+}
+
 /// Fan-out delivery of [`CoreEvent`]s. Each [`subscribe`](Self::subscribe) gets its own
 /// unbounded receiver, so publishing never blocks on a slow consumer.
 #[derive(Default)]
 pub struct EventHub {
-    senders: Mutex<Vec<Sender<CoreEvent>>>,
+    senders: Mutex<Vec<Subscriber>>,
 }
 
 impl EventHub {
@@ -82,13 +91,36 @@ impl EventHub {
     /// A new receiver that gets every event published from now on.
     pub fn subscribe(&self) -> Receiver<CoreEvent> {
         let (tx, rx) = channel();
-        self.senders.lock().push(tx);
+        self.senders.lock().push(Subscriber { tx, wake: None });
+        rx
+    }
+
+    /// Like [`subscribe`](Self::subscribe), and `wake` is called on the publishing thread after
+    /// each event has been sent to the receiver (ADR 0013). A subscriber that waits on something
+    /// other than the channel (the speech thread waits on Win32 handles) uses it to wake up.
+    /// `wake` must be cheap and must not block; the hub's lock is not held while it runs.
+    pub fn subscribe_with_wake(
+        &self,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Receiver<CoreEvent> {
+        let (tx, rx) = channel();
+        self.senders.lock().push(Subscriber { tx, wake: Some(Arc::new(wake)) });
         rx
     }
 
     /// Sends `event` to every live receiver and forgets receivers that were dropped.
     pub fn publish(&self, event: CoreEvent) {
-        self.senders.lock().retain(|tx| tx.send(event.clone()).is_ok());
+        let mut wakes = Vec::new();
+        self.senders.lock().retain(|sub| {
+            let alive = sub.tx.send(event.clone()).is_ok();
+            if alive && let Some(wake) = &sub.wake {
+                wakes.push(wake.clone());
+            }
+            alive
+        });
+        for wake in wakes {
+            wake();
+        }
     }
 
     /// How many receivers are still subscribed, as of the last publish.
@@ -176,6 +208,71 @@ mod tests {
             hub.publish(moved(i));
         }
         assert_eq!(hub.subscribers(), 1);
+    }
+
+    #[test]
+    fn a_wake_is_called_once_per_event_after_the_event_is_queued() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hub = EventHub::new();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let queued_at_wake = Arc::new(Mutex::new(Vec::new()));
+        let slot: Arc<Mutex<Option<Receiver<CoreEvent>>>> = Arc::new(Mutex::new(None));
+        let rx = {
+            let (woken, seen, slot) = (woken.clone(), queued_at_wake.clone(), slot.clone());
+            hub.subscribe_with_wake(move || {
+                woken.fetch_add(1, Ordering::SeqCst);
+                if let Some(rx) = slot.lock().as_ref() {
+                    seen.lock().push(rx.try_recv().is_ok());
+                }
+            })
+        };
+        *slot.lock() = Some(rx);
+        hub.publish(moved(1));
+        hub.publish(moved(2));
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        assert_eq!(*queued_at_wake.lock(), vec![true, true]);
+    }
+
+    #[test]
+    fn plain_subscribers_and_wake_subscribers_both_get_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hub = EventHub::new();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let plain = hub.subscribe();
+        let counter = woken.clone();
+        let waking = hub.subscribe_with_wake(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let e = moved(3);
+        hub.publish(e.clone());
+        assert_eq!(plain.try_recv().unwrap(), e);
+        assert_eq!(waking.try_recv().unwrap(), e);
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_dropped_wake_receiver_is_forgotten_and_not_woken() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hub = EventHub::new();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        drop(hub.subscribe_with_wake(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        hub.publish(moved(1));
+        assert_eq!(hub.subscribers(), 0);
+        assert_eq!(woken.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_wake_may_subscribe_without_deadlocking_the_hub() {
+        let hub = Arc::new(EventHub::new());
+        let inner = hub.clone();
+        let _rx = hub.subscribe_with_wake(move || {
+            drop(inner.subscribe());
+        });
+        hub.publish(moved(1));
+        assert!(hub.subscribers() >= 1);
     }
 
     #[test]
