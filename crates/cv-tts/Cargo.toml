@@ -5,12 +5,11 @@ edition = "2024"
 
 [dependencies]
 cv-core = { path = "../cv-core" }
-windows-core = "0.62"
 
 [dependencies.windows]
 workspace = true
 features = [
-    "Win32_System_Com",
+    "Win32_Globalization",
     "Win32_Media_Speech",
-    "Win32_UI_Accessibility",
+    "Win32_System_Com",
 ]
