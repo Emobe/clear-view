@@ -12,7 +12,7 @@ It uses DXGI Desktop Duplication for capture, wgpu for rendering and egui for th
 
 ## Speech is out of scope until after v1
 
-Speech is off and is not worked on before Windows v1 ships. cv-tts is behind the `tts` cargo feature, off by default: a plain `cargo build` or `cargo run` does not start the TTS thread and hides the TTS controls. Do not touch cv-tts unless a step names it. The reader plan is parked in docs/later/tts-plan.md.
+Speech is off and is not worked on before Windows v1 ships. cv-tts is behind the `tts` cargo feature, off by default: a plain `cargo build` or `cargo run` does not start the TTS thread and hides the TTS controls. Do not touch cv-tts unless a step names it. The old reader plan is archived in docs/archive/tts-plan.md; the speech track is ROADMAP Phases 8 to 13, and what was kept from the old plan is in docs/STATUS.md "Speech audit (8.1)".
 
 ## Working rules
 
@@ -32,7 +32,7 @@ Speech is off and is not worked on before Windows v1 ships. cv-tts is behind the
 - docs/STATUS.md: what works, what is missing, findings
 - docs/ROADMAP.md: phases and order of work
 - docs/adr/: decisions and why
-- docs/later/tts-plan.md: reader stages, architecture and dead ends (parked until after v1)
+- docs/archive/tts-plan.md: the old reader plan (archived by 8.1); the speech track is ROADMAP Phases 8 to 13
 - docs/NEXT.md: the baton between sessions
 - Roadmap items are numbered (1.1, 3.1). Commands take the number: `/step 1.1`, `/adr 3.1`.
 - Commands in .claude/commands: `/next` (says what to run and with which model), `/audit`, `/step <item>`, `/adr <decision>`
@@ -94,7 +94,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **Render thread**: owned by cv-platform-win. Creates the overlay window; its message loop runs `Magnifier::tick` on each 16 ms timer, passing `WinHost` (the `OverlayHost`: window placement and cursor hiding). The loop runs the tick itself on `WM_TIMER`; `wnd_proc` borrows no state, and the magnifier must never be called from inside its own `apply_layout`. Each tick drains the render thread's `EventHub` receiver (enabled or not). In both modes the `Tracker` picks the target (pointer or caret), measuring the view as the window (monitor or panel) divided by the zoom, and the active monitor follows the target. Docked (roadmap 5.2): the panel stays on the primary monitor (the output at (0, 0)) while capture follows the target, unless `panel_follows_monitor` is on, which moves the panel to the target's monitor; the view is sized from the panel's own monitor. `WM_DPICHANGED` is ignored, so the window keeps the physical rect it was given. Docked system-cursor hiding stays on the real pointer. `WM_DISPLAYCHANGE` only sets a flag; the loop re-reads the monitors between ticks (and once more about 1 s later) and calls `Magnifier::outputs_changed` when the list differs (ADR 0009, roadmap 5.4). The tick reads `PointerSource::look` and the shader draws the real pointer shape (recoloured, outlined, ADR 0010, roadmap 6.2c2) at the real pointer, the circle when the shape is unknown, nothing when the pointer is hidden or out of view.
 - **Hotkey thread**: spawned by cv-platform-win. `RegisterHotKey` (Ctrl+Alt+Shift+Z toggle, +Up and +Down zoom; no Win-key combos, the shell owns them) reports each press as an `Action`; app applies it with `AppState::apply` and wakes the panel.
 - **Caret thread**: spawned by cv-platform-win (`spawn_caret_source`, ADR 0008). MTA COM, no window, no UIA event handlers, UIA timeouts lowered to 500 ms. Wakes on out-of-context WinEvents (foreground, focus, caret show, hide and move) and reads msaa → uia → gui → focus rectangle; polls at 20 Hz only after uia or the focus rectangle answered, until focus or foreground changes. Publishes `CaretMoved` and `CaretLost` to the `EventHub` only on change and logs `[caret]` lines. app shuts it down after the overlay; it changes nothing system-wide.
-- **TTS thread**: only with the `tts` feature. Owns all COM, UIA and SAPI state (MTA). See docs/later/tts-plan.md and ADR 0003.
+- **TTS thread**: only with the `tts` feature. Owns all COM, UIA and SAPI state (MTA). See docs/STATUS.md "Speech audit (8.1)" and ADR 0003.
 
 ## Key design decisions
 
@@ -115,7 +115,7 @@ Threads sharing `Arc<RwLock<AppState>>`:
 - **D3D11 shared device context**: the immediate context is single-threaded and frames never rendered. Use CPU readback (ADR 0001).
 - **Mixing screen-space and frame-space coordinates**: convert first, then do layout math.
 - **GDI StretchBlt for rendering**: replaced by wgpu for shader support (ADR 0002).
-- Reader dead ends are listed in docs/later/tts-plan.md.
+- Reader dead ends are listed in docs/STATUS.md under "Speech audit (8.1)".
 
 ## DXGI error handling
 

@@ -69,6 +69,7 @@ Current roadmap:
 - 7.2a PRODUCT.md docked pan wording and the pure pan geometry (ADR 0011, branch step/7.2a-pan-geometry, PR #78). Approved 2026-10-12 ("Tests all pass, docked still work, wording right. I approve."). 7.2b and 7.2c follow.
 - 7.2b The pan window in cv-platform-win and `OverlayHost::set_pan_visible` and `pan_handles`, never shown (ADR 0011, branch step/7.2b-pan-window, PR #79). Approved 2026-10-12 ("Tested, approve."). 7.2c follows.
 - 7.2c The pan surface, eased whole-pixel offset, show and hide, cursor rule and 1x pointer in `Magnifier::tick` (ADR 0011, branch step/7.2c-pan-surface, PR #80). Approved 2026-10-12 ("I approve, merge"; merged on your instruction). It looks a little jittery (Finding 23, on hold). 7.3 follows.
+- 8.1 Speech audit (docs only, branch step/8.1-speech-audit, PR #82). Approved 2026-10-12 ("I approve"; merged on your instruction). 8.2 follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -283,6 +284,7 @@ Current roadmap:
   - magnifier.rs eases the offset toward `geometry::pan_offset` for the real pointer (`PAN_EASE` 0.4 per 60 Hz tick, `PAN_MARGIN` 0.1 of the uncovered dimension), rounds it to whole pixels, draws the pan surface and then calls `set_pan_visible(true)` while the offset is at least 1. It hides at once when the layout is not docked, the panel's monitor is not the captured one, no frame is uploaded or there is no pan surface. The pan draws the frame at 1x shifted away from the panel, no colour filter, bilinear, and the pointer shape at size 1 in your colours and outline width at the real pointer plus the offset. The system cursor is hidden inside the panel or while the pan shows. Every layout change clears the shown flag and the offset.
   - Proven by 19 new fake-host and fake-renderer tests and the gate (`cargo build`, `cargo clippy --workspace --all-targets` 0 warnings, `cargo test --workspace`). PR #80.
   - Still open for 7.3: the margin, the ease rate, the outline width at 1x, taskbar behaviour with two topmost windows (Finding 13), and the cost of the second present (performance work is on hold).
+- Speech audit (8.1, approved by you 2026-10-12, PR #82, docs only). You read it and approved; nothing was run, and the Verify items were not itemised. The "Speech audit (8.1)" section below records what exists for speech, what is reusable, ten conflicts with later decisions (each assigned to 8.4, 8.5, 9.3 and the other ADR items), removal candidates, open questions and the old plan's dead ends. No decision was made and no code changed. docs/later/tts-plan.md is now docs/archive/tts-plan.md, and the four tts-plan paths in CLAUDE.md point at the archive and the audit. The speech roadmap branch was merged into master as PR #81 on your instruction.
 
 ## Broken
 
@@ -297,26 +299,97 @@ Magnifier (read from code, file paths given)
 - Frame upload skipped when the `Arc<Frame>` is unchanged: crates/cv-magnifier/src/magnifier.rs (unit-tested with a fake renderer in 2.5, not measured on a GPU). The four colour filters and the four interpolation modes are seen working.
 - System cursor hidden in fullscreen via `MagShowSystemCursor` (cv-platform-win/src/overlay.rs)
 
-Reader stages (docs/later/tts-plan.md vs crates/cv-tts/src/lib.rs). No Verify list has been run.
-
-| Stage | Code | Verify list | Result |
-|---|---|---|---|
-| 1 SAPI smoke test | Present: MTA init first (lib.rs:92), `ISpVoice`, unconditional "clear-view ready" (lib.rs:122), `Arc<AtomicBool>` shutdown joined in main.rs:94-95 | Hear the phrase; open and close without hang | Not run |
-| 2 UIA bootstrap + logging | Present: `CUIAutomation8`, `GetPhysicalCursorPos`, `UIA_E_ELEMENTNOTAVAILABLE` handled (lib.rs:227-236), name dedupe | Sensible names in stdout on taskbar, Start, Notepad, browser | Not run. Logging now only happens when `tts_enabled` is true (lib.rs:195). |
-| 3 Hover into SAPI | Present: `Speak` with `SPF_ASYNC \| SPF_PURGEBEFORESPEAK`, volume and rate applied only on change (lib.rs:199-209), egui toggle, hover checkbox, sliders | Hear names, toggle off is silent, sliders change voice, no speech while typing in Notepad | Not run. Turning TTS off does not purge speech already queued. |
-| 4 Focus change detection | Present: `AddFocusChangedEventHandler` on the TTS thread, `TextFocusGained` or `TextFocusLost` over mpsc, `TtsMode::{Idle, TextFocus}` logged to stdout, own-process events dropped, handler removed on shutdown | No Verify list in the plan; Tasks 1-4 and Notes are all in code | Not run |
+Reader stages: only stages 1 to 4 of the old plan have code, and no Verify list has been run. The per-stage table moved into "Speech audit (8.1)" below (8.1, 2026-10-12).
 
 ## Missing
 
 - Tests: none in cv-tts, and in cv-platform-win only for the caret tracker's pure logic. cv-core (geometry, state, event hub), app (settings, panel merge) and cv-magnifier (shader checks, capture loop, tick) have them.
 - UIAccess manifest, build script or signing: no build.rs, no manifest, no match for "manifest" or "uiaccess" in the tree.
-- Reader Stage 5 (selection), 6 (caret), 7 (typing echo), 8 (AppReader), 9 (IA2): no code.
-- AppState fields from docs/later/tts-plan.md that do not exist: `tts_selection_enabled`, `tts_caret_enabled`, `tts_typing_enabled`, `tts_appreader_enabled`, `tts_granularity`, `tts_char_mode`, `tts_verbosity`. Only `tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate` exist.
-- docs/later/tts-plan.md architecture stubs: no `AccessibilityBackend`, `AppContext`, `describe_element`, `TtsVerbosity`, `TtsGranularity` or `HotkeyBinding` anywhere in crates/. Hover speaks the element name directly (lib.rs:253-262).
+- Speech: stages 5 to 9 of the old reader plan have no code, and the plan's extra `AppState` fields and architecture stubs (`AccessibilityBackend`, `AppContext`, `describe_element`, `HotkeyBinding`) do not exist. See "Speech audit (8.1)" below.
+
+## Speech audit (8.1)
+
+Read-only audit, 2026-10-12, roadmap 8.1 (branch step/8.1-speech-audit). No code changed and nothing here is a decision: the decisions are the ADR-first items 8.4 (engine), 8.5 (pipeline), 8.6 (hotkeys), 9.3 (focus events), 10.1, 11.3 and 12.1. Read: the old reader plan (now docs/archive/tts-plan.md), ADRs 0003, 0004 and 0008, crates/cv-tts/src/lib.rs (275 lines, no tests) and the `tts_*` fields. Approved by you 2026-10-12 (see Done and Works).
+
+### What exists
+
+| Piece | Where | State |
+|---|---|---|
+| Stage 1 SAPI smoke test | cv-tts lib.rs:92 (MTA first), 98-107 (`SpVoice`), 122 (startup phrase) | Present, never run by you |
+| Stage 2 UIA bootstrap | lib.rs:128-138 (`CUIAutomation8`), 223 (`GetPhysicalCursorPos`), 227-236 (`ElementFromPoint`, `UIA_E_ELEMENTNOTAVAILABLE` handled) | Present, never run |
+| Stage 3 hover into SAPI | lib.rs:195-262 (`Speak` with `SPF_ASYNC \| SPF_PURGEBEFORESPEAK`; volume and rate applied only on change, 199-209) | Present, never run. Turning TTS off does not purge speech already queued |
+| Stage 4 focus change | lib.rs:44-82 (`FocusHandler`, own-process events dropped at 62-66), 142-156 (add), 266 (remove); private `Msg` and `TtsMode` | Present, never run |
+| Stages 5 to 9 (selection, caret, typing echo, AppReader, IA2) | none | No code |
+| Wiring | app Cargo.toml:26 (`tts = ["dep:cv-tts"]`); main.rs:117-121 spawn, 145-149 shutdown; app.rs:171 gates the panel controls | Off by default |
+| Settings | cv-core lib.rs:136-143 (`tts_enabled`, `tts_hover_enabled`, `tts_volume`, `tts_rate`), defaults 163-166 (false, true, 80, 0), clamped 187-188; `apply_changes` lists them (app.rs:236-239, not gated, so they round-trip with the feature off) | Saved and tested in cv-core; the plan's other fields (selection, caret, typing, appreader flags, granularity, char mode, verbosity) do not exist |
+
+### Facts checked (Microsoft docs, archived SAPI 5.4 pages)
+
+- `ISpVoice::Speak` ([docs](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee125024(v=vs.85))): `pwcs` may be NULL with `SPF_PURGEBEFORESPEAK`, which discards pending data (a candidate silence call for 8.8). Each queued async call gets an incrementing stream number. Can return `SPERR_DEVICE_BUSY`.
+- `SPEAKFLAGS` ([docs](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee431843(v=vs.85))): `SPF_ASYNC` returns once the request is queued; the default is synchronous; `SPF_PURGEBEFORESPEAK` purges all pending requests first.
+- `SetRate` ([docs](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee125019(v=vs.85))): -10 to 10, granularity engine dependent, voices differ in default rate. `SetVolume` ([docs](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ee125022(v=vs.85))): 0 to 100, in real time. Both match the clamps in `sanitize`.
+- UIA threading and timeouts: already cited in ADR 0008 (MTA, no window, one thread adds or removes handlers; connection timeout 2 s and transaction timeout 20 s by default).
+- Not checked, left to 8.4: OneCore and natural voices, and the ranges of any other engine. These pages are archived; no current SAPI page was found for these calls.
+
+### Reusable
+
+| Item | Feeds |
+|---|---|
+| `ISpVoice` call shapes: create `SpVoice`, `Speak` with the async and purge flags, `SetVolume`/`SetRate` only when changed | 8.7 |
+| MTA `CoInitializeEx` first, then COM objects; `CUIAutomation8`, not the unnumbered class | 8.5, 9.3 |
+| `GetPhysicalCursorPos` for anything that asks UIA about the pointer | 11.1 |
+| Drop events from our own process (the settings panel) | 9.4 |
+| `tts_volume` (0 to 100) and `tts_rate` (-10 to 10) settings with tests | 8.9, if 8.4 keeps SAPI |
+| The dead ends and the stage 5 to 9 mechanics, kept below because the plan is archived | 9 to 12 |
+
+### Conflicts with later decisions
+
+| # | Conflict | Evidence | Decided by |
+|---|---|---|---|
+| 1 | ADR 0003 says only the TTS thread owns UIA. ADR 0008 (Accepted) already supersedes the handler rule: the caret thread holds `CUIAutomation8` with 500 ms timeouts and no handlers. cv-tts has its own instance with the 2 s and 20 s defaults and a focus handler. | ADR 0008; lib.rs:128-156 | 9.3 (how focus events share UIA) |
+| 2 | One loop does UIA and SAPI. A hung app blocks `ElementFromPoint` for up to the transaction timeout, so a stop request waits behind it. The speech rules say a hung app must not stop speech from being silenced. | lib.rs:163-264 | 8.5 |
+| 3 | Focus events travel on a private `mpsc` and `Msg`, not `CoreEvent` and `EventHub` (ADR 0004's fan-out rules). | lib.rs:28-32, 142 | 9.3, 9.4 |
+| 4 | The spoken text is `CurrentName()` spoken as is. The rules want the wording as pure logic in cv-core with unit tests. | lib.rs:238-262 | 9.5 |
+| 5 | The startup phrase is spoken even with `tts_enabled` false. The rules say speech off behaves exactly as before. | lib.rs:119-125 | 8.7 |
+| 6 | No password handling anywhere (stage 7 typing echo in the plan has none either). | whole crate | 10.1 |
+| 7 | `tts_rate` is the SAPI scale. A OneCore voice has another scale, so the setting's meaning could change. | cv-core lib.rs:141-143 | 8.4, 8.9 |
+| 8 | The plan's priority order (typing over selection over caret over hover) and "new speech always interrupts" are replaced by the queue and interruption rules. The plan's per-mode booleans are replaced by echo modes (11.4: off, word, line is an enum, not a bool). | tts-plan, Architecture | 8.5, 9 to 11 |
+| 9 | Hover is silenced while a text element has focus (Finding 1), so mouse echo cannot work in a text app. | lib.rs:216 | 11.3 |
+| 10 | ADR 0003's Consequences and ADR 0004 point to `AccessibilityBackend` and `SpeechEngine` interfaces in the plan. Neither was built. | ADR 0003, ADR 0004 line 10 | 8.4, 8.5 |
+
+### Candidates for removal
+
+Nothing is removed in 8.1. These are named so the ADR items can say what they replace: `FocusHandler` and `TtsMode`; the unconditional startup phrase; the hover loop that shares a thread with SAPI; the plan's per-mode booleans. Keep, rewrite or replace for cv-tts as a whole is 8.4's decision. Evidence for it: the crate is a 275-line prototype with no tests, and its reusable parts are the call shapes in the table above.
+
+### Open questions handed on
+
+- 8.4: engine (SAPI, OneCore or both); whether cv-tts is kept; whether `tts_rate` keeps its meaning.
+- 8.5: which thread talks to the engine; how a stop reaches the engine while a UIA call hangs; timeouts.
+- 9.3: whether focus events use the caret thread's UIA instance or a second one (ADR 0008 warns against two threads adding handlers).
+- Yours, not the agent's: ADR 0003's Status line (partly superseded by 0008, probably more by 8.5), as you did for 0007.
+
+### Dead ends carried over from the old reader plan
+
+- `GetCursorPos` for UIA: logical coordinates, wrong element at non-100% scaling. Use `GetPhysicalCursorPos`.
+- STA threading: MTA only (marshalling failures).
+- `AddEventHandler` from more than one thread: one thread, always.
+- Synchronous `ISpVoice::Speak`: blocks. Use `SPF_ASYNC`.
+- `CLSID_CUIAutomation` without the 8: wrong TextPattern on Notepad and others.
+- UIA from the render or egui thread, and COM pointers across threads: send plain data over a channel.
+- `TextPattern2::GetCaretRange` without a fallback: not available everywhere; fall back to `TextPattern::GetSelection()[0]`.
+- LibreOffice document body through UIA: there is no TextPattern; it needs IAccessible2.
+- `GetText(-1)` on a large document: cap at about 500 characters for speech and 200 for diffs.
+
+### Mechanics kept from stages 5 to 9 (for Phases 10 and 12)
+
+- Typing echo: `TextChangedEvent` does not say what changed, so diff against a cached snapshot of the end of the text. Backspace shows as a shorter snapshot. A paste of more than about 3 words is "pasted", not read out. Typing over a selection leaves the selection to speak.
+- Caret moves: a zero-width selection is a caret move; expand it to a word or a character and trim trailing whitespace (word expansion includes it). `ExpandToEnclosingUnit` changes the range in place.
+- Continuous reading: advance when the voice reports done (`GetStatus`, `SPRS_DONE`), never on a timer, or fast and slow rates skip or repeat words. Stop at `Move` returning 0. First press pauses, second resumes, third stops.
+- IA2 for LibreOffice and Firefox: detect by window class (`SALFRAME`, `MozillaWindowClass`); `IAccessible2` and `IAccessibleText` are not in the `windows` crate, so they would be hand-written; `IAccessible2Proxy.dll` must be registered, and its absence must fall back to UIA without failing.
 
 ## Findings
 
-1. **Text focus silences hover again.** `TtsMode::TextFocus` is set when the focused element exposes `IUIAutomationTextPattern` (cv-tts/src/lib.rs:69-72) and hover is skipped in that mode (lib.rs:216). Commit 141750c removed the same predicate (`GetFocusedElement` + TextPattern check) because it "silenced hover any time a real app had focus, which is nearly always". Stage 4 brought it back event-driven; the predicate is unchanged, so the risk is unchanged. Two more facts from the code: focus events from our own process are dropped (lib.rs:62-66), so clicking the settings panel while in `TextFocus` leaves the mode at `TextFocus`; and mode starts `Idle` with no initial focus query (lib.rs:161), so an already-focused text box is not seen until focus moves. Nothing else speaks in `TextFocus` until Stage 5 to 7.
+1. **Text focus silences hover again.** `TtsMode::TextFocus` is set when the focused element exposes `IUIAutomationTextPattern` (cv-tts/src/lib.rs:69-72) and hover is skipped in that mode (lib.rs:216). Commit 141750c removed the same predicate (`GetFocusedElement` + TextPattern check) because it "silenced hover any time a real app had focus, which is nearly always". Stage 4 brought it back event-driven; the predicate is unchanged, so the risk is unchanged. Two more facts from the code: focus events from our own process are dropped (lib.rs:62-66), so clicking the settings panel while in `TextFocus` leaves the mode at `TextFocus`; and mode starts `Idle` with no initial focus query (lib.rs:161), so an already-focused text box is not seen until focus moves. Nothing else speaks in `TextFocus` until Stage 5 to 7. Still open: hover is redesigned by roadmap 11.3 (see "Speech audit (8.1)", conflict 9).
 2. **The repaint thread's stated cause was wrong. Resolved by 0.3.** The old comment said the write lock from `update()` "is never released"; the guard drops when the `CentralPanel::show` closure returns. It also said `request_repaint_after` inside `update()` is dropped as stale. In eframe 0.29.1 the pass-number check runs when the `RequestRepaint` event arrives, not when the delay ends, so it is accepted. The thread and the polling are removed. The real cause of speech stopping with the panel unfocused (if there was one) is still unproven; speech is parked.
 3. **`update()` took `state.write()` every frame. Resolved by 0.4.** The panel now snapshots under a read lock, edits a local copy and writes back only changed fields (app.rs `apply_changes`). Side effect from egui 0.29.1: `Slider` re-applies `step_by` rounding every frame, so an off-grid value from a hand-edited settings file is snapped and saved once.
 4. **Capture allocates a full frame per captured frame.** `read_staging` does `vec![0u8; w*h*4]` and a row copy each time (cv-platform-win/src/capture.rs:188-213): about 14.7 MB at 1440p, 33 MB at 4K. Performance is unmeasured. Measured by the 3.1 prototype:
