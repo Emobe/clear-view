@@ -69,6 +69,7 @@ Current roadmap:
 - 7.2a PRODUCT.md docked pan wording and the pure pan geometry (ADR 0011, branch step/7.2a-pan-geometry, PR #78). Approved 2026-10-12 ("Tests all pass, docked still work, wording right. I approve."). 7.2b and 7.2c follow.
 - 7.2b The pan window in cv-platform-win and `OverlayHost::set_pan_visible` and `pan_handles`, never shown (ADR 0011, branch step/7.2b-pan-window, PR #79). Approved 2026-10-12 ("Tested, approve."). 7.2c follows.
 - 7.2c The pan surface, eased whole-pixel offset, show and hide, cursor rule and 1x pointer in `Magnifier::tick` (ADR 0011, branch step/7.2c-pan-surface, PR #80). Approved 2026-10-12 ("I approve, merge"; merged on your instruction). It looks a little jittery (Finding 23, on hold). 7.3 follows.
+- 8.1 Speech audit (docs only, branch step/8.1-speech-audit, PR #82). Approved 2026-10-12 ("I approve"; merged on your instruction). 8.2 follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -283,6 +284,7 @@ Current roadmap:
   - magnifier.rs eases the offset toward `geometry::pan_offset` for the real pointer (`PAN_EASE` 0.4 per 60 Hz tick, `PAN_MARGIN` 0.1 of the uncovered dimension), rounds it to whole pixels, draws the pan surface and then calls `set_pan_visible(true)` while the offset is at least 1. It hides at once when the layout is not docked, the panel's monitor is not the captured one, no frame is uploaded or there is no pan surface. The pan draws the frame at 1x shifted away from the panel, no colour filter, bilinear, and the pointer shape at size 1 in your colours and outline width at the real pointer plus the offset. The system cursor is hidden inside the panel or while the pan shows. Every layout change clears the shown flag and the offset.
   - Proven by 19 new fake-host and fake-renderer tests and the gate (`cargo build`, `cargo clippy --workspace --all-targets` 0 warnings, `cargo test --workspace`). PR #80.
   - Still open for 7.3: the margin, the ease rate, the outline width at 1x, taskbar behaviour with two topmost windows (Finding 13), and the cost of the second present (performance work is on hold).
+- Speech audit (8.1, approved by you 2026-10-12, PR #82, docs only). You read it and approved; nothing was run, and the Verify items were not itemised. The "Speech audit (8.1)" section below records what exists for speech, what is reusable, ten conflicts with later decisions (each assigned to 8.4, 8.5, 9.3 and the other ADR items), removal candidates, open questions and the old plan's dead ends. No decision was made and no code changed. docs/later/tts-plan.md is now docs/archive/tts-plan.md, and the four tts-plan paths in CLAUDE.md point at the archive and the audit. The speech roadmap branch was merged into master as PR #81 on your instruction.
 
 ## Broken
 
@@ -307,7 +309,7 @@ Reader stages: only stages 1 to 4 of the old plan have code, and no Verify list 
 
 ## Speech audit (8.1)
 
-Read-only audit, 2026-10-12, roadmap 8.1 (branch step/8.1-speech-audit). No code changed and nothing here is a decision: the decisions are the ADR-first items 8.4 (engine), 8.5 (pipeline), 8.6 (hotkeys), 9.3 (focus events), 10.1, 11.3 and 12.1. Read: the old reader plan (now docs/archive/tts-plan.md), ADRs 0003, 0004 and 0008, crates/cv-tts/src/lib.rs (275 lines, no tests) and the `tts_*` fields. Not approved yet: it goes under "Done" only after you say "I approve".
+Read-only audit, 2026-10-12, roadmap 8.1 (branch step/8.1-speech-audit). No code changed and nothing here is a decision: the decisions are the ADR-first items 8.4 (engine), 8.5 (pipeline), 8.6 (hotkeys), 9.3 (focus events), 10.1, 11.3 and 12.1. Read: the old reader plan (now docs/archive/tts-plan.md), ADRs 0003, 0004 and 0008, crates/cv-tts/src/lib.rs (275 lines, no tests) and the `tts_*` fields. Approved by you 2026-10-12 (see Done and Works).
 
 ### What exists
 
