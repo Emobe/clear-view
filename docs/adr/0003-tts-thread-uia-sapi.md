@@ -1,6 +1,6 @@
 # 0003: Single TTS thread with UIA and SAPI
 
-Status: Accepted; partly superseded: by 0008 (only the TTS thread adds or removes UIA handlers) and by 0012 (SAPI as the only engine, and "always SPF_ASYNC with purge-before-speak" for all speech, which now applies to the SAPI backend only). The threading rule (one thread owning COM, UIA and SAPI) stands until 8.5.
+Status: Accepted; partly superseded: by 0008 (only the TTS thread adds or removes UIA handlers) and by 0012 (SAPI as the only engine, and "always SPF_ASYNC with purge-before-speak" for all speech, which now applies to the SAPI backend only), and by 0013 (the threading rule: one thread owning COM, UIA and SAPI; speech now has its own thread that makes no UIA or MSAA call). Nothing of this ADR stands alone any more: what carries over (MTA first, plain data over channels, `CUIAutomation8`) is in 0008 and 0013.
 Date: 2026-10-08 (recorded retroactively from tts-plan.md)
 
 ## Context

@@ -1,6 +1,6 @@
 # 0005: Hotkey scheme
 
-Status: Accepted
+Status: Accepted; partly superseded by 0014 (the line "bindings are constants in hotkey.rs": the binding table moves to cv-core `hotkeys` and the backend maps it to virtual keys). 0014 also extends it with a raw input lone-Ctrl silence key and the speech chords. Everything else here stands.
 Date: 2026-10-09
 
 ## Context

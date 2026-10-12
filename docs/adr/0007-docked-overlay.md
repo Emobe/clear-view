@@ -1,6 +1,6 @@
 # 0007: Docked overlay
 
-Status: Accepted
+Status: Accepted; partly superseded by 0011 (the "Under the panel" decision bullet, which left the unmagnified area as the plain desktop, and its system cursor rule: the cursor is now also hidden while the pan window shows).
 Date: 2026-10-09
 
 ## Context
