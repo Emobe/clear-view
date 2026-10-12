@@ -44,3 +44,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0009 Monitors connected or disconnected while running (Accepted; extends 0004, supersedes nothing)
 - 0010 Cursor enhancement (Accepted)
 - 0011 Docked pan (Accepted; supersedes the "Under the panel" and system cursor parts of 0007)
+- 0012 Voice engine (Proposed; would supersede the engine choice and the SAPI-only speak rule of 0003)
