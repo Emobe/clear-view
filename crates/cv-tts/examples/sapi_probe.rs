@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use cv_tts::SapiBackend;
+use cv_tts::{SapiBackend, SpeechBackend};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
 const LONG: &str = "This is a long sentence that goes on and on, so that there is plenty of speech \
@@ -39,7 +39,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
-fn wait_finished(backend: &SapiBackend, id: u32, start: Instant, limit: Duration) -> bool {
+fn wait_finished(backend: &mut SapiBackend, id: u32, start: Instant, limit: Duration) -> bool {
     let began = Instant::now();
     while began.elapsed() < limit {
         for done in backend.take_finished() {
@@ -54,7 +54,7 @@ fn wait_finished(backend: &SapiBackend, id: u32, start: Instant, limit: Duration
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let backend = SapiBackend::new()?;
+    let mut backend = SapiBackend::new()?;
     let voices = backend.voices();
     if voices.is_empty() {
         return Err("no SAPI voices installed".into());
@@ -74,20 +74,26 @@ fn run(args: Args) -> Result<(), String> {
     println!("[tts] rate {} volume {}", args.rate, args.volume);
 
     let start = Instant::now();
-    let id = backend.speak(&args.say).ok_or("speak returned no id")?;
+    let id = 1;
+    if !backend.speak(id, &args.say) {
+        return Err("speak was refused".into());
+    }
     println!("[tts] {:>6} ms speak id {id}: {}", start.elapsed().as_millis(), args.say);
-    if !wait_finished(&backend, id, start, Duration::from_secs(15)) {
+    if !wait_finished(&mut backend, id, start, Duration::from_secs(15)) {
         return Err("no finished report within 15 s".into());
     }
 
     let start = Instant::now();
-    let id = backend.speak(LONG).ok_or("speak returned no id")?;
+    let id = 2;
+    if !backend.speak(id, LONG) {
+        return Err("speak was refused".into());
+    }
     println!("[tts] {:>6} ms speak id {id}: long sentence", start.elapsed().as_millis());
     std::thread::sleep(Duration::from_millis(500));
     backend.stop();
     println!("[tts] {:>6} ms stop called", start.elapsed().as_millis());
-    // Anything reported after the stop is a purge report; it must not arrive seconds later.
-    wait_finished(&backend, id, start, Duration::from_secs(2));
+    // A stopped utterance is never reported, so nothing should print here.
+    wait_finished(&mut backend, id, start, Duration::from_secs(2));
     println!("[tts] {:>6} ms done", start.elapsed().as_millis());
     Ok(())
 }

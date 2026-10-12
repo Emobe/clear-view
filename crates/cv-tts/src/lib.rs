@@ -1,12 +1,24 @@
-//! Speech engines (ADR 0012). 8.7b: the SAPI 5 backend. It lists voices, picks one, sets rate and
-//! volume, speaks one string at a time and stops. It owns no thread: the speech thread (8.8b,
-//! ADR 0013) owns a backend, and until then a dev example drives it.
+//! Speech engines (ADR 0012). Two backends behind one interface, [`SpeechBackend`]: the SAPI 5
+//! backend (8.7b) and the OneCore backend with WASAPI playback (8.7c), and [`Engines`], which puts
+//! them behind one voice list. A backend lists voices, picks one, sets rate and volume, speaks one
+//! string at a time and stops. None of them owns a thread: the speech thread (8.8b, ADR 0013) owns
+//! the backends and waits on their handles, and until then a dev example drives them.
 //!
-//! The interface uses cv-core voice types and no Windows types. The caller initialises COM
-//! (multithreaded) on the thread that uses a backend.
+//! The interface uses cv-core voice types and no Windows types, so a Linux backend can implement
+//! it later. The caller initialises COM (multithreaded) on the thread that uses a backend.
+
+mod engines;
+mod event;
+mod onecore;
+mod wasapi;
+mod wav;
+
+pub use engines::{Engines, display_language};
+pub use onecore::OneCoreBackend;
 
 use cv_core::voice::{Engine, VoiceId, VoiceInfo, sapi_rate, sapi_volume};
 use windows::{
+    Win32::Foundation::HANDLE,
     Win32::Globalization::LCIDToLocaleName,
     Win32::Media::Speech::{
         ISpObjectToken, ISpObjectTokenCategory, ISpVoice, SPCAT_VOICES, SPEI_END_INPUT_STREAM,
@@ -15,6 +27,52 @@ use windows::{
     Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree},
     core::{HSTRING, IUnknown, PCWSTR, PWSTR},
 };
+
+/// What the speech thread needs from an engine (ADR 0012, ADR 0013).
+///
+/// Utterance ids are the caller's: `speak` is given one, and `take_finished` reports it back. The
+/// caller keeps them unique. `take_finished` does not block, but it is also what moves OneCore
+/// along (collecting synthesis, feeding the audio device), so call it each time a wait handle of
+/// the backend is signalled and at least every few tens of milliseconds while audio plays.
+pub trait SpeechBackend {
+    /// Every installed voice of this engine.
+    fn voices(&self) -> Vec<VoiceInfo>;
+    /// Speaks with `voice` from the next utterance. False if it is not this engine's voice or the
+    /// engine refuses it.
+    fn set_voice(&mut self, voice: &VoiceId) -> bool;
+    /// Neutral rate 0 to 100 (cv-core `voice`), applied from the next utterance.
+    fn set_rate(&mut self, neutral: u32);
+    /// Neutral volume 0 to 100 (cv-core `voice`), applied from the next utterance.
+    fn set_volume(&mut self, neutral: u32);
+    /// Queues `text` as utterance `id`; several calls play in order. False for empty text or if the
+    /// engine refuses it.
+    fn speak(&mut self, id: u32, text: &str) -> bool;
+    /// Stops what is speaking and discards what is queued. Discarded ids are never reported.
+    fn stop(&mut self);
+    /// The ids whose speech has ended since the last call.
+    fn take_finished(&mut self) -> Vec<u32>;
+}
+
+/// Maps an engine's own utterance numbers to the caller's ids.
+#[derive(Default)]
+struct IdMap(Vec<(u32, u32)>);
+
+impl IdMap {
+    fn insert(&mut self, engine: u32, id: u32) {
+        self.0.push((engine, id));
+    }
+
+    /// The caller's id for the engine's number, forgetting the pair. None if it is not known, for
+    /// example after `clear`.
+    fn take(&mut self, engine: u32) -> Option<u32> {
+        let at = self.0.iter().position(|&(e, _)| e == engine)?;
+        Some(self.0.remove(at).1)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
 
 /// `SPFEI_FLAGCHECK`: SAPI wants these two reserved bits set in every interest mask.
 const SPFEI_FLAGCHECK: u64 = (1 << 30) | (1 << 33);
@@ -43,7 +101,7 @@ fn name_from_id(id: &str) -> &str {
     id.rsplit('\\').next().unwrap_or(id)
 }
 
-fn lcid_to_tag(lcid: u32) -> Option<String> {
+pub(crate) fn lcid_to_tag(lcid: u32) -> Option<String> {
     let mut buf = [0u16; LOCALE_NAME_MAX_LENGTH];
     let len = unsafe { LCIDToLocaleName(lcid, Some(&mut buf), 0) };
     // The length includes the terminating zero; zero means the LCID is unknown.
@@ -83,10 +141,11 @@ fn voice_info(token: &ISpObjectToken) -> Option<VoiceInfo> {
     })
 }
 
-/// The SAPI 5 engine (`ISpVoice`). Speech is asynchronous: `speak` returns at once with an id, and
+/// The SAPI 5 engine (`ISpVoice`). Speech is asynchronous: `speak` returns at once, and
 /// `take_finished` reports the ids whose speech has ended.
 pub struct SapiBackend {
     voice: ISpVoice,
+    streams: IdMap,
 }
 
 impl SapiBackend {
@@ -103,11 +162,18 @@ impl SapiBackend {
             voice.SetInterest(interest, interest).map_err(|e| format!("SetInterest failed: {e}"))?;
             voice.SetNotifyWin32Event().map_err(|e| format!("SetNotifyWin32Event failed: {e}"))?;
         }
-        Ok(Self { voice })
+        Ok(Self { voice, streams: IdMap::default() })
     }
 
-    /// Every installed SAPI voice, in the order SAPI lists them.
-    pub fn voices(&self) -> Vec<VoiceInfo> {
+    /// Signalled when SAPI has an event to report. Wait on it and call `take_finished`.
+    pub fn wait_handle(&self) -> HANDLE {
+        unsafe { self.voice.GetNotifyEventHandle() }
+    }
+}
+
+impl SpeechBackend for SapiBackend {
+    /// In the order SAPI lists them.
+    fn voices(&self) -> Vec<VoiceInfo> {
         let mut out = Vec::new();
         let category: ISpObjectTokenCategory =
             match unsafe { CoCreateInstance(&SpObjectTokenCategory, None, CLSCTX_ALL) } {
@@ -142,9 +208,7 @@ impl SapiBackend {
         out
     }
 
-    /// Speaks with `voice` from the next utterance. False if it is not a SAPI voice or SAPI
-    /// refuses it.
-    pub fn set_voice(&self, voice: &VoiceId) -> bool {
+    fn set_voice(&mut self, voice: &VoiceId) -> bool {
         if voice.engine != Engine::Sapi {
             return false;
         }
@@ -161,52 +225,51 @@ impl SapiBackend {
         result.is_ok()
     }
 
-    /// Neutral rate 0 to 100 (cv-core `voice`), applied from the next utterance.
-    pub fn set_rate(&self, neutral: u32) {
+    fn set_rate(&mut self, neutral: u32) {
         if let Err(e) = unsafe { self.voice.SetRate(sapi_rate(neutral)) } {
             eprintln!("[tts] SetRate failed: {e}");
         }
     }
 
-    /// Neutral volume 0 to 100 (cv-core `voice`).
-    pub fn set_volume(&self, neutral: u32) {
+    fn set_volume(&mut self, neutral: u32) {
         if let Err(e) = unsafe { self.voice.SetVolume(sapi_volume(neutral)) } {
             eprintln!("[tts] SetVolume failed: {e}");
         }
     }
 
-    /// Queues `text` and returns its id (SAPI's stream number). None for empty text or if SAPI
-    /// refuses it. Several calls queue in order; stopping first is the caller's rule (ADR 0013).
-    pub fn speak(&self, text: &str) -> Option<u32> {
+    /// Several calls queue in order; stopping first is the caller's rule (ADR 0013).
+    fn speak(&mut self, id: u32, text: &str) -> bool {
         if text.is_empty() {
-            return None;
+            return false;
         }
         let mut stream = 0u32;
         let result = unsafe {
             self.voice.Speak(&HSTRING::from(text), SPF_ASYNC.0 as u32, Some(&mut stream))
         };
         match result {
-            Ok(()) => Some(stream),
+            Ok(()) => {
+                self.streams.insert(stream, id);
+                true
+            }
             Err(e) => {
                 eprintln!("[tts] Speak failed: {e}");
-                None
+                false
             }
         }
     }
 
-    /// Stops what is speaking and discards what is queued.
-    pub fn stop(&self) {
+    fn stop(&mut self) {
         let result = unsafe {
             self.voice.Speak(PCWSTR::null(), SPF_PURGEBEFORESPEAK.0 as u32, None)
         };
         if let Err(e) = result {
             eprintln!("[tts] stop failed: {e}");
         }
+        // SAPI may still report the purged streams; with the pairs forgotten they map to nothing.
+        self.streams.clear();
     }
 
-    /// The ids whose speech has ended since the last call. Does not block. A purged utterance may
-    /// be reported too; the queue ignores ids it has already cut off (ADR 0013).
-    pub fn take_finished(&self) -> Vec<u32> {
+    fn take_finished(&mut self) -> Vec<u32> {
         let mut finished = Vec::new();
         loop {
             let mut events = [SPEVENT::default(); 8];
@@ -219,7 +282,7 @@ impl SapiBackend {
                 events[..fetched as usize]
                     .iter()
                     .filter(|e| event_id(e._bitfield) == SPEI_END_INPUT_STREAM.0)
-                    .map(|e| e.ulStreamNum),
+                    .filter_map(|e| self.streams.take(e.ulStreamNum)),
             );
         }
         finished
@@ -236,6 +299,25 @@ mod tests {
         let mask = event_interest(&[SPEI_END_INPUT_STREAM.0]);
         assert_eq!(mask, (1 << 2) | (1 << 30) | (1 << 33));
         assert_eq!(event_interest(&[]), SPFEI_FLAGCHECK);
+    }
+
+    #[test]
+    fn engine_numbers_map_to_caller_ids_once() {
+        let mut map = IdMap::default();
+        map.insert(7, 100);
+        map.insert(8, 101);
+        assert_eq!(map.take(8), Some(101));
+        assert_eq!(map.take(8), None);
+        assert_eq!(map.take(9), None);
+        assert_eq!(map.take(7), Some(100));
+    }
+
+    #[test]
+    fn cleared_engine_numbers_map_to_nothing() {
+        let mut map = IdMap::default();
+        map.insert(7, 100);
+        map.clear();
+        assert_eq!(map.take(7), None);
     }
 
     #[test]
@@ -273,12 +355,12 @@ mod tests {
     fn sapi_lists_voices() {
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap() };
         {
-            let backend = SapiBackend::new().unwrap();
+            let mut backend = SapiBackend::new().unwrap();
             let voices = backend.voices();
             assert!(!voices.is_empty());
             assert!(voices.iter().all(|v| v.id.engine == Engine::Sapi && !v.name.is_empty()));
             assert!(backend.set_voice(&voices[0].id));
-            assert_eq!(backend.speak(""), None);
+            assert!(!backend.speak(1, ""));
         }
         unsafe { CoUninitialize() };
     }

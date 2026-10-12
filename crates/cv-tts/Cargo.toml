@@ -5,11 +5,25 @@ edition = "2024"
 
 [dependencies]
 cv-core = { path = "../cv-core" }
+# The WinRT async types (IAsyncOperation and its `when`); the `windows` crate does not re-export
+# them. Already in Cargo.lock at this version through `windows` (ADR 0012, ADR 0013).
+windows-future = "0.3.2"
 
 [dependencies.windows]
 workspace = true
 features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Core",
+    "Media_SpeechSynthesis",
+    "Storage_Streams",
+    "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Media_Audio",
     "Win32_Media_Speech",
+    "Win32_Security",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
 ]
