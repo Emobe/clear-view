@@ -114,12 +114,6 @@ fn main() -> eframe::Result {
         );
     }
 
-    // TTS thread: SAPI speech, MTA COM init. Only with `--features tts`.
-    #[cfg(feature = "tts")]
-    let tts_shutdown = Arc::new(AtomicBool::new(false));
-    #[cfg(feature = "tts")]
-    let tts_handle = cv_tts::spawn_tts_thread(tts_shutdown.clone(), shared.clone());
-
     // Settings saver thread: writes settings.json when AppState changes
     let settings_shutdown = Arc::new(AtomicBool::new(false));
     let settings_handle = settings::spawn_saver(shared.clone(), settings_shutdown.clone());
@@ -141,12 +135,6 @@ fn main() -> eframe::Result {
     // Before the other threads stop, so the system cursor is back first.
     overlay.shutdown();
     caret.shutdown();
-
-    #[cfg(feature = "tts")]
-    {
-        tts_shutdown.store(true, Ordering::Relaxed);
-        tts_handle.join().ok();
-    }
 
     // The saver does a final write after it sees the flag, so the last change is not lost.
     settings_shutdown.store(true, Ordering::Relaxed);
