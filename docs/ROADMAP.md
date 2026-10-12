@@ -167,7 +167,11 @@ Since 8.2, these apply to speech steps in place of the blanket "No speech work" 
 8.4 (ADR first) Voice engine: SAPI 5, OneCore voices through Windows.Media.SpeechSynthesis, or both; how voices are listed and chosen; rate, volume and pitch ranges; what happens with no voices or a voice that's been removed; audio output device. Check whether Windows natural (Narrator) voices can be used by third-party apps. As of October 2026 the NaturalVoiceSAPIAdapter project says Microsoft hasn't allowed this and that its adapter can stop working after updates: https://github.com/gexgd0419/NaturalVoiceSAPIAdapter. Decide whether cv-tts is kept, rewritten or replaced.
 8.5 (ADR first) Speech pipeline: queue, priorities and interruption (what cuts off what), which thread talks to the engine, how speech receives events from the core, and timeouts for hung apps. Supersedes ADR 0003 where they disagree.
 8.6 (ADR first) Speech hotkeys: revisit the scheme from 1.2 now that many more bindings are coming; whether to add a Caps Lock modifier like ZoomText's; how a single Ctrl press is detected to silence speech without breaking Ctrl shortcuts in other apps; default bindings for every command in this track.
-8.7 Engine per 8.4: speak a string, stop, list voices, set voice, rate and volume. The panel's speech controls come back when the `tts` feature is on: speech on/off, voice, rate, volume and a "Test voice" button. Verify: test voice speaks and can be stopped; with the feature off, nothing changes.
+8.7 Engine per 8.4: speak a string, stop, list voices, set voice, rate and volume. The panel's speech controls come back when the `tts` feature is on: speech on/off, voice, rate, volume and a "Test voice" button. Verify: test voice speaks and can be stopped; with the feature off, nothing changes. ADR 0012 (Accepted) splits it:
+8.7a cv-core: the neutral rate (0 to 100, 50 normal) and volume mapping for SAPI and OneCore, and the voice-choice rules (no saved voice, saved voice missing, no voices), with unit tests. No Windows code (ADR 0012, Accepted).
+8.7b cv-tts rewrite with the SAPI backend: speak, stop, list voices, set voice, rate and volume; the UIA parts and the startup phrase deleted. Checked through a dev example, not wired to the panel (ADR 0012, Accepted).
+8.7c cv-tts OneCore backend (`Windows.Media.SpeechSynthesis`) with WASAPI playback on the default device, and one voice list across both engines. Same dev check (ADR 0012, Accepted).
+8.7d Panel speech controls with the `tts` feature on: speech on/off, voice (with the missing-voice and no-voices states), rate, volume, "Test voice". Verify: test voice speaks and can be stopped; with the feature off, nothing changes (ADR 0012, Accepted).
 8.8 Pipeline per 8.5 and hotkeys per 8.6: speech on/off and silence. Verify: a long sentence stops at once on silence; the magnifier stays smooth while speaking.
 8.9 Speech settings persist. Reconcile the old tts_* fields with the ADRs; an old settings file still loads.
 
@@ -231,7 +235,7 @@ DocReader-style reformatted reading view, Background Reader, Recorder, OCR and c
 - Performance thresholds (5.5).
 - When to upgrade wgpu and eframe: decided in ADR 0004, after the refactor and before 3.1 (items 2.6 and 2.7).
 - How the unmagnified area pans in docked mode (7.1).
-- Speech: voice engine and natural voices (8.4).
+- Speech: voice engine and natural voices (8.4): decided in ADR 0012 (Accepted).
 - Speech: how speech is silenced, and the speech hotkey scheme (8.5, 8.6).
 - Speech: verbosity levels (9.5).
 - Speech: whether magnifier focus tracking joins the track (9.9).
