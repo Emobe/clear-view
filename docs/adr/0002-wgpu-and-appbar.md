@@ -1,6 +1,6 @@
 # 0002: wgpu renderer and AppBar docking
 
-Status: Accepted
+Status: Accepted; partly superseded by 0007 (the AppBar docking part; overlay docking replaces it). The wgpu renderer part stands.
 Date: 2026-10-08 (recorded retroactively from CLAUDE.md and handoff history)
 
 ## Context
