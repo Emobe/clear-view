@@ -1,9 +1,11 @@
 pub mod events;
 pub mod geometry;
 pub mod tracking;
+pub mod voice;
 
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
 pub use tracking::{Following, Tracker};
+pub use voice::{Engine, VoiceChoice, VoiceId, VoiceInfo};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
