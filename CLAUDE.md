@@ -8,11 +8,16 @@ Read docs/PRODUCT.md first. It says what v1 is and what it isn't, and it wins if
 
 `clear-view` is a screen magnifier (ZoomText alternative) written in Rust, built on a core that a screen reader can use later. Windows is the working target. X11 and Wayland support is planned after Windows v1; keep platform-specific code from spreading (see docs/adr/0004).
 
-It uses DXGI Desktop Duplication for capture, wgpu for rendering and egui for the settings panel. The parked reader uses UI Automation plus SAPI.
+It uses DXGI Desktop Duplication for capture, wgpu for rendering and egui for the settings panel. The reader (speech, v1.1, off by default) uses UI Automation plus SAPI; the 8.4 ADR may change the engine.
 
-## Speech is out of scope until after v1
+## Speech is v1.1
 
-Speech is off and is not worked on before Windows v1 ships. cv-tts is behind the `tts` cargo feature, off by default: a plain `cargo build` or `cargo run` does not start the TTS thread and hides the TTS controls. Do not touch cv-tts unless a step names it. The old reader plan is archived in docs/archive/tts-plan.md; the speech track is ROADMAP Phases 8 to 13, and what was kept from the old plan is in docs/STATUS.md "Speech audit (8.1)".
+Speech is not part of v1 (docs/PRODUCT.md "Speech (v1.1)"). It is built by the speech track, ROADMAP Phases 8 to 13, and work on it started on 2026-10-12.
+
+- Speech work happens only in steps that name it. Every other step does no speech work.
+- Speech steps follow ROADMAP "Rules for speech steps": with speech off the magnifier behaves exactly as before (every speech step's Verify list includes a run with speech off); password fields are never spoken and "can't tell" counts as a password field; no UI Automation or MSAA call on the render thread; spoken text is pure logic in cv-core with unit tests; defaults follow the tester's real use (8.3).
+- cv-tts is behind the `tts` cargo feature, off by default until ROADMAP 13.1: a plain `cargo build` or `cargo run` does not start the TTS thread and hides the TTS controls. Do not touch cv-tts unless a step names it.
+- The old reader plan is archived in docs/archive/tts-plan.md; what was kept from it is in docs/STATUS.md "Speech audit (8.1)".
 
 ## Working rules
 
@@ -32,7 +37,7 @@ Speech is off and is not worked on before Windows v1 ships. cv-tts is behind the
 - docs/STATUS.md: what works, what is missing, findings
 - docs/ROADMAP.md: phases and order of work
 - docs/adr/: decisions and why
-- docs/archive/tts-plan.md: the old reader plan (archived by 8.1); the speech track is ROADMAP Phases 8 to 13
+- docs/archive/tts-plan.md: the old reader plan (archived by 8.1); the speech track (v1.1) is ROADMAP Phases 8 to 13
 - docs/NEXT.md: the baton between sessions
 - Roadmap items are numbered (1.1, 3.1). Commands take the number: `/step 1.1`, `/adr 3.1`.
 - Commands in .claude/commands: `/next` (says what to run and with which model), `/audit`, `/step <item>`, `/adr <decision>`
@@ -83,7 +88,7 @@ cargo test --workspace
 - `cv-tts`: reader thread (SAPI, UIA). Built only with the `tts` feature.
 - `app`: main.rs wiring, egui settings panel, settings persistence. Picks the backend with `#[cfg(windows)] use cv_platform_win as platform;` and has no `windows` dependency.
 
-Only cv-platform-win and parked cv-tts may depend on `windows`. Check with `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
+Only cv-platform-win and cv-tts may depend on `windows`. Check with `cargo tree -i windows@0.62.2 --workspace -e normal --depth 1`.
 
 ## Architecture
 

@@ -18,7 +18,7 @@ A free screen magnifier for Windows in the style of ZoomText, for people with lo
 2. Never leave the machine broken. Work area, system cursor and cursor clip are restored on exit, on crash and on kill.
 3. Real use decides. Get a usable build to the tester early, then ask what's missing, rather than guessing features.
 4. Small steps. Each step is small enough to understand and review. Work runs through /next, /step and /adr.
-5. No speech until the magnifier is solid.
+5. No speech in v1. Speech is v1.1, built after the magnifier is solid (see "Speech (v1.1)").
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Three layers:
 
 - **Core**: watches the system and reports positions. v1: pointer position and caret position. Later: keyboard focus, element under the pointer, text.
 - **Magnifier**: capture, rendering, tracking policy (what to follow and when), fullscreen and docked modes, hotkeys, settings UI.
-- **Reader** (later): consumes the same core events plus text, and speaks.
+- **Reader** (v1.1): consumes the same core events plus text, and speaks. See "Speech (v1.1)".
 
 Per-app differences (Chrome vs Word vs File Explorer) are handled in the core, once, for both the magnifier and the reader.
 
@@ -53,7 +53,7 @@ Platform code stays behind a seam so Linux can be added later, but no Linux work
 
 ### Not in v1
 
-- Speech of any kind. The cv-tts code is kept behind a build flag that is off by default, so it can't affect the magnifier.
+- Speech of any kind (it is v1.1, see "Speech (v1.1)"). The cv-tts code is kept behind a build flag that is off by default, so it can't affect the magnifier.
 - Keyboard focus tracking (Tab, arrows through menus). First item after v1.
 - Lens, line and freeze windows.
 - Linux.
@@ -74,6 +74,37 @@ Platform code stays behind a seam so Linux can be added later, but no Linux work
 
 v1 is done when the tester uses Clearview instead of ZoomText for a full week of normal use.
 
+- **M6 v1.1 (speech)**: the stages in "Speech (v1.1)", each ending in a tester build. Done when the tester uses Clearview's speech instead of ZoomText's for a full week.
+
+## Speech (v1.1)
+
+Speech is the release after v1. It does not change the v1 gate or the v1 list above. It is built in stages, each ending in a tester build, so the tester can use one stage while the next is built. The numbered plan is the "Speech track (v1.1)" in docs/ROADMAP.md (Phases 8 to 13).
+
+### Stages
+
+0. **Groundwork** (Phase 8): audit of the old reader code, the voice engine, the speech pipeline and the speech hotkeys decided in ADRs, then the engine, speech on/off and silence.
+1. **Focus and program echo** (Phase 9): hear what has focus and which window or dialog you're in. Reading commands on hotkeys. Optionally the magnifier follows keyboard focus.
+2. **Typing echo** (Phase 10): characters and words as you type, and what moving the caret speaks.
+3. **Mouse echo** (Phase 11): the word, line or element under the pointer.
+4. **Reading documents** (Phase 12): continuous reading and stepping by word, line, sentence and paragraph, with the magnifier following and highlighting the spoken word.
+5. **Release** (Phase 13): speech on by default, checks in elevated windows, a clean install test, and the tester's week.
+
+### Rules
+
+- With speech switched off, the magnifier behaves exactly as before.
+- Password fields are never spoken: no characters, no words, no length. "Can't tell" is treated as a password field.
+- No UI Automation or MSAA call runs on the render thread. A hung app must not freeze the magnifier or stop speech from being silenced.
+- The text that gets spoken is pure logic in the core with unit tests.
+- Defaults follow what the tester actually uses (ROADMAP 8.3), not what ZoomText ships with.
+
+### ADRs this needs
+
+Voice engine (8.4), speech pipeline (8.5), speech hotkeys (8.6), focus events (9.3), typing echo (10.1), mouse echo (11.3) and reading (12.1).
+
+### Later, not planned here
+
+DocReader-style reformatted reading view, Background Reader, Recorder, OCR and camera, Braille, per-app scripting, Linux speech.
+
 ## ADRs this needs
 
 - Platform seams and core boundaries (the planned ADR 0004), including when to upgrade wgpu 22 and eframe 0.29.
@@ -83,15 +114,18 @@ v1 is done when the tester uses Clearview instead of ZoomText for a full week of
 
 ## Later
 
-1. Keyboard focus tracking.
-2. Reader: speech on the same core, built app by app.
-3. Lens and other window types if testers ask for them.
-4. Linux: X11, then Wayland.
-5. Scripting: per-app scripts in the spirit of JAWS. Likely a separate project; the core's event API should not rule it out.
+Speech is no longer here: it is "Speech (v1.1)" above.
+
+1. Keyboard focus tracking (ROADMAP 9.9 may pull it into the speech track).
+2. Lens and other window types if testers ask for them.
+3. Linux: X11, then Wayland.
+4. Scripting: per-app scripts in the spirit of JAWS. Likely a separate project; the core's event API should not rule it out.
 
 ## Open questions
 
 - Which email app the tester uses.
 - Which ZoomText hotkeys the tester relies on (ask once M1 is in their hands).
+- How the tester uses ZoomText's speech today: echo modes, voice, rate, hotkeys (ROADMAP 8.3).
+- Voice engine and natural voices (ROADMAP 8.4).
 - Whether anyone needs the old AppBar split once overlay docking works. Default: no, it's removed.
 - Performance thresholds.

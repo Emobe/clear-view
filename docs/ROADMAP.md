@@ -1,6 +1,6 @@
 # ROADMAP
 
-Windows v1 only. Read docs/PRODUCT.md first: it says what v1 is and what it isn't, and it wins if this file disagrees with it. Work after v1 is listed under "Later" in PRODUCT.md and is not planned here.
+Windows v1 only. Read docs/PRODUCT.md first: it says what v1 is and what it isn't, and it wins if this file disagrees with it. Speech (v1.1) is planned in "Speech track (v1.1)" below. Other work after v1 is listed under "Later" in PRODUCT.md and is not planned here.
 
 Numbered items. Commands take the number: `/step 1.3`, `/adr 2.1`. Status lives in docs/STATUS.md, decisions in docs/adr/. Each phase ends in a state that builds, runs and does not regress the one before. Items marked (ADR first) need an Accepted ADR before any code. Items marked (you) are done by you, not the agent: `/next` tells you what to do, and `/step` with that number records it once you confirm it's done.
 
@@ -10,7 +10,7 @@ Numbered items. Commands take the number: `/step 1.3`, `/adr 2.1`. Status lives 
 
 ## Rules for every step
 
-- No speech work. cv-tts stays behind its feature flag and is not touched unless a step names it.
+- No speech work unless the step names it. Steps in the speech track (Phases 8 to 13) follow "Rules for speech steps" below. cv-tts stays behind its feature flag and is not touched unless a step names it.
 - Any step that uses a Windows API or a crate API checks the current Microsoft docs and the docs for the pinned crate version before writing code. Don't rely on memory. Record what was checked, with links, in the PR description.
 - One step, one branch, one PR. If a step turns out bigger than expected, stop and propose sub-items in docs/NEXT.md instead of carrying on.
 - Every step ends with a short "Verify" list for you to run by hand on Windows. Nothing goes in STATUS "Works" until you've run it.
@@ -151,7 +151,7 @@ Speech is the next release after v1 (v1.1). It does not change the v1 gate. It i
 
 ### Rules for speech steps
 
-Once 8.2 is merged, these replace "No speech work" in "Rules for every step". All other rules stay.
+Since 8.2, these apply to speech steps in place of the blanket "No speech work" in "Rules for every step". All other rules stay.
 
 - Speech work happens only in steps that name it. With speech switched off, the magnifier behaves exactly as before. Every speech step's Verify list includes a run with speech off.
 - Password fields are never spoken: no characters, no words, no length. Use the field's password property, and treat "can't tell" as a password field.
