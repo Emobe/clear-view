@@ -71,6 +71,7 @@ Current roadmap:
 - 7.2c The pan surface, eased whole-pixel offset, show and hide, cursor rule and 1x pointer in `Magnifier::tick` (ADR 0011, branch step/7.2c-pan-surface, PR #80). Approved 2026-10-12 ("I approve, merge"; merged on your instruction). It looks a little jittery (Finding 23, on hold). 7.3 follows.
 - 8.1 Speech audit (docs only, branch step/8.1-speech-audit, PR #82). Approved 2026-10-12 ("I approve"; merged on your instruction). 8.2 follows.
 - 8.2 Speech is v1.1 in PRODUCT.md, CLAUDE.md, the ROADMAP rules and audit.md (docs only, branch step/8.2-speech-docs, PR #83). Approved 2026-10-12 ("I approve. Merge"; merged on your instruction). 8.3 (you) follows.
+- 8.7a cv-core `voice`: neutral rate and volume mapping for SAPI and OneCore, and the voice-choice rules (branch step/8.7a-voice-rules, PR #88). Approved 2026-10-12 ("I verifiy it all works the same. I approve. Go merge"; merged on your instruction). 8.7b follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -287,6 +288,7 @@ Current roadmap:
   - Still open for 7.3: the margin, the ease rate, the outline width at 1x, taskbar behaviour with two topmost windows (Finding 13), and the cost of the second present (performance work is on hold).
 - Speech audit (8.1, approved by you 2026-10-12, PR #82, docs only). You read it and approved; nothing was run, and the Verify items were not itemised. The "Speech audit (8.1)" section below records what exists for speech, what is reusable, ten conflicts with later decisions (each assigned to 8.4, 8.5, 9.3 and the other ADR items), removal candidates, open questions and the old plan's dead ends. No decision was made and no code changed. docs/later/tts-plan.md is now docs/archive/tts-plan.md, and the four tts-plan paths in CLAUDE.md point at the archive and the audit. The speech roadmap branch was merged into master as PR #81 on your instruction.
 - Speech is v1.1 in the docs (8.2, approved by you 2026-10-12, PR #83, docs only). You read it and approved; the Verify items were not itemised. docs/PRODUCT.md has a "Speech (v1.1)" section (stages, rules, ADRs needed, later list), milestone M6 and two new open questions, and speech is out of "Later". CLAUDE.md has "Speech is v1.1". ROADMAP "Rules for every step" lets speech steps follow "Rules for speech steps". audit.md wording matches. v1 scope is unchanged.
+- cv-core `voice` (8.7a, approved by you 2026-10-12, PR #88). Proved by `cargo build`, `cargo clippy --workspace --all-targets` (0 warnings) and `cargo test --workspace` (24 new tests: rate and volume mappings, voice-choice rules). You ran the app speech off and reported it works the same; the cases were not itemised. Nothing calls the module yet. One rule beyond ADR 0012: a list of OneCore voices only with no default gives the first voice, not `NoVoices`. `ONECORE_RATE_MAX` 3.0 is a placeholder for 8.3.
 
 ## Broken
 
