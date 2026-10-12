@@ -45,3 +45,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0010 Cursor enhancement (Accepted)
 - 0011 Docked pan (Accepted; supersedes the "Under the panel" and system cursor parts of 0007)
 - 0012 Voice engine (Accepted; supersedes the engine choice and the SAPI-only speak rule of 0003)
+- 0013 Speech pipeline (Accepted; supersedes the threading rule of 0003, extends the `EventHub` of 0004)
