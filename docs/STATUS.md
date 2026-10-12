@@ -70,6 +70,7 @@ Current roadmap:
 - 7.2b The pan window in cv-platform-win and `OverlayHost::set_pan_visible` and `pan_handles`, never shown (ADR 0011, branch step/7.2b-pan-window, PR #79). Approved 2026-10-12 ("Tested, approve."). 7.2c follows.
 - 7.2c The pan surface, eased whole-pixel offset, show and hide, cursor rule and 1x pointer in `Magnifier::tick` (ADR 0011, branch step/7.2c-pan-surface, PR #80). Approved 2026-10-12 ("I approve, merge"; merged on your instruction). It looks a little jittery (Finding 23, on hold). 7.3 follows.
 - 8.1 Speech audit (docs only, branch step/8.1-speech-audit, PR #82). Approved 2026-10-12 ("I approve"; merged on your instruction). 8.2 follows.
+- 8.2 Speech is v1.1 in PRODUCT.md, CLAUDE.md, the ROADMAP rules and audit.md (docs only, branch step/8.2-speech-docs, PR #83). Approved 2026-10-12 ("I approve. Merge"; merged on your instruction). 8.3 (you) follows.
 
 ## Works (a command proved it, or you verified it)
 
@@ -285,6 +286,7 @@ Current roadmap:
   - Proven by 19 new fake-host and fake-renderer tests and the gate (`cargo build`, `cargo clippy --workspace --all-targets` 0 warnings, `cargo test --workspace`). PR #80.
   - Still open for 7.3: the margin, the ease rate, the outline width at 1x, taskbar behaviour with two topmost windows (Finding 13), and the cost of the second present (performance work is on hold).
 - Speech audit (8.1, approved by you 2026-10-12, PR #82, docs only). You read it and approved; nothing was run, and the Verify items were not itemised. The "Speech audit (8.1)" section below records what exists for speech, what is reusable, ten conflicts with later decisions (each assigned to 8.4, 8.5, 9.3 and the other ADR items), removal candidates, open questions and the old plan's dead ends. No decision was made and no code changed. docs/later/tts-plan.md is now docs/archive/tts-plan.md, and the four tts-plan paths in CLAUDE.md point at the archive and the audit. The speech roadmap branch was merged into master as PR #81 on your instruction.
+- Speech is v1.1 in the docs (8.2, approved by you 2026-10-12, PR #83, docs only). You read it and approved; the Verify items were not itemised. docs/PRODUCT.md has a "Speech (v1.1)" section (stages, rules, ADRs needed, later list), milestone M6 and two new open questions, and speech is out of "Later". CLAUDE.md has "Speech is v1.1". ROADMAP "Rules for every step" lets speech steps follow "Rules for speech steps". audit.md wording matches. v1 scope is unchanged.
 
 ## Broken
 
