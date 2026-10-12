@@ -1,4 +1,4 @@
-> Parked until after v1: no speech work happens before the magnifier ships (docs/PRODUCT.md).
+> Archived by roadmap 8.1 (2026-10-12). The speech track (ROADMAP Phases 8 to 13) replaces this plan. What is reusable, what conflicts and the dead ends are recorded in docs/STATUS.md under "Speech audit (8.1)". Kept for history; do not build from it.
 
 # clear-view TTS Plan
 
