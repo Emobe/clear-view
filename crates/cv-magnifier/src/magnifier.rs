@@ -12,8 +12,9 @@ use std::{
 };
 
 use cv_core::{
-    AppState, CoreEvent, DisplayMode, Edge, Following, Frame, FrameState, OutputInfo,
-    PointerLook, PointerShape, ScreenPoint, ScreenRect, SharedState, Tracker,
+    AppState, ColorFilter, CoreEvent, DisplayMode, Edge, Following, Frame, FrameState,
+    Interpolation, OutputInfo, PointerLook, PointerShape, ScreenPoint, ScreenRect, SharedState,
+    Tracker,
     geometry::{self, panel_pct_to_px, window_dims},
     tracking,
 };
@@ -36,7 +37,8 @@ impl Magnifier {
     /// drains it.
     ///
     /// # Safety
-    /// The window behind `host.raw_handles()` must stay valid until this `Magnifier` is dropped.
+    /// The windows behind `host.raw_handles()` and `host.pan_handles()` must stay valid until
+    /// this `Magnifier` is dropped.
     pub unsafe fn new(
         host: &impl OverlayHost,
         start: OutputInfo,
@@ -47,9 +49,12 @@ impl Magnifier {
         events: Receiver<CoreEvent>,
     ) -> Self {
         let (display, window) = host.raw_handles();
-        // SAFETY: the caller keeps the window valid for the life of `self`.
+        let pan = host.pan_handles();
+        // SAFETY: the caller keeps both windows valid for the life of `self`.
         let wgpu = unsafe {
-            WgpuState::new(display, window, start.width, start.height, start.width, start.height)
+            WgpuState::new(
+                display, window, pan, start.width, start.height, start.width, start.height,
+            )
         };
         Self {
             view: View::new(wgpu, start, outputs, app_state, frame_state, desired_output, events),
@@ -87,6 +92,14 @@ pub(crate) trait Renderer {
     fn write_uniforms(&mut self, uniforms: &Uniforms);
     /// Draws and presents. False when the surface is lost or outdated.
     fn render(&mut self) -> bool;
+    /// Whether the pan window has a surface (ADR 0011). Without one the magnifier never pans.
+    fn pan_available(&self) -> bool;
+    /// Reconfigures the pan surface for a new pan window size.
+    fn resize_pan(&mut self, width: u32, height: u32);
+    /// The pan surface's own uniforms; the frame and pointer mask are shared with the panel.
+    fn write_pan_uniforms(&mut self, uniforms: &Uniforms);
+    /// Draws and presents the pan window. False when its surface is lost or outdated.
+    fn render_pan(&mut self) -> bool;
 }
 
 /// Everything the shader's uniform buffer holds, compared to skip redundant writes.
@@ -165,6 +178,77 @@ fn usable(shape: &PointerShape) -> bool {
 /// any window, and the shader tests for it.
 pub(crate) const CURSOR_HIDDEN: u32 = u32::MAX;
 
+/// The margin of the pan rule (ADR 0011), as a fraction of the uncovered dimension: how far
+/// short of the panel the pointer starts to push the image. Tuned by hand (roadmap 7.3).
+const PAN_MARGIN: f32 = 0.1;
+
+/// The pan offset's ease rate: the fraction of the remaining distance covered per 60 Hz tick,
+/// through `geometry::smooth_alpha`. Its own constant, not `smooth_speed`, which users set for
+/// the magnified view. Tuned by hand (roadmap 7.3).
+const PAN_EASE: f32 = 0.4;
+
+/// A docked panel as applied: the monitor, edge and thickness the pan is computed from.
+#[derive(Debug, Clone)]
+struct Dock {
+    monitor: OutputInfo,
+    edge: Edge,
+    thickness: u32,
+}
+
+impl Dock {
+    /// The part of the monitor the panel does not cover, which the pan window sits on; `None`
+    /// when the panel covers the monitor.
+    fn uncovered(&self) -> Option<ScreenRect> {
+        let rect = geometry::uncovered_rect(&self.monitor, self.edge, self.thickness);
+        (rect.width > 0 && rect.height > 0).then_some(rect)
+    }
+}
+
+/// What the pan window draws at a whole-pixel `offset` (ADR 0011): the frame at 1x, shifted away
+/// from the panel by `shift`, so the strip the panel covers comes into view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PanView {
+    /// The pan window's size, the uncovered rect's.
+    window: (u32, u32),
+    /// The frame pixel (monitor-local) at the window's top-left corner.
+    src: (i32, i32),
+    /// The window's top-left corner, monitor-local.
+    origin: (i32, i32),
+    /// How far the image moves on screen: down for a top panel, up for a bottom one, right for
+    /// a left one, left for a right one.
+    shift: (i32, i32),
+}
+
+impl PanView {
+    /// `None` when the panel covers the whole monitor.
+    fn new(dock: &Dock, offset: u32) -> Option<Self> {
+        let rect = dock.uncovered()?;
+        let origin = (rect.left - dock.monitor.left, rect.top - dock.monitor.top);
+        let d = offset as i32;
+        let shift = match dock.edge {
+            Edge::Top => (0, d),
+            Edge::Bottom => (0, -d),
+            Edge::Left => (d, 0),
+            Edge::Right => (-d, 0),
+        };
+        Some(Self {
+            window: (rect.width, rect.height),
+            src: (origin.0 - shift.0, origin.1 - shift.1),
+            origin,
+            shift,
+        })
+    }
+
+    /// The pointer in pan window pixels, drawn where the content under it now is, or `None`
+    /// when that is outside the window (under the panel, for a tick while the offset eases).
+    fn pointer(&self, pointer: ScreenPoint, monitor: &OutputInfo) -> Option<(u32, u32)> {
+        let x = pointer.x - monitor.left - self.origin.0 + self.shift.0;
+        let y = pointer.y - monitor.top - self.origin.1 + self.shift.1;
+        let inside = (0..self.window.0 as i32).contains(&x) && (0..self.window.1 as i32).contains(&y);
+        inside.then_some((x as u32, y as u32))
+    }
+}
+
 /// What was last applied to the window, as the magnifier decides when to apply again.
 /// Docked names the monitor the panel is on: the primary, or with `panel_follows_monitor` the
 /// active one, so only then does a monitor switch move the panel (roadmap 5.2).
@@ -211,9 +295,18 @@ struct View<R> {
     /// The docked panel's rect as last applied, `None` unless docked. Kept from the layout
     /// rather than recomputed, because a monitor switch while docked need not move the panel.
     panel: Option<ScreenRect>,
+    /// The docked panel as last applied, `None` unless docked. `panel` is its rect.
+    dock: Option<Dock>,
     /// True while `set_system_cursor(false)` is in force because the pointer is inside the
-    /// panel. `apply_layout` resets the cursor, so this is cleared with every layout change.
-    cursor_hidden_in_panel: bool,
+    /// panel or the pan window shows. `apply_layout` resets the cursor, so this is cleared with
+    /// every layout change.
+    cursor_hidden: bool,
+    /// The pan offset the view has eased to, in pixels (ADR 0011); the window draws it rounded.
+    pan_offset: f32,
+    /// True while the pan window is shown. `apply_layout` hides it, so this is cleared with
+    /// every layout change.
+    pan_shown: bool,
+    last_pan_uniforms: Option<Uniforms>,
     last_frame: Option<Arc<Frame>>,
     last_uniforms: Option<Uniforms>,
     /// What the pointer looked like at the last enabled tick (ADR 0010). `Unknown` until the
@@ -257,7 +350,11 @@ impl<R: Renderer> View<R> {
             last_tick: Instant::now(),
             applied: Applied::Hidden,
             panel: None,
-            cursor_hidden_in_panel: false,
+            dock: None,
+            cursor_hidden: false,
+            pan_offset: 0.0,
+            pan_shown: false,
+            last_pan_uniforms: None,
             last_frame: None,
             last_uniforms: None,
             look: PointerLook::Unknown,
@@ -301,32 +398,45 @@ impl<R: Renderer> View<R> {
                 self.renderer.resize(w, h);
             }
             self.applied = want;
-            self.panel = match &layout {
+            self.dock = match &layout {
                 Layout::Docked { monitor, edge, thickness } => {
-                    Some(geometry::docked_rect(monitor, *edge, *thickness))
+                    Some(Dock { monitor: monitor.clone(), edge: *edge, thickness: *thickness })
                 }
                 Layout::Hidden | Layout::Fullscreen { .. } => None,
             };
-            self.cursor_hidden_in_panel = false;
+            self.panel = self
+                .dock
+                .as_ref()
+                .map(|d| geometry::docked_rect(&d.monitor, d.edge, d.thickness));
+            // `apply_layout` hid the pan window and showed the system cursor (fullscreen
+            // excepted, which has no pan); the pan starts again from nothing.
+            self.cursor_hidden = false;
+            self.pan_shown = false;
+            self.pan_offset = 0.0;
+            self.last_pan_uniforms = None;
+            if let Some(uncovered) = self.dock.as_ref().and_then(Dock::uncovered) {
+                self.renderer.resize_pan(uncovered.width, uncovered.height);
+            }
         }
 
         if state.enabled {
+            self.draw(host, &state, frame, now);
             self.update_system_cursor(host);
-            self.draw(&state, frame, now);
         }
     }
 
-    /// While docked, hides the system cursor when the pointer is inside the panel and shows it
-    /// when it leaves (ADR 0007); the circle marks the pointer in the magnified view. Calls the
-    /// host only on a change. Fullscreen hiding is `apply_layout`'s job.
+    /// While docked, hides the system cursor when the pointer is inside the panel (ADR 0007) or
+    /// the pan window shows (ADR 0011), and shows it when neither holds; the pointer is drawn
+    /// in the magnified view and in the pan window. Calls the host only on a change. Fullscreen
+    /// hiding is `apply_layout`'s job.
     fn update_system_cursor(&mut self, host: &mut impl OverlayHost) {
         let Some(panel) = self.panel else {
             return;
         };
-        let inside = panel.contains(self.pointer);
-        if inside != self.cursor_hidden_in_panel {
-            host.set_system_cursor(!inside);
-            self.cursor_hidden_in_panel = inside;
+        let hidden = panel.contains(self.pointer) || self.pan_shown;
+        if hidden != self.cursor_hidden {
+            host.set_system_cursor(!hidden);
+            self.cursor_hidden = hidden;
         }
     }
 
@@ -467,7 +577,13 @@ impl<R: Renderer> View<R> {
     }
 
     /// Lerp, crop, upload, uniforms, present.
-    fn draw(&mut self, state: &AppState, frame: Option<Arc<Frame>>, now: Instant) {
+    fn draw(
+        &mut self,
+        host: &mut impl OverlayHost,
+        state: &AppState,
+        frame: Option<Arc<Frame>>,
+        now: Instant,
+    ) {
         // Frame-rate-independent lerp toward the target, which also smooths a switch between
         // the pointer and the caret.
         let dt = now.saturating_duration_since(self.last_tick).as_secs_f32();
@@ -520,6 +636,104 @@ impl<R: Renderer> View<R> {
         } else {
             // Surface lost or outdated: reconfigure to recover.
             self.renderer.resize(win_w, win_h);
+        }
+
+        self.update_pan(host, dt, pointer);
+    }
+
+    /// The offset the pan is easing toward, in pixels (ADR 0011), or `None` when it must not pan:
+    /// not docked, nothing uncovered, no pan surface, no frame yet, or the captured monitor is
+    /// not the one the panel is on (a caret on another monitor, or the panel staying on the
+    /// primary), so the frame texture does not hold what lies under the pan window.
+    fn pan_target(&self) -> Option<f32> {
+        let dock = self.dock.as_ref()?;
+        let uncovered = dock.uncovered()?;
+        let monitor = &dock.monitor;
+        if !self.renderer.pan_available()
+            || self.last_frame.is_none()
+            || monitor.idx != self.active.idx
+            || self.renderer.frame_size() != (monitor.width, monitor.height)
+        {
+            return None;
+        }
+        let across = match dock.edge {
+            Edge::Top | Edge::Bottom => uncovered.height,
+            Edge::Left | Edge::Right => uncovered.width,
+        };
+        let margin = PAN_MARGIN * across as f32;
+        Some(geometry::pan_offset(self.pointer, monitor, dock.edge, dock.thickness, margin))
+    }
+
+    /// Eases the pan offset toward the real pointer's target, draws the pan window and shows or
+    /// hides it (ADR 0011). It shows while the whole-pixel offset is at least one; the surface is
+    /// drawn before the window is first shown, so no stale frame appears. `panel_pointer` is the
+    /// pointer as the panel draws it; the pan window draws the same shape at 1x.
+    fn update_pan(&mut self, host: &mut impl OverlayHost, dt: f32, panel_pointer: PointerDraw) {
+        let dock = self.dock.clone();
+        let (Some(target), Some(dock)) = (self.pan_target(), dock) else {
+            // Must not pan: hide at once and start the next pan from nothing.
+            self.pan_offset = 0.0;
+            self.hide_pan(host);
+            return;
+        };
+        if (target - self.pan_offset).abs() < 0.5 {
+            self.pan_offset = target;
+        } else {
+            let alpha = geometry::smooth_alpha(PAN_EASE, dt);
+            self.pan_offset = geometry::lerp_toward(self.pan_offset, target, alpha);
+        }
+        let offset = self.pan_offset.round() as u32;
+        let Some(view) = PanView::new(&dock, offset).filter(|_| offset > 0) else {
+            // Rounds to nothing. The eased value is kept, so a small target can still grow.
+            self.hide_pan(host);
+            return;
+        };
+
+        // The frame at 1x, shifted by the offset, with no colour filter: the unmagnified area is
+        // never filtered. The pointer is the real one plus the offset.
+        let (fw, fh) = self.renderer.frame_size();
+        let (fw, fh) = (fw as f32, fh as f32);
+        let (cursor_x, cursor_y) = view
+            .pointer(self.pointer, &dock.monitor)
+            .unwrap_or((CURSOR_HIDDEN, CURSOR_HIDDEN));
+        let pointer = match panel_pointer.kind {
+            POINTER_SHAPE => PointerDraw { size: 1.0, ..panel_pointer },
+            _ => panel_pointer,
+        };
+        let uniforms = Uniforms {
+            crop: [
+                view.src.0 as f32 / fw,
+                view.src.1 as f32 / fh,
+                view.window.0 as f32 / fw,
+                view.window.1 as f32 / fh,
+            ],
+            color_mode: ColorFilter::None.as_u32(),
+            interp_mode: Interpolation::Bilinear.as_u32(),
+            cursor_x,
+            cursor_y,
+            edge_threshold: 0.0,
+            pointer,
+        };
+        if self.last_pan_uniforms != Some(uniforms) {
+            self.renderer.write_pan_uniforms(&uniforms);
+            self.last_pan_uniforms = Some(uniforms);
+        }
+        if !self.renderer.render_pan() {
+            // Surface lost or outdated: reconfigure to recover; not shown until it draws.
+            self.renderer.resize_pan(view.window.0, view.window.1);
+            return;
+        }
+        if !self.pan_shown {
+            host.set_pan_visible(true);
+            self.pan_shown = true;
+        }
+    }
+
+    /// Hides the pan window if it is shown.
+    fn hide_pan(&mut self, host: &mut impl OverlayHost) {
+        if self.pan_shown {
+            host.set_pan_visible(false);
+            self.pan_shown = false;
         }
     }
 
@@ -630,7 +844,23 @@ mod tests {
         frame: (u32, u32),
         render_ok: bool,
         calls: Vec<Gpu>,
+        /// Whether there is a pan surface.
+        pan_available: bool,
+        pan_render_ok: bool,
+        /// The pan surface's calls, apart from `calls` so the panel's tests stay exact.
+        pan_calls: Vec<PanGpu>,
+        /// `render_pan` and `set_pan_visible`, in the order they happened.
+        trace: Trace,
     }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum PanGpu {
+        Resize(u32, u32),
+        Uniforms(Uniforms),
+        Render,
+    }
+
+    type Trace = Arc<Mutex<Vec<&'static str>>>;
 
     impl Renderer for FakeRenderer {
         fn frame_size(&self) -> (u32, u32) {
@@ -657,6 +887,20 @@ mod tests {
             self.calls.push(Gpu::Render);
             self.render_ok
         }
+        fn pan_available(&self) -> bool {
+            self.pan_available
+        }
+        fn resize_pan(&mut self, width: u32, height: u32) {
+            self.pan_calls.push(PanGpu::Resize(width, height));
+        }
+        fn write_pan_uniforms(&mut self, uniforms: &Uniforms) {
+            self.pan_calls.push(PanGpu::Uniforms(*uniforms));
+        }
+        fn render_pan(&mut self) -> bool {
+            self.pan_calls.push(PanGpu::Render);
+            self.trace.lock().unwrap().push("render");
+            self.pan_render_ok
+        }
     }
 
     /// Records each layout and system cursor call, and answers with the size the window would
@@ -671,6 +915,7 @@ mod tests {
         cursor: Vec<bool>,
         /// Each `set_pan_visible` call.
         pan: Vec<bool>,
+        trace: Trace,
     }
 
     impl PointerSource for FakeHost {
@@ -705,6 +950,7 @@ mod tests {
 
         fn set_pan_visible(&mut self, visible: bool) {
             self.pan.push(visible);
+            self.trace.lock().unwrap().push(if visible { "show" } else { "hide" });
         }
 
         fn raw_handles(&self) -> (RawDisplayHandle, RawWindowHandle) {
@@ -750,7 +996,16 @@ mod tests {
             let desired = Arc::new(AtomicU32::new(start.idx));
             let (events, rx) = channel();
             let frame = (start.width, start.height);
-            let renderer = FakeRenderer { frame, render_ok: true, calls: Vec::new() };
+            let trace: Trace = Arc::default();
+            let renderer = FakeRenderer {
+                frame,
+                render_ok: true,
+                calls: Vec::new(),
+                pan_available: true,
+                pan_render_ok: true,
+                pan_calls: Vec::new(),
+                trace: trace.clone(),
+            };
             let view = View::new(
                 renderer,
                 start,
@@ -769,6 +1024,7 @@ mod tests {
                 layouts: Vec::new(),
                 cursor: Vec::new(),
                 pan: Vec::new(),
+                trace,
             };
             Self { view, host, state, frames, desired, events, now }
         }
@@ -1650,16 +1906,344 @@ mod tests {
         assert_eq!(rig.cursor_step(), [false]);
     }
 
+    // The pan window (ADR 0011, roadmap 7.2c). A docked panel at 25% of the 1920x1080 primary is
+    // 270 px thick on Top and Bottom and 480 px on Left and Right; the margin is a tenth of what
+    // is left uncovered (81 px and 144 px).
+
+    /// Ticks until the eased pan offset has had time to settle.
+    const SETTLE: usize = 30;
+
+    impl Rig {
+        /// A frame published, then docked on `edge` at 25% of the primary and one tick taken, so
+        /// the frame is uploaded; the pan calls so far are forgotten.
+        fn pan_rig(edge: Edge) -> Self {
+            let mut rig = Rig::new();
+            rig.publish_frame();
+            rig.docked_on(edge);
+            rig.host.pan.clear();
+            rig.host.cursor.clear();
+            rig.view.renderer.pan_calls.clear();
+            rig.view.trace().clear();
+            rig
+        }
+
+        fn settle(&mut self) {
+            for _ in 0..SETTLE {
+                self.tick();
+            }
+        }
+
+        fn pan_uniforms(&self) -> Option<Uniforms> {
+            self.view.renderer.pan_calls.iter().rev().find_map(|c| match c {
+                PanGpu::Uniforms(u) => Some(*u),
+                _ => None,
+            })
+        }
+
+        fn pan_renders(&self) -> usize {
+            self.view.renderer.pan_calls.iter().filter(|c| **c == PanGpu::Render).count()
+        }
+    }
+
+    impl View<FakeRenderer> {
+        fn trace(&self) -> std::sync::MutexGuard<'_, Vec<&'static str>> {
+            self.renderer.trace.lock().unwrap()
+        }
+    }
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
     #[test]
-    fn the_pan_window_is_never_shown_yet() {
-        // ADR 0011, roadmap 7.2b: the host has the pan window, the magnifier does not use it.
+    fn the_pan_window_stays_hidden_while_the_pointer_is_far_from_the_panel() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 900);
+        rig.settle();
+        rig.point_at(100, 351); // the margin's edge: the offset is still 0
+        rig.settle();
+        assert!(rig.host.pan.is_empty());
+        assert!(rig.view.renderer.pan_calls.is_empty());
+        assert!(rig.host.cursor.is_empty());
+    }
+
+    #[test]
+    fn the_pan_surface_is_drawn_before_the_window_is_shown() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.tick();
+        assert_eq!(rig.host.pan, [true]);
+        assert_eq!(*rig.view.trace(), ["render", "show"]);
+        // Eased, not jumped: partway to the 151 px target.
+        assert!(rig.view.pan_offset > 1.0 && rig.view.pan_offset < 151.0);
+    }
+
+    #[test]
+    fn the_offset_settles_on_a_whole_pixel_and_stays_there() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        assert!(approx(rig.view.pan_offset, 151.0));
+        // The uniforms are written only when something changed.
+        rig.view.renderer.pan_calls.clear();
+        for _ in 0..3 {
+            rig.tick();
+        }
+        assert_eq!(rig.pan_renders(), 3);
+        assert_eq!(rig.pan_uniforms(), None);
+    }
+
+    #[test]
+    fn a_target_under_a_pixel_still_grows_into_one() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 350); // the target is 1 px
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        let u = rig.pan_uniforms().unwrap();
+        assert!(approx(u.crop[1], 269.0 / 1080.0));
+    }
+
+    #[test]
+    fn the_pan_window_draws_the_frame_shifted_and_the_pointer_displaced_on_each_edge() {
+        // (edge, pointer, window size, source corner in the frame, pointer in the window)
+        let cases = [
+            // Offset 151: 270 + 81 - 200. The strip rows 0..151 come in below the panel.
+            (Edge::Top, (960, 200), (1920, 810), (0, 119), (960, 81)),
+            // The pointer is 200 px from the bottom edge row; the image moves up by 151.
+            (Edge::Bottom, (960, 879), (1920, 810), (0, 151), (960, 728)),
+            // Offset 324: 480 + 144 - 300.
+            (Edge::Left, (300, 500), (1440, 1080), (156, 0), (144, 500)),
+            (Edge::Right, (1619, 500), (1440, 1080), (324, 0), (1295, 500)),
+        ];
+        for (edge, (x, y), (w, h), (sx, sy), (cx, cy)) in cases {
+            let mut rig = Rig::pan_rig(edge);
+            rig.point_at(x, y);
+            rig.settle();
+            assert_eq!(rig.host.pan, [true], "{edge:?}");
+            let u = rig.pan_uniforms().unwrap();
+            let want = [sx as f32 / 1920.0, sy as f32 / 1080.0, w as f32 / 1920.0, h as f32 / 1080.0];
+            for (got, want) in u.crop.iter().zip(want) {
+                assert!(approx(*got, want), "{edge:?}: crop {:?}, want {want:?}", u.crop);
+            }
+            assert_eq!((u.cursor_x, u.cursor_y), (cx, cy), "{edge:?}");
+            assert_eq!((u.color_mode, u.interp_mode), (0, 0), "{edge:?}: no filter, bilinear");
+        }
+    }
+
+    #[test]
+    fn the_pan_pointer_is_hidden_while_it_would_fall_under_the_panel() {
+        // A top panel and an offset still easing in: the displaced pointer is above the window.
+        let dock = Dock { monitor: primary(), edge: Edge::Top, thickness: 270 };
+        let view = PanView::new(&dock, 10).unwrap();
+        assert_eq!(view.pointer(ScreenPoint { x: 100, y: 100 }, &primary()), None);
+        assert_eq!(view.pointer(ScreenPoint { x: 100, y: 300 }, &primary()), Some((100, 40)));
+    }
+
+    #[test]
+    fn the_pan_window_hides_once_the_offset_eases_back_to_nothing() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        rig.point_at(100, 900);
+        rig.tick();
+        assert_eq!(rig.host.pan, [true], "still easing back after one tick");
+        rig.settle();
+        assert_eq!(rig.host.pan, [true, false]);
+    }
+
+    #[test]
+    fn a_layout_change_clears_the_shown_flag_so_the_pan_is_shown_again() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        // 30%: 324 px thick, target 324 + 75.6 - 200. `apply_layout` hid the window.
+        rig.set(|s| s.panel_size = 30);
+        rig.view.renderer.pan_calls.clear();
+        rig.view.trace().clear();
+        rig.tick();
+        assert_eq!(rig.view.renderer.pan_calls[0], PanGpu::Resize(1920, 756));
+        assert_eq!(rig.host.pan, [true, true]);
+        assert_eq!(*rig.view.trace(), ["render", "show"]);
+    }
+
+    #[test]
+    fn the_pan_window_hides_at_once_when_the_panel_monitor_is_not_the_one_captured() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        // The pointer stays still beside the panel while the view goes to a caret on the second
+        // monitor (the panel stays on the primary): the frame texture is the second monitor's.
+        rig.caret_at(2500, 500);
+        rig.tick();
+        assert_eq!(rig.desired.load(Ordering::Relaxed), 1);
+        assert_eq!(rig.host.pan, [true, false]);
+        assert_eq!(rig.view.pan_offset, 0.0);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true, false]);
+    }
+
+    #[test]
+    fn a_panel_that_follows_the_monitor_pans_on_the_second_monitor() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.set(|s| s.panel_follows_monitor = true);
+        // 25% of 1024 is 256 thick; 768 uncovered, margin 76.8: 256 + 76.8 - 200.
+        rig.point_at(2000, 200);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        let u = rig.pan_uniforms().unwrap();
+        // The target 132.8 is drawn as 133: source row 256 - 133.
+        let want = [0.0, 123.0 / 1024.0, 1.0, 768.0 / 1024.0];
+        for (got, want) in u.crop.iter().zip(want) {
+            assert!(approx(*got, want), "crop {:?}", u.crop);
+        }
+        // Window pixels: 2000 - 1920 = 80 across, 200 - 256 + 133 = 77 down.
+        assert_eq!((u.cursor_x, u.cursor_y), (80, 77));
+    }
+
+    #[test]
+    fn the_pan_window_is_not_shown_without_a_frame() {
         let mut rig = Rig::new();
         rig.docked_top();
-        rig.point_at(100, 100);
-        rig.step();
-        rig.point_at(100, 900);
-        rig.step();
+        rig.point_at(100, 200);
+        rig.settle();
         assert!(rig.host.pan.is_empty());
+        assert!(rig.view.renderer.pan_calls.iter().all(|c| matches!(c, PanGpu::Resize(..))));
+    }
+
+    #[test]
+    fn the_pan_window_is_not_shown_without_a_pan_surface() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.view.renderer.pan_available = false;
+        rig.point_at(100, 300); // below the 270 px panel, where the pan would start
+        rig.settle();
+        assert!(rig.host.pan.is_empty());
+        assert!(rig.host.cursor.is_empty());
+        assert!(rig.view.renderer.pan_calls.is_empty());
+    }
+
+    #[test]
+    fn a_pan_surface_that_fails_to_draw_is_reconfigured_and_not_shown() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.view.renderer.pan_render_ok = false;
+        rig.point_at(100, 200);
+        rig.tick();
+        assert!(rig.host.pan.is_empty());
+        assert_eq!(rig.view.renderer.pan_calls.last(), Some(&PanGpu::Resize(1920, 810)));
+        rig.view.renderer.pan_render_ok = true;
+        rig.tick();
+        assert_eq!(rig.host.pan, [true]);
+    }
+
+    #[test]
+    fn the_pan_window_is_never_used_in_fullscreen() {
+        let mut rig = Rig::new();
+        rig.publish_frame();
+        rig.set(|s| s.enabled = true);
+        for (x, y) in [(100, 5), (960, 540), (1900, 1070)] {
+            rig.point_at(x, y);
+            rig.settle();
+        }
+        assert!(rig.host.pan.is_empty());
+        assert!(rig.view.renderer.pan_calls.is_empty());
+    }
+
+    #[test]
+    fn a_thin_uncovered_strip_still_pans() {
+        let mut rig = Rig::new();
+        rig.publish_frame();
+        rig.set(|s| {
+            s.display_mode = DisplayMode::Docked(Edge::Top);
+            s.panel_size = cv_core::PANEL_SIZE_MAX;
+            s.enabled = true;
+        });
+        // 90%: still 108 px uncovered, so it pans; the pointer must be in the strip below.
+        rig.point_at(100, 980);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+    }
+
+    #[test]
+    fn the_system_cursor_is_hidden_while_the_pan_window_shows() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        // Below the 270 px panel, so Windows' cursor would stay visible without the pan.
+        rig.point_at(100, 300);
+        rig.tick();
+        assert_eq!(rig.host.pan, [true]);
+        assert_eq!(rig.host.cursor, [false]);
+        rig.point_at(100, 900);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true, false]);
+        assert_eq!(rig.host.cursor, [false, true]);
+    }
+
+    #[test]
+    fn the_system_cursor_stays_hidden_when_the_pointer_goes_from_the_pan_into_the_panel() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 300);
+        rig.settle();
+        assert_eq!(rig.host.cursor, [false]);
+        // Into the panel: the cursor stays hidden for the panel's sake, and the pan holds full.
+        rig.point_at(100, 100);
+        rig.settle();
+        assert_eq!(rig.host.cursor, [false]);
+        assert!(approx(rig.view.pan_offset, 251.0));
+    }
+
+    #[test]
+    fn the_pan_pointer_is_the_same_shape_at_1x_in_the_same_colours() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.set(|s| {
+            s.pointer_size = 3.0;
+            s.pointer_fill = [10, 20, 30];
+        });
+        rig.host.look = PointerLook::Shape(arrow());
+        rig.point_at(100, 200);
+        rig.settle();
+        let panel = rig.view.last_uniforms.unwrap().pointer;
+        let pan = rig.pan_uniforms().unwrap().pointer;
+        assert_eq!((panel.kind, panel.size), (POINTER_SHAPE, 3.0));
+        assert_eq!((pan.kind, pan.size), (POINTER_SHAPE, 1.0));
+        assert_eq!(pan.fill, panel.fill);
+        assert_eq!(pan.fill, rgba([10, 20, 30]));
+        assert_eq!((pan.mask, pan.hotspot, pan.outline), (panel.mask, panel.hotspot, panel.outline));
+
+        // A hidden pointer draws nothing in either.
+        rig.host.look = PointerLook::Hidden;
+        rig.tick();
+        assert_eq!(rig.pan_uniforms().unwrap().pointer.kind, POINTER_NONE);
+    }
+
+    #[test]
+    fn the_pan_window_shows_again_after_the_monitors_change() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true]);
+        // The primary gets taller: the panel is placed again, and so is the pan window.
+        let taller = OutputInfo { idx: 0, left: 0, top: 0, width: 1920, height: 1200 };
+        rig.view.outputs_changed(vec![taller, second()]);
+        rig.settle();
+        assert_eq!(rig.host.pan, [true, true]);
+        assert!(rig.view.renderer.pan_calls.contains(&PanGpu::Resize(1920, 900)));
+    }
+
+    #[test]
+    fn turning_the_magnifier_off_ends_the_pan() {
+        let mut rig = Rig::pan_rig(Edge::Top);
+        rig.point_at(100, 200);
+        rig.settle();
+        rig.set(|s| s.enabled = false);
+        rig.tick();
+        // `apply_layout(Hidden)` hides the window itself; the magnifier does not call again.
+        assert_eq!(rig.host.layouts.last(), Some(&Layout::Hidden));
+        assert_eq!(rig.host.pan, [true]);
+        assert!(!rig.view.pan_shown);
+        rig.set(|s| s.enabled = true);
+        rig.tick();
+        assert_eq!(rig.host.pan, [true, true]);
     }
 
     #[test]
