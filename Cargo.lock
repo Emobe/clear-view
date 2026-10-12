@@ -443,7 +443,6 @@ version = "0.1.0"
 dependencies = [
  "cv-core",
  "windows",
- "windows-core",
 ]
 
 [[package]]
