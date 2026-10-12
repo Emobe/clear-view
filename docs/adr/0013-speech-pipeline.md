@@ -1,6 +1,6 @@
 # 0013: Speech pipeline
 
-Status: Proposed
+Status: Accepted (you, 2026-10-12; set by the agent on your instruction)
 Date: 2026-10-12
 
 ## Context

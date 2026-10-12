@@ -172,9 +172,9 @@ Since 8.2, these apply to speech steps in place of the blanket "No speech work" 
 8.7b cv-tts rewrite with the SAPI backend: speak, stop, list voices, set voice, rate and volume; the UIA parts and the startup phrase deleted. Checked through a dev example, not wired to the panel (ADR 0012, Accepted).
 8.7c cv-tts OneCore backend (`Windows.Media.SpeechSynthesis`) with WASAPI playback on the default device, and one voice list across both engines. Same dev check (ADR 0012, Accepted).
 8.7d Panel speech controls with the `tts` feature on: speech on/off, voice (with the missing-voice and no-voices states), rate, volume, "Test voice". Verify: test voice speaks and can be stopped; with the feature off, nothing changes (ADR 0012, Accepted).
-8.8 Pipeline per 8.5 and hotkeys per 8.6: speech on/off and silence. Verify: a long sentence stops at once on silence; the magnifier stays smooth while speaking. ADR 0013 splits it, and 8.8a and 8.8b come before 8.7d, because "Test voice" speaks through the speech thread (pending ADR 0013):
-8.8a cv-core `speech`: `Utterance`, `Kind`, `SpeechQueue` (foreground and background levels, batches, silence, pointer expiry, the late-event rule, utterance ids and stale "finished" reports), `utterances_for` (returns nothing yet), `EventHub::subscribe_with_wake`, and `Action` variants for silence and speech on/off. Unit tests. No Windows code (pending ADR 0013).
-8.8b cv-tts speech thread and `SpeechHandle` on the 8.7b and 8.7c backends: one Win32 wait over commands, core events, SAPI and WASAPI; engines created when speech is first turned on; the stop path; engine timeouts; shutdown. app wiring behind `tts`, with silence and on/off on the 8.6 bindings. Verify: a long sentence stops within about 100 ms of silence (`[tts]` log timestamps); the magnifier stays smooth while speaking; speech off and the feature off change nothing (pending ADR 0013).
+8.8 Pipeline per 8.5 and hotkeys per 8.6: speech on/off and silence. Verify: a long sentence stops at once on silence; the magnifier stays smooth while speaking. ADR 0013 splits it, and 8.8a and 8.8b come before 8.7d, because "Test voice" speaks through the speech thread (ADR 0013, Accepted):
+8.8a cv-core `speech`: `Utterance`, `Kind`, `SpeechQueue` (foreground and background levels, batches, silence, pointer expiry, the late-event rule, utterance ids and stale "finished" reports), `utterances_for` (returns nothing yet), `EventHub::subscribe_with_wake`, and `Action` variants for silence and speech on/off. Unit tests. No Windows code (ADR 0013, Accepted).
+8.8b cv-tts speech thread and `SpeechHandle` on the 8.7b and 8.7c backends: one Win32 wait over commands, core events, SAPI and WASAPI; engines created when speech is first turned on; the stop path; engine timeouts; shutdown. app wiring behind `tts`, with silence and on/off on the 8.6 bindings. Verify: a long sentence stops within about 100 ms of silence (`[tts]` log timestamps); the magnifier stays smooth while speaking; speech off and the feature off change nothing (ADR 0013, Accepted).
 8.9 Speech settings persist. Reconcile the old tts_* fields with the ADRs; an old settings file still loads.
 
 ## Phase 9: Focus and program echo (speech stage 1)
@@ -238,7 +238,7 @@ DocReader-style reformatted reading view, Background Reader, Recorder, OCR and c
 - When to upgrade wgpu and eframe: decided in ADR 0004, after the refactor and before 3.1 (items 2.6 and 2.7).
 - How the unmagnified area pans in docked mode (7.1).
 - Speech: voice engine and natural voices (8.4): decided in ADR 0012 (Accepted).
-- Speech: how speech is silenced, and the speech hotkey scheme (8.5, 8.6). 8.5 is ADR 0013 (Proposed).
+- Speech: how speech is silenced, and the speech hotkey scheme (8.5, 8.6). 8.5 is decided in ADR 0013 (Accepted).
 - Speech: verbosity levels (9.5).
 - Speech: whether magnifier focus tracking joins the track (9.9).
 - Speech: what caret movement speaks (10.4).
