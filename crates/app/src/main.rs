@@ -102,6 +102,8 @@ fn main() -> eframe::Result {
         let wake_failures = wake.clone();
         let state = shared.clone();
         platform::spawn_hotkey_thread(
+            // No speech keys until roadmap 8.6b (ADR 0014).
+            false,
             // After the push, so a panel that was already drawn repaints with the failures.
             move |lines| {
                 failures.lock().unwrap().extend(lines);
