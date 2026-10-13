@@ -1,5 +1,6 @@
 pub mod events;
 pub mod geometry;
+pub mod hotkeys;
 pub mod speech;
 pub mod tracking;
 pub mod voice;
@@ -214,9 +215,11 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     /// Stop speaking and clear the speech queue (ADR 0013). Changes no `AppState` field: the
-    /// caller sends it to the speech thread. No key is bound to it before roadmap 8.6.
+    /// caller sends it to the speech thread. Bound to a lone Ctrl (`hotkeys::SilenceKey`, ADR
+    /// 0014); nothing reads the key before roadmap 8.6b.
     Silence,
-    /// Speech on or off (`tts_enabled`). No key is bound to it before roadmap 8.6.
+    /// Speech on or off (`tts_enabled`). In `hotkeys::DEFAULT_BINDINGS` as a speech binding;
+    /// not registered before roadmap 8.6b.
     ToggleSpeech,
 }
 
