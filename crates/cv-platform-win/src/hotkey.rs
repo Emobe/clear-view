@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWN
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::{
     Input::{
-        GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWKEYBOARD,
+        GetRawInputData, GetRegisteredRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RAWKEYBOARD,
         RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEKEYBOARD, RegisterRawInputDevices,
         KeyboardAndMouse::{
             HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey,
@@ -108,19 +108,56 @@ unsafe fn create_raw_input_window() -> windows::core::Result<HWND> {
             Some(hinstance),
             None,
         )?;
-        let keyboard = RAWINPUTDEVICE {
-            usUsagePage: 0x01, // generic desktop controls
-            usUsage: 0x06,     // keyboard
-            dwFlags: RIDEV_INPUTSINK,
-            hwndTarget: hwnd,
-        };
-        if let Err(e) = RegisterRawInputDevices(&[keyboard], size_of::<RAWINPUTDEVICE>() as u32) {
+        if let Err(e) = register_keyboard(hwnd) {
             let _ = DestroyWindow(hwnd);
             return Err(e);
         }
         Ok(hwnd)
     }
 }
+
+const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
+const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
+
+/// Registers the keyboard collection for raw input to `hwnd`, in the background too.
+fn register_keyboard(hwnd: HWND) -> windows::core::Result<()> {
+    let keyboard = RAWINPUTDEVICE {
+        usUsagePage: HID_USAGE_PAGE_GENERIC,
+        usUsage: HID_USAGE_GENERIC_KEYBOARD,
+        dwFlags: RIDEV_INPUTSINK,
+        hwndTarget: hwnd,
+    };
+    unsafe { RegisterRawInputDevices(&[keyboard], size_of::<RAWINPUTDEVICE>() as u32) }
+}
+
+/// True while the process's keyboard raw input registration still targets `hwnd` with
+/// `RIDEV_INPUTSINK`. Registration is one per process and device type, so any other code in the
+/// process (winit, which eframe runs on, registers the keyboard when its event loop is created)
+/// replaces ours without a sign.
+fn keyboard_still_ours(hwnd: HWND) -> bool {
+    let size = size_of::<RAWINPUTDEVICE>() as u32;
+    let mut count = 0u32;
+    // The first call only reports how many devices are registered.
+    unsafe { GetRegisteredRawInputDevices(None, &mut count, size) };
+    if count == 0 {
+        return false;
+    }
+    let mut devices = vec![RAWINPUTDEVICE::default(); count as usize];
+    let got = unsafe { GetRegisteredRawInputDevices(Some(devices.as_mut_ptr()), &mut count, size) };
+    if got == u32::MAX {
+        return false;
+    }
+    devices[..(got as usize).min(devices.len())].iter().any(|d| {
+        d.usUsagePage == HID_USAGE_PAGE_GENERIC
+            && d.usUsage == HID_USAGE_GENERIC_KEYBOARD
+            && d.hwndTarget == hwnd
+            && d.dwFlags.0 & RIDEV_INPUTSINK.0 != 0
+    })
+}
+
+/// How often the hotkey thread checks that the raw input registration is still ours.
+const RAW_INPUT_CHECK_MS: u32 = 500;
+const RAW_INPUT_TIMER: usize = 1;
 
 /// Reads the keyboard report behind a `WM_INPUT` message, or `None` for any other device or a
 /// failed read.
@@ -190,10 +227,13 @@ fn hotkey_loop(
         // `CV_KEYS_LOG=1` logs the raw Ctrl and Alt reports, to see how AltGr arrives (ADR 0014).
         let log_raw = speech_keys && std::env::var_os("CV_KEYS_LOG").is_some();
         let mut silence = SilenceKey::new();
-        let mut raw_input = false;
+        let mut raw_window = None;
         if speech_keys {
             match create_raw_input_window() {
-                Ok(_) => raw_input = true,
+                Ok(hwnd) => {
+                    raw_window = Some(hwnd);
+                    SetTimer(Some(hwnd), RAW_INPUT_TIMER, RAW_INPUT_CHECK_MS, None);
+                }
                 Err(e) => {
                     eprintln!("[hotkey] raw input for the silence key failed: {e}");
                     failures.push(format!(
@@ -217,7 +257,20 @@ fn hotkey_loop(
                 }
                 _ => {}
             }
-            if msg.message == WM_INPUT && raw_input {
+            if let Some(hwnd) = raw_window
+                && msg.message == WM_TIMER
+                && msg.hwnd == hwnd
+                && msg.wParam.0 == RAW_INPUT_TIMER
+            {
+                if !keyboard_still_ours(hwnd) {
+                    match register_keyboard(hwnd) {
+                        Ok(()) => eprintln!("[hotkey] raw keyboard input had been taken over; restored"),
+                        Err(e) => eprintln!("[hotkey] could not restore raw keyboard input: {e}"),
+                    }
+                }
+                continue;
+            }
+            if msg.message == WM_INPUT && raw_window.is_some() {
                 if let Some(kb) = read_keyboard(msg.lParam) {
                     if log_raw && (kb.VKey == VK_CONTROL.0 || kb.VKey == VK_MENU.0) {
                         eprintln!(
@@ -294,5 +347,55 @@ mod tests {
     fn speech_bindings_are_registered_only_when_asked() {
         assert!(active_bindings(false).all(|(_, b)| !b.speech));
         assert!(active_bindings(true).any(|(_, b)| b.action == Action::ToggleSpeech));
+    }
+
+    /// Starts the hotkey thread with speech keys, lets `disturb` run once it is set up, injects
+    /// a Ctrl tap with `SendInput` and returns the first action reported within 2 s.
+    fn inject_ctrl_tap(disturb: impl FnOnce()) -> Option<Action> {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+        };
+
+        let (tx, rx) = channel();
+        spawn_hotkey_thread(true, |lines| eprintln!("failures: {lines:?}"), move |a| {
+            let _ = tx.send(a);
+        });
+        std::thread::sleep(Duration::from_millis(500)); // let the thread set up
+        disturb();
+
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT { wVk: VK_CONTROL, dwFlags: flags, ..Default::default() },
+            },
+        };
+        let events = [key(Default::default()), key(KEYEVENTF_KEYUP)];
+        let sent = unsafe { SendInput(&events, size_of::<INPUT>() as i32) };
+        assert_eq!(sent, 2, "SendInput");
+        rx.recv_timeout(Duration::from_secs(2)).ok()
+    }
+
+    /// These two need an interactive desktop, so they are ignored. Run them one at a time, each
+    /// starts a hotkey thread that lives to the end of the process:
+    /// `cargo test -p cv-platform-win ctrl_tap_reaches -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ctrl_tap_reaches_the_hotkey_thread_as_silence() {
+        assert_eq!(inject_ctrl_tap(|| {}), Some(Action::Silence));
+    }
+
+    /// winit registers the keyboard for raw input when eframe starts, after the hotkey thread
+    /// did. Another registrant is simulated here; the thread must take the keyboard back.
+    #[test]
+    #[ignore]
+    fn ctrl_tap_still_silences_after_another_registrant_takes_the_keyboard() {
+        let got = inject_ctrl_tap(|| {
+            // Registering the keyboard for this new window replaces the thread's registration.
+            let _other = unsafe { create_raw_input_window() }.expect("second window");
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+        });
+        assert_eq!(got, Some(Action::Silence));
     }
 }
