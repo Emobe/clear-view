@@ -46,6 +46,26 @@ impl Drop for CaretGuard {
     }
 }
 
+/// What `CV_TTS_DEMO=1` says each time speech is switched on: a long sentence to try the silence
+/// key on. Temporary; the panel's "Test voice" (roadmap 8.7d) replaces it.
+#[cfg(feature = "tts")]
+const DEMO_SENTENCE: &str = "This is a long test sentence from clear view. It goes on for several seconds so that there is time to press the Control key and hear it stop at once. If you can hear this far, the silence key has not worked.";
+
+#[cfg(feature = "tts")]
+fn say_demo(speech: &cv_tts::SpeechHandle) {
+    speech.say(cv_core::Utterance::new(cv_core::Kind::Test, DEMO_SENTENCE));
+}
+
+/// True when `CV_TTS_DEMO=1`. Says the demo sentence now if speech is already on.
+#[cfg(feature = "tts")]
+fn speech_demo(speech: &cv_tts::SpeechHandle, state: &cv_core::SharedState) -> bool {
+    let on = std::env::var("CV_TTS_DEMO").is_ok_and(|v| v == "1");
+    if on && state.read().tts_enabled {
+        say_demo(speech);
+    }
+    on
+}
+
 fn main() -> eframe::Result {
     // Before any window or thread: everything below works in physical pixels.
     platform::set_dpi_awareness();
@@ -73,6 +93,13 @@ fn main() -> eframe::Result {
     // Core events (ADR 0008). The caret thread publishes caret moves here and logs `[caret]`
     // lines; the render thread subscribes for the tracking policy.
     let events = Arc::new(cv_core::EventHub::new());
+
+    // Speech thread (ADR 0013), only with `tts`. It makes the engines when speech is turned on
+    // and does nothing while it is off.
+    #[cfg(feature = "tts")]
+    let speech = cv_tts::spawn_speech(shared.clone(), &events);
+    #[cfg(feature = "tts")]
+    let demo = speech_demo(&speech, &shared);
 
     // Renderer thread: overlay window, reads frame_state + app state and drains its core events.
     // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the
@@ -103,6 +130,8 @@ fn main() -> eframe::Result {
         let failures = hotkey_failures.clone();
         let wake_failures = wake.clone();
         let state = shared.clone();
+        #[cfg(feature = "tts")]
+        let speech = speech.clone();
         platform::spawn_hotkey_thread(
             // Speech keys (silence on a lone Ctrl, speech on/off) only with `tts` (ADR 0014).
             cfg!(feature = "tts"),
@@ -113,15 +142,24 @@ fn main() -> eframe::Result {
             },
             move |action| {
                 match action {
-                    // Nothing consumes silence until the speech thread (8.8b).
                     Action::Silence => {
                         eprintln!("[keys] silence");
+                        #[cfg(feature = "tts")]
+                        speech.silence();
                         return;
                     }
                     Action::ToggleSpeech => eprintln!("[keys] speech on/off"),
                     _ => {}
                 }
                 state.write().apply(action);
+                #[cfg(feature = "tts")]
+                if action == Action::ToggleSpeech {
+                    // After the state change, so the thread sees the new value.
+                    speech.wake();
+                    if demo && state.read().tts_enabled {
+                        say_demo(&speech);
+                    }
+                }
                 wake();
             },
         );
@@ -133,6 +171,8 @@ fn main() -> eframe::Result {
 
     // egui settings panel on main thread
     let state_for_egui = shared.clone();
+    #[cfg(feature = "tts")]
+    let speech_for_panel = speech.clone();
     let result = eframe::run_native(
         "clear-view settings",
         eframe::NativeOptions {
@@ -142,12 +182,23 @@ fn main() -> eframe::Result {
                 .with_always_on_top(),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(app::ClearViewApp::new(cc, state_for_egui, repaint, hotkey_failures)))),
+        Box::new(|cc| {
+            Ok(Box::new(app::ClearViewApp::new(
+                cc,
+                state_for_egui,
+                repaint,
+                hotkey_failures,
+                #[cfg(feature = "tts")]
+                speech_for_panel,
+            )))
+        }),
     );
 
     // Before the other threads stop, so the system cursor is back first.
     overlay.shutdown();
     caret.shutdown();
+    #[cfg(feature = "tts")]
+    speech.shutdown();
 
     // The saver does a final write after it sees the flag, so the last change is not lost.
     settings_shutdown.store(true, Ordering::Relaxed);

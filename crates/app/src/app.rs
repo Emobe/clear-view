@@ -19,6 +19,9 @@ pub type HotkeyFailures = Arc<Mutex<Vec<String>>>;
 pub struct ClearViewApp {
     state: SharedState,
     hotkey_failures: HotkeyFailures,
+    /// A changed `tts_*` field wakes the speech thread (ADR 0013).
+    #[cfg(feature = "tts")]
+    speech: cv_tts::SpeechHandle,
 }
 
 impl ClearViewApp {
@@ -27,11 +30,17 @@ impl ClearViewApp {
         state: SharedState,
         repaint: RepaintSlot,
         hotkey_failures: HotkeyFailures,
+        #[cfg(feature = "tts")] speech: cv_tts::SpeechHandle,
     ) -> Self {
         // egui only repaints on input or an explicit request, so the panel does not poll.
         // Anything that changes displayed state from another thread must wake it via `repaint`.
         let _ = repaint.set(cc.egui_ctx.clone());
-        Self { state, hotkey_failures }
+        Self {
+            state,
+            hotkey_failures,
+            #[cfg(feature = "tts")]
+            speech,
+        }
     }
 }
 
@@ -204,6 +213,14 @@ impl eframe::App for ClearViewApp {
 
                 if s != before {
                     apply_changes(&mut self.state.write(), &before, &s);
+                    // After the lock is released: the thread reads the fields again.
+                    #[cfg(feature = "tts")]
+                    if s.tts_enabled != before.tts_enabled
+                        || s.tts_volume != before.tts_volume
+                        || s.tts_rate != before.tts_rate
+                    {
+                        self.speech.wake();
+                    }
                 }
             });
         });
