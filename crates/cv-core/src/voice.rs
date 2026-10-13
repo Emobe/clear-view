@@ -79,6 +79,13 @@ pub fn onecore_volume(neutral: u32) -> f64 {
     neutral.min(NEUTRAL_MAX) as f64 / NEUTRAL_MAX as f64
 }
 
+/// The neutral rate for the old `tts_rate` setting (SAPI's -10 to 10): `(old + 10) × 5`, so 0 is
+/// the voice's normal rate (ADR 0012). Until 8.9 reconciles the settings fields, this is how the
+/// speech thread reads `tts_rate`.
+pub fn neutral_rate_from_legacy(tts_rate: i32) -> u32 {
+    ((tts_rate.clamp(SAPI_RATE_MIN, SAPI_RATE_MAX) + 10) * 5) as u32
+}
+
 /// Which voice speaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceChoice {
@@ -195,6 +202,16 @@ mod tests {
     fn sapi_rate_above_100_is_100() {
         assert_eq!(sapi_rate(101), 10);
         assert_eq!(sapi_rate(u32::MAX), 10);
+    }
+
+    #[test]
+    fn the_legacy_rate_maps_zero_to_normal_and_the_ends_to_the_ends() {
+        assert_eq!(neutral_rate_from_legacy(-10), 0);
+        assert_eq!(neutral_rate_from_legacy(0), NEUTRAL_RATE_NORMAL);
+        assert_eq!(neutral_rate_from_legacy(10), NEUTRAL_MAX);
+        assert_eq!(neutral_rate_from_legacy(4), 70);
+        assert_eq!(neutral_rate_from_legacy(-99), 0);
+        assert_eq!(neutral_rate_from_legacy(99), NEUTRAL_MAX);
     }
 
     #[test]

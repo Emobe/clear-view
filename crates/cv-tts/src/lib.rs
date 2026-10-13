@@ -1,8 +1,8 @@
-//! Speech engines (ADR 0012). Two backends behind one interface, [`SpeechBackend`]: the SAPI 5
-//! backend (8.7b) and the OneCore backend with WASAPI playback (8.7c), and [`Engines`], which puts
-//! them behind one voice list. A backend lists voices, picks one, sets rate and volume, speaks one
-//! string at a time and stops. None of them owns a thread: the speech thread (8.8b, ADR 0013) owns
-//! the backends and waits on their handles, and until then a dev example drives them.
+//! Speech engines (ADR 0012) and the speech thread (ADR 0013). Two backends behind one interface,
+//! [`SpeechBackend`]: the SAPI 5 backend (8.7b) and the OneCore backend with WASAPI playback
+//! (8.7c), and [`Engines`], which puts them behind one voice list. A backend lists voices, picks
+//! one, sets rate and volume, speaks one string at a time and stops. None of them owns a thread:
+//! the speech thread ([`spawn_speech`], 8.8b) owns the backends and waits on their handles.
 //!
 //! The interface uses cv-core voice types and no Windows types, so a Linux backend can implement
 //! it later. The caller initialises COM (multithreaded) on the thread that uses a backend.
@@ -10,11 +10,13 @@
 mod engines;
 mod event;
 mod onecore;
+mod speech;
 mod wasapi;
 mod wav;
 
 pub use engines::{Engines, display_language};
 pub use onecore::OneCoreBackend;
+pub use speech::{SpeechHandle, spawn_speech};
 
 use cv_core::voice::{Engine, VoiceId, VoiceInfo, sapi_rate, sapi_volume};
 use windows::{

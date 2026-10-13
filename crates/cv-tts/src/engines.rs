@@ -57,6 +57,11 @@ impl Engines {
         handles
     }
 
+    /// When the oldest OneCore synthesis still running began, for the engine timeout (ADR 0013).
+    pub fn oldest_synthesis(&self) -> Option<std::time::Instant> {
+        self.onecore.as_ref()?.oldest_synthesis()
+    }
+
     fn both(&mut self) -> impl Iterator<Item = &mut dyn SpeechBackend> {
         let onecore = self.onecore.as_mut().map(|b| b as &mut dyn SpeechBackend);
         let sapi = self.sapi.as_mut().map(|b| b as &mut dyn SpeechBackend);

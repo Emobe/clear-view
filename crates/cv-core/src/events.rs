@@ -21,6 +21,13 @@ pub enum CoreEvent {
 }
 
 impl CoreEvent {
+    /// When it happened, for the speech queue's late-event rule (ADR 0013).
+    pub fn at(&self) -> Instant {
+        match self {
+            Self::CaretMoved { at, .. } | Self::CaretLost { at, .. } => *at,
+        }
+    }
+
     /// One line for logs, for example `focus rect (812, 64) 1240x32 in explorer.exe` or
     /// `lost in explorer.exe`.
     pub fn describe(&self) -> String {
@@ -144,6 +151,19 @@ mod tests {
             source: CaretSource::Msaa,
             app: app(),
         }
+    }
+
+    #[test]
+    fn at_is_the_time_each_kind_carries() {
+        let at = Instant::now();
+        assert_eq!(CoreEvent::CaretLost { at, app: app() }.at(), at);
+        let e = CoreEvent::CaretMoved {
+            at,
+            rect: ScreenRect { left: 1, top: 2, width: 3, height: 4 },
+            source: CaretSource::Gui,
+            app: app(),
+        };
+        assert_eq!(e.at(), at);
     }
 
     #[test]
