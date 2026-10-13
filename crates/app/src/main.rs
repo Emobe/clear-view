@@ -3,6 +3,8 @@ mod settings;
 
 use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, AtomicU32, Ordering}};
 
+use cv_core::Action;
+
 // The platform backend (ADR 0004). One per target; only Windows exists before v1.
 #[cfg(windows)]
 use cv_platform_win as platform;
@@ -102,14 +104,23 @@ fn main() -> eframe::Result {
         let wake_failures = wake.clone();
         let state = shared.clone();
         platform::spawn_hotkey_thread(
-            // No speech keys until roadmap 8.6b (ADR 0014).
-            false,
+            // Speech keys (silence on a lone Ctrl, speech on/off) only with `tts` (ADR 0014).
+            cfg!(feature = "tts"),
             // After the push, so a panel that was already drawn repaints with the failures.
             move |lines| {
                 failures.lock().unwrap().extend(lines);
                 wake_failures();
             },
             move |action| {
+                match action {
+                    // Nothing consumes silence until the speech thread (8.8b).
+                    Action::Silence => {
+                        eprintln!("[keys] silence");
+                        return;
+                    }
+                    Action::ToggleSpeech => eprintln!("[keys] speech on/off"),
+                    _ => {}
+                }
                 state.write().apply(action);
                 wake();
             },
