@@ -22,5 +22,8 @@ dirs = { workspace = true }
 cv-platform-win = { path = "../cv-platform-win" }
 
 [features]
-# Speech is parked until after v1. Off by default.
+# Speech (v1.1). On by default since 2026-10-15 (your decision): the speech code is built in, but
+# speech itself stays off until `tts_enabled` is switched on, so the magnifier behaves as before.
+# `--no-default-features` builds without it.
+default = ["tts"]
 tts = ["dep:cv-tts"]

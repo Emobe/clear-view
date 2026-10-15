@@ -53,7 +53,7 @@ Platform code stays behind a seam so Linux can be added later, but no Linux work
 
 ### Not in v1
 
-- Speech of any kind (it is v1.1, see "Speech (v1.1)"). The cv-tts code is kept behind a build flag that is off by default, so it can't affect the magnifier.
+- Speech of any kind (it is v1.1, see "Speech (v1.1)"). The cv-tts code is behind the `tts` build flag, on by default since 2026-10-15, and speech is switched off until the user turns it on, so it can't affect the magnifier.
 - Keyboard focus tracking (Tab, arrows through menus). First item after v1.
 - Lens, line and freeze windows.
 - Linux.

@@ -46,26 +46,6 @@ impl Drop for CaretGuard {
     }
 }
 
-/// What `CV_TTS_DEMO=1` says each time speech is switched on: a long sentence to try the silence
-/// key on. Temporary; the panel's "Test voice" (roadmap 8.7d) replaces it.
-#[cfg(feature = "tts")]
-const DEMO_SENTENCE: &str = "This is a long test sentence from clear view. It goes on for several seconds so that there is time to press the Control key and hear it stop at once. If you can hear this far, the silence key has not worked.";
-
-#[cfg(feature = "tts")]
-fn say_demo(speech: &cv_tts::SpeechHandle) {
-    speech.say(cv_core::Utterance::new(cv_core::Kind::Test, DEMO_SENTENCE));
-}
-
-/// True when `CV_TTS_DEMO=1`. Says the demo sentence now if speech is already on.
-#[cfg(feature = "tts")]
-fn speech_demo(speech: &cv_tts::SpeechHandle, state: &cv_core::SharedState) -> bool {
-    let on = std::env::var("CV_TTS_DEMO").is_ok_and(|v| v == "1");
-    if on && state.read().tts_enabled {
-        say_demo(speech);
-    }
-    on
-}
-
 fn main() -> eframe::Result {
     // Before any window or thread: everything below works in physical pixels.
     platform::set_dpi_awareness();
@@ -96,10 +76,17 @@ fn main() -> eframe::Result {
 
     // Speech thread (ADR 0013), only with `tts`. It makes the engines when speech is turned on
     // and does nothing while it is off.
+    // The panel does not poll, so the thread wakes it when the voice list or state changes.
+    let repaint: app::RepaintSlot = Arc::new(OnceLock::new());
     #[cfg(feature = "tts")]
-    let speech = cv_tts::spawn_speech(shared.clone(), &events);
-    #[cfg(feature = "tts")]
-    let demo = speech_demo(&speech, &shared);
+    let speech = {
+        let repaint = repaint.clone();
+        cv_tts::spawn_speech(shared.clone(), &events, move || {
+            if let Some(ctx) = repaint.get() {
+                ctx.request_repaint();
+            }
+        })
+    };
 
     // Renderer thread: overlay window, reads frame_state + app state and drains its core events.
     // The guard stops it and restores the machine on return or panic; Ctrl+C and closing the
@@ -116,7 +103,6 @@ fn main() -> eframe::Result {
 
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.
     // The panel does not poll, so the thread wakes it after a change or a failed registration.
-    let repaint: app::RepaintSlot = Arc::new(OnceLock::new());
     let hotkey_failures: app::HotkeyFailures = Arc::new(Mutex::new(Vec::new()));
     {
         let wake = {
@@ -156,9 +142,6 @@ fn main() -> eframe::Result {
                 if action == Action::ToggleSpeech {
                     // After the state change, so the thread sees the new value.
                     speech.wake();
-                    if demo && state.read().tts_enabled {
-                        say_demo(&speech);
-                    }
                 }
                 wake();
             },
