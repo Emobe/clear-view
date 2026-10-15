@@ -80,8 +80,8 @@ pub fn onecore_volume(neutral: u32) -> f64 {
 }
 
 /// The neutral rate for the old `tts_rate` setting (SAPI's -10 to 10): `(old + 10) × 5`, so 0 is
-/// the voice's normal rate (ADR 0012). Until 8.9 reconciles the settings fields, this is how the
-/// speech thread reads `tts_rate`.
+/// the voice's normal rate (ADR 0012). Used once, by the settings loader (roadmap 8.9), to move a
+/// file written before the neutral rate into `AppState::tts_rate_neutral`.
 pub fn neutral_rate_from_legacy(tts_rate: i32) -> u32 {
     ((tts_rate.clamp(SAPI_RATE_MIN, SAPI_RATE_MAX) + 10) * 5) as u32
 }
