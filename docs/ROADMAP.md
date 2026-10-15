@@ -223,7 +223,7 @@ Goal: hear what has focus and which window you're in. Everything after this buil
 
 ## Phase 13: Speech release (v1.1)
 
-13.1 Speech on by default: remove the `tts` feature or flip its default, per 8.4 and 8.5. On first run, pick a working voice, and say so in the panel if there is none.
+13.1 Speech on by default: the `tts` feature already became a default feature on 2026-10-15 (speech stays off until switched on); this item turns speech itself on by default and may remove the feature, per 8.4 and 8.5. On first run, pick a working voice, and say so in the panel if there is none.
 13.2 Check speech in elevated windows with the UIAccess build from Phase 6. Record what doesn't work.
 13.3 (you) Clean Windows 11 install test with speech.
 13.4 (you) One week of normal use by the tester with Clearview's speech instead of ZoomText's. v1.1 is done when this passes.

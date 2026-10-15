@@ -8,7 +8,7 @@ Read docs/PRODUCT.md first. It says what v1 is and what it isn't, and it wins if
 
 `clear-view` is a screen magnifier (ZoomText alternative) written in Rust, built on a core that a screen reader can use later. Windows is the working target. X11 and Wayland support is planned after Windows v1; keep platform-specific code from spreading (see docs/adr/0004).
 
-It uses DXGI Desktop Duplication for capture, wgpu for rendering and egui for the settings panel. The reader (speech, v1.1, off by default) uses UI Automation plus SAPI; the 8.4 ADR may change the engine.
+It uses DXGI Desktop Duplication for capture, wgpu for rendering and egui for the settings panel. The reader (speech, v1.1, built in but switched off until the user turns it on) uses UI Automation plus SAPI; the 8.4 ADR may change the engine.
 
 ## Speech is v1.1
 
@@ -16,7 +16,7 @@ Speech is not part of v1 (docs/PRODUCT.md "Speech (v1.1)"). It is built by the s
 
 - Speech work happens only in steps that name it. Every other step does no speech work.
 - Speech steps follow ROADMAP "Rules for speech steps": with speech off the magnifier behaves exactly as before (every speech step's Verify list includes a run with speech off); password fields are never spoken and "can't tell" counts as a password field; no UI Automation or MSAA call on the render thread; spoken text is pure logic in cv-core with unit tests; defaults follow the tester's real use (8.3).
-- cv-tts is behind the `tts` cargo feature, off by default until ROADMAP 13.1: a plain `cargo build` or `cargo run` does not start the TTS thread and hides the TTS controls. Do not touch cv-tts unless a step names it.
+- cv-tts is behind the `tts` cargo feature, which is a default feature since 2026-10-15 (your decision): a plain `cargo build` or `cargo run` includes speech and shows the speech controls, but speech stays off (`tts_enabled` false) until switched on. The feature-off build is `cargo build -p app --no-default-features`; every speech step's Verify list still includes a run with it. Do not touch cv-tts unless a step names it.
 - The old reader plan is archived in docs/archive/tts-plan.md; what was kept from it is in docs/STATUS.md "Speech audit (8.1)".
 
 ## Working rules
