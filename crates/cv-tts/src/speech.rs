@@ -19,7 +19,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use cv_core::voice::{VoiceChoice, choose_voice, neutral_rate_from_legacy};
+use cv_core::voice::{
+    SpeechState, SpeechStatus, VoiceChoice, VoiceId, choose_voice, neutral_rate_from_legacy,
+};
 use cv_core::{
     CoreEvent, EventHub, SharedState, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for,
 };
@@ -45,12 +47,15 @@ enum Command {
     Silence(Instant),
     /// Speech settings in `AppState` changed.
     Wake,
+    /// Read the voice list again (the panel's voice picker was opened).
+    RefreshVoices,
     Shutdown,
 }
 
 struct Inner {
     tx: Sender<Command>,
     command_event: Arc<Event>,
+    status: Arc<Mutex<SpeechStatus>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -83,6 +88,20 @@ impl SpeechHandle {
         self.send(Command::Wake);
     }
 
+    /// Read the voice list again; the status changes if it differs (ADR 0012: not polled).
+    pub fn refresh_voices(&self) {
+        self.send(Command::RefreshVoices);
+    }
+
+    /// What the settings panel shows about voices (roadmap 8.7d). A handle whose thread did not
+    /// start reports `Failed`.
+    pub fn status(&self) -> SpeechStatus {
+        match &self.inner {
+            Some(inner) => inner.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => SpeechStatus { state: SpeechState::Failed, ..SpeechStatus::default() },
+        }
+    }
+
     /// Stops the thread and waits up to one second for it; after that it ends with the process.
     pub fn shutdown(&self) {
         let Some(inner) = &self.inner else { return };
@@ -111,9 +130,14 @@ impl SpeechHandle {
 }
 
 /// Starts the speech thread (ADR 0013). It subscribes to `events` with a wake, so core events
-/// reach it without polling. If its events cannot be made the handle is inert and one line says
-/// so.
-pub fn spawn_speech(state: SharedState, events: &EventHub) -> SpeechHandle {
+/// reach it without polling. `on_change` is called from the speech thread each time the published
+/// [`SpeechStatus`] changes (the settings panel repaints from it). If the thread's events cannot
+/// be made the handle is inert and one line says so.
+pub fn spawn_speech(
+    state: SharedState,
+    events: &EventHub,
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> SpeechHandle {
     let (command_event, core_event) = match (Event::new(), Event::new()) {
         (Ok(c), Ok(e)) => (Arc::new(c), Arc::new(e)),
         (Err(e), _) | (_, Err(e)) => {
@@ -122,6 +146,8 @@ pub fn spawn_speech(state: SharedState, events: &EventHub) -> SpeechHandle {
         }
     };
     let (tx, commands) = mpsc::channel();
+    let status = Arc::new(Mutex::new(SpeechStatus::default()));
+    let publisher = Publisher { status: status.clone(), on_change: Box::new(on_change) };
     let core = {
         let core_event = core_event.clone();
         events.subscribe_with_wake(move || core_event.set())
@@ -129,12 +155,17 @@ pub fn spawn_speech(state: SharedState, events: &EventHub) -> SpeechHandle {
     let thread = {
         let command_event = command_event.clone();
         thread::Builder::new().name("speech".into()).spawn(move || {
-            run_thread(state, commands, core, command_event, core_event);
+            run_thread(state, commands, core, command_event, core_event, publisher);
         })
     };
     match thread {
         Ok(thread) => SpeechHandle {
-            inner: Some(Arc::new(Inner { tx, command_event, thread: Mutex::new(Some(thread)) })),
+            inner: Some(Arc::new(Inner {
+                tx,
+                command_event,
+                status,
+                thread: Mutex::new(Some(thread)),
+            })),
         },
         Err(e) => {
             eprintln!("[tts] speech thread not started: {e}");
@@ -149,6 +180,7 @@ fn run_thread(
     core: Receiver<CoreEvent>,
     command_event: Arc<Event>,
     core_event: Arc<Event>,
+    publisher: Publisher,
 ) {
     if let Err(e) = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok() {
         eprintln!("[tts] speech thread: CoInitializeEx failed: {e}");
@@ -164,6 +196,8 @@ fn run_thread(
             queue: SpeechQueue::new(),
             engines: None,
             gave_up: false,
+            publisher,
+            voice_applied: None,
             rate: None,
             volume: None,
             speaking: None,
@@ -175,6 +209,30 @@ fn run_thread(
         speaker.stop_engines();
     }
     unsafe { CoUninitialize() };
+}
+
+/// Where the speech thread puts what the panel shows, and how it tells the panel.
+struct Publisher {
+    status: Arc<Mutex<SpeechStatus>>,
+    on_change: Box<dyn Fn() + Send + Sync>,
+}
+
+impl Publisher {
+    /// Stores `new` and calls `on_change`, only if it differs from what is published.
+    fn publish(&self, new: SpeechStatus) {
+        {
+            let mut current = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            if *current == new {
+                return;
+            }
+            *current = new;
+        }
+        (self.on_change)();
+    }
+
+    fn state(&self) -> SpeechState {
+        self.status.lock().unwrap_or_else(|e| e.into_inner()).state
+    }
 }
 
 /// The `CV_TTS_LOG=1` lines: `[tts]`, milliseconds since the thread started, what happened.
@@ -208,6 +266,10 @@ struct Speaker {
     engines: Option<Engines>,
     /// Speech is on but the engines could not start; not retried until it is turned off and on.
     gave_up: bool,
+    publisher: Publisher,
+    /// The saved voice the engines were last given (None inside: nothing saved). None outside:
+    /// no voice chosen yet since the engines started.
+    voice_applied: Option<Option<VoiceId>>,
     /// The neutral rate and volume last given to the engines.
     rate: Option<u32>,
     volume: Option<u32>,
@@ -236,6 +298,7 @@ impl Speaker {
                     }
                 }
                 Command::Silence(at) => self.silence(at),
+                Command::RefreshVoices => self.refresh_voices(),
                 Command::Wake | Command::Shutdown => {}
             }
         }
@@ -259,12 +322,13 @@ impl Speaker {
         true
     }
 
-    /// Reads the speech fields, makes or drops the engines when speech goes on or off, and gives
-    /// a changed rate or volume to the engines (it applies from the next utterance).
+    /// Reads the speech fields, makes or drops the engines when speech goes on or off, gives the
+    /// engines a changed voice, and gives a changed rate or volume to the engines (they apply
+    /// from the next utterance).
     fn sync_settings(&mut self, now: Instant) {
-        let (enabled, rate, volume) = {
+        let (enabled, rate, volume, voice) = {
             let s = self.state.read();
-            (s.tts_enabled, neutral_rate_from_legacy(s.tts_rate), s.tts_volume)
+            (s.tts_enabled, neutral_rate_from_legacy(s.tts_rate), s.tts_volume, s.tts_voice.clone())
         };
         if !enabled {
             self.gave_up = false;
@@ -274,10 +338,14 @@ impl Speaker {
                 self.run_ops(now, ops);
                 self.stop_engines();
             }
+            self.publisher.publish(SpeechStatus::default());
             return;
         }
         if self.engines.is_none() && !self.gave_up {
             self.start_engines();
+        }
+        if self.engines.is_some() && self.voice_applied.as_ref() != Some(&voice) {
+            self.apply_voice(&voice, true);
         }
         if let Some(engines) = &mut self.engines {
             if self.rate != Some(rate) {
@@ -292,31 +360,61 @@ impl Speaker {
     }
 
     fn start_engines(&mut self) {
-        let mut engines = match Engines::new() {
-            Ok(e) => e,
+        match Engines::new() {
+            Ok(engines) => self.engines = Some(engines),
             Err(e) => {
                 eprintln!("[tts] speech cannot start: {e}");
                 self.gave_up = true;
-                return;
+                self.publisher.publish(SpeechStatus { state: SpeechState::Failed, ..SpeechStatus::default() });
             }
-        };
+        }
+    }
+
+    /// Chooses the voice for the saved one (ADR 0012), gives it to the engines and publishes the
+    /// list. A saved voice that is not installed is kept in the settings; one line says so when
+    /// `log` is set. With no voices at all speech cannot run: the engines are dropped and it is
+    /// not retried until speech is turned off and on.
+    fn apply_voice(&mut self, saved: &Option<VoiceId>, log: bool) {
+        let Some(engines) = &mut self.engines else { return };
         let voices = engines.voices();
         let default = engines.onecore_default();
-        match choose_voice(None, &voices, default.as_ref(), &display_language()) {
-            VoiceChoice::Use { voice, .. } => {
-                if engines.set_voice(&voice.id) {
-                    eprintln!("[tts] speech on: {:?} voice {}", voice.id.engine, voice.name);
-                } else {
-                    eprintln!("[tts] speech on: could not set voice {}; using the default", voice.name);
+        match choose_voice(saved.as_ref(), &voices, default.as_ref(), &display_language()) {
+            VoiceChoice::Use { voice, saved_missing } => {
+                let set = engines.set_voice(&voice.id);
+                if log {
+                    if saved_missing {
+                        eprintln!("[tts] the saved voice is not installed; using {}", voice.name);
+                    }
+                    if set {
+                        eprintln!("[tts] speech on: {:?} voice {}", voice.id.engine, voice.name);
+                    } else {
+                        eprintln!("[tts] speech on: could not set voice {}; using the default", voice.name);
+                    }
                 }
+                self.voice_applied = Some(saved.clone());
+                self.publisher.publish(SpeechStatus {
+                    state: SpeechState::On,
+                    voices,
+                    speaking_with: set.then_some(voice.id),
+                    saved_missing,
+                });
             }
             VoiceChoice::NoVoices => {
                 eprintln!("[tts] speech cannot start: no voices are installed");
                 self.gave_up = true;
-                return;
+                self.stop_engines();
+                self.publisher.publish(SpeechStatus { state: SpeechState::NoVoices, ..SpeechStatus::default() });
             }
         }
-        self.engines = Some(engines);
+    }
+
+    /// The panel's voice picker was opened: list the voices again.
+    fn refresh_voices(&mut self) {
+        if self.engines.is_none() || self.publisher.state() != SpeechState::On {
+            return;
+        }
+        let saved = self.state.read().tts_voice.clone();
+        self.apply_voice(&saved, false);
     }
 
     /// Drops the engines, which closes the audio device.
@@ -325,6 +423,7 @@ impl Speaker {
             engines.stop();
         }
         self.engines = None;
+        self.voice_applied = None;
         self.rate = None;
         self.volume = None;
         self.speaking = None;
@@ -478,7 +577,12 @@ mod tests {
     fn handle_without_thread() -> (SpeechHandle, Receiver<Command>, Arc<Event>) {
         let (tx, rx) = mpsc::channel();
         let event = Arc::new(Event::new().unwrap());
-        let inner = Inner { tx, command_event: event.clone(), thread: Mutex::new(None) };
+        let inner = Inner {
+            tx,
+            command_event: event.clone(),
+            status: Arc::default(),
+            thread: Mutex::new(None),
+        };
         (SpeechHandle { inner: Some(Arc::new(inner)) }, rx, event)
     }
 
@@ -490,9 +594,44 @@ mod tests {
         handle.say(Utterance::new(Kind::Test, "one"));
         handle.silence();
         handle.wake();
+        handle.refresh_voices();
         assert_eq!(unsafe { WaitForSingleObject(event.handle(), 0) }.0, 0, "the event is signalled");
         let got: Vec<Command> = rx.try_iter().collect();
-        assert!(matches!(got.as_slice(), [Command::Say(items), Command::Silence(_), Command::Wake] if items.len() == 1));
+        assert!(matches!(got.as_slice(), [Command::Say(items), Command::Silence(_), Command::Wake, Command::RefreshVoices] if items.len() == 1));
+    }
+
+    #[test]
+    fn a_publisher_calls_back_only_when_the_status_changes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = Arc::new(AtomicU32::new(0));
+        let status = Arc::new(Mutex::new(SpeechStatus::default()));
+        let publisher = {
+            let calls = calls.clone();
+            Publisher {
+                status: status.clone(),
+                on_change: Box::new(move || {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                }),
+            }
+        };
+        publisher.publish(SpeechStatus::default());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let failed = SpeechStatus { state: SpeechState::Failed, ..SpeechStatus::default() };
+        publisher.publish(failed.clone());
+        publisher.publish(failed.clone());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(*status.lock().unwrap(), failed);
+        assert_eq!(publisher.state(), SpeechState::Failed);
+    }
+
+    #[test]
+    fn the_handle_reports_the_published_status() {
+        let (handle, _rx, _event) = handle_without_thread();
+        assert_eq!(handle.status().state, SpeechState::Off);
+        let inner = handle.inner.as_ref().unwrap();
+        inner.status.lock().unwrap().state = SpeechState::NoVoices;
+        assert_eq!(handle.status().state, SpeechState::NoVoices);
+        assert_eq!(SpeechHandle { inner: None }.status().state, SpeechState::Failed);
     }
 
     #[test]
@@ -500,6 +639,7 @@ mod tests {
         let inert = SpeechHandle { inner: None };
         inert.silence();
         inert.wake();
+        inert.refresh_voices();
         inert.shutdown();
         let (handle, rx, _event) = handle_without_thread();
         handle.shutdown();

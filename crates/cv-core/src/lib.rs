@@ -8,7 +8,7 @@ pub mod voice;
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
 pub use speech::{Kind, Level, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for};
 pub use tracking::{Following, Tracker};
-pub use voice::{Engine, VoiceChoice, VoiceId, VoiceInfo};
+pub use voice::{Engine, SpeechState, SpeechStatus, VoiceChoice, VoiceId, VoiceInfo};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,9 @@ pub struct AppState {
     pub tts_volume: u32,
     /// SAPI rate -10 to 10.
     pub tts_rate: i32,
+    /// The voice the user picked (roadmap 8.7d, ADR 0012): engine and the engine's own id. None
+    /// until one is picked; a voice that is no longer installed stays saved so it comes back.
+    pub tts_voice: Option<VoiceId>,
 }
 
 impl Default for AppState {
@@ -169,6 +172,7 @@ impl Default for AppState {
             tts_hover_enabled: true,
             tts_volume: 80,
             tts_rate: 0,
+            tts_voice: None,
         }
     }
 }
@@ -361,7 +365,16 @@ mod tests {
             tts_hover_enabled: false,
             tts_volume: 55,
             tts_rate: -3,
+            tts_voice: Some(VoiceId { engine: Engine::Sapi, id: "token".into() }),
         }
+    }
+
+    #[test]
+    fn a_file_without_a_voice_loads_none() {
+        // Every settings file written before 8.7d.
+        let s: AppState = serde_json::from_str(r#"{"tts_enabled": true, "tts_rate": 2}"#).unwrap();
+        assert_eq!(s.tts_voice, None);
+        assert!(s.tts_enabled);
     }
 
     #[test]

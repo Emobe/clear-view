@@ -126,6 +126,64 @@ pub fn choose_voice(
     }
 }
 
+/// Where the speech thread is, for the panel (roadmap 8.7d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpeechState {
+    /// Speech is switched off; no engine exists, so there is no voice list.
+    #[default]
+    Off,
+    /// Engines are running.
+    On,
+    /// Speech was switched on but no voice is installed (ADR 0012).
+    NoVoices,
+    /// Speech was switched on but the engines did not start, or the speech thread did not.
+    Failed,
+}
+
+/// What the speech thread publishes for the settings panel: plain data, so the panel never
+/// touches an engine. Rebuilt whenever speech is turned on or off, the voice changes or the panel
+/// asks for the list again.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpeechStatus {
+    pub state: SpeechState,
+    /// Every installed voice, OneCore first (empty unless `state` is `On`).
+    pub voices: Vec<VoiceInfo>,
+    /// The voice that speaks, or None when the engine would not take it and speaks with its own
+    /// default.
+    pub speaking_with: Option<VoiceId>,
+    /// A voice is saved but not installed now. The saved setting is kept (ADR 0012).
+    pub saved_missing: bool,
+}
+
+/// How the panel names a voice: "Hazel (OneCore)", "Hazel (SAPI)" (ADR 0012).
+pub fn voice_label(voice: &VoiceInfo) -> String {
+    let engine = match voice.id.engine {
+        Engine::OneCore => "OneCore",
+        Engine::Sapi => "SAPI",
+    };
+    format!("{} ({engine})", voice.name)
+}
+
+/// The line the panel shows under the voice picker, or None when there is nothing to say.
+pub fn voice_note(status: &SpeechStatus) -> Option<String> {
+    match status.state {
+        SpeechState::Off => Some("Turn speech on to choose a voice.".into()),
+        SpeechState::NoVoices => Some(
+            "No voices are installed. Add one in Settings > Time & language > Speech.".into(),
+        ),
+        SpeechState::Failed => Some("Speech could not start. The console has the reason.".into()),
+        SpeechState::On if status.saved_missing => {
+            let now = status
+                .speaking_with
+                .as_ref()
+                .and_then(|id| status.voices.iter().find(|v| &v.id == id))
+                .map_or_else(|| "the default voice".to_string(), voice_label);
+            Some(format!("The saved voice is not installed. Speaking with {now}."))
+        }
+        SpeechState::On => None,
+    }
+}
+
 fn sapi_for_language<'a>(voices: &'a [VoiceInfo], language: &str) -> Option<&'a VoiceInfo> {
     let sapi = || voices.iter().filter(|v| v.id.engine == Engine::Sapi);
     let primary = |tag: &str| tag.split('-').next().unwrap_or("").to_ascii_lowercase();
@@ -358,6 +416,49 @@ mod tests {
         let saved = id(Engine::Sapi, "sapi-david");
         assert_eq!(choose_voice(None, &[], None, "en-GB"), VoiceChoice::NoVoices);
         assert_eq!(choose_voice(Some(&saved), &[], None, "en-GB"), VoiceChoice::NoVoices);
+    }
+
+    #[test]
+    fn labels_name_the_engine() {
+        assert_eq!(voice_label(&voice(Engine::OneCore, "Hazel", "en-GB")), "Hazel (OneCore)");
+        assert_eq!(voice_label(&voice(Engine::Sapi, "Hazel", "en-GB")), "Hazel (SAPI)");
+    }
+
+    fn status(state: SpeechState, saved_missing: bool) -> SpeechStatus {
+        SpeechStatus {
+            state,
+            voices: voices(),
+            speaking_with: Some(id(Engine::OneCore, "oc-george")),
+            saved_missing,
+        }
+    }
+
+    #[test]
+    fn the_note_says_what_blocks_the_voice_picker() {
+        let off = voice_note(&status(SpeechState::Off, false)).unwrap();
+        assert!(off.contains("Turn speech on"));
+        assert!(voice_note(&SpeechStatus::default()).is_some());
+        let none = voice_note(&status(SpeechState::NoVoices, false)).unwrap();
+        assert!(none.contains("Settings > Time & language > Speech"));
+        assert!(voice_note(&status(SpeechState::Failed, false)).unwrap().contains("could not start"));
+    }
+
+    #[test]
+    fn a_working_voice_has_no_note() {
+        assert_eq!(voice_note(&status(SpeechState::On, false)), None);
+    }
+
+    #[test]
+    fn a_missing_saved_voice_names_the_voice_that_speaks() {
+        let note = voice_note(&status(SpeechState::On, true)).unwrap();
+        assert!(note.contains("not installed"));
+        assert!(note.contains("oc-george (OneCore)"));
+    }
+
+    #[test]
+    fn a_missing_saved_voice_without_a_known_speaker_says_the_default() {
+        let s = SpeechStatus { speaking_with: None, ..status(SpeechState::On, true) };
+        assert!(voice_note(&s).unwrap().contains("the default voice"));
     }
 
     #[test]

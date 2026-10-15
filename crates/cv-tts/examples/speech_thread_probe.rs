@@ -58,7 +58,7 @@ fn main() {
         s.tts_rate = args.rate;
     }
     let events = EventHub::new();
-    let speech = cv_tts::spawn_speech(state.clone(), &events);
+    let speech = cv_tts::spawn_speech(state.clone(), &events, || {});
     // Let the engines start (the thread makes them on its first pass).
     sleep(Duration::from_millis(500));
 

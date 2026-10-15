@@ -22,7 +22,14 @@ pub struct ClearViewApp {
     /// A changed `tts_*` field wakes the speech thread (ADR 0013).
     #[cfg(feature = "tts")]
     speech: cv_tts::SpeechHandle,
+    /// The voice dropdown was open last frame, so opening it reads the voice list again.
+    #[cfg(feature = "tts")]
+    voice_list_open: bool,
 }
+
+/// What "Test voice" says: long enough to try Stop and the silence key on.
+#[cfg(feature = "tts")]
+const TEST_SENTENCE: &str = "This is a test of the clear view voice. It goes on for a few seconds so that there is time to press Stop, or the Control key, and hear it end at once.";
 
 impl ClearViewApp {
     pub fn new(
@@ -40,6 +47,46 @@ impl ClearViewApp {
             hotkey_failures,
             #[cfg(feature = "tts")]
             speech,
+            #[cfg(feature = "tts")]
+            voice_list_open: false,
+        }
+    }
+
+    /// The voice dropdown and its note (ADR 0012). Usable only while speech is on, because the
+    /// engines (and so the list) exist only then. A pick is saved in `tts_voice`.
+    #[cfg(feature = "tts")]
+    fn voice_picker(&mut self, ui: &mut egui::Ui, s: &mut AppState) {
+        use cv_core::voice::{SpeechState, voice_label, voice_note};
+
+        let status = self.speech.status();
+        let speaking = status
+            .speaking_with
+            .as_ref()
+            .and_then(|id| status.voices.iter().find(|v| &v.id == id));
+        let current = speaking.map_or_else(|| "Default voice".to_string(), voice_label);
+        let mut open = false;
+        ui.add_enabled_ui(s.tts_enabled && status.state == SpeechState::On, |ui| {
+            let shown = egui::ComboBox::from_id_salt("tts_voice")
+                .selected_text(current)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    for voice in &status.voices {
+                        let picked = speaking.is_some_and(|v| v.id == voice.id);
+                        if ui.selectable_label(picked, voice_label(voice)).clicked() {
+                            s.tts_voice = Some(voice.id.clone());
+                        }
+                    }
+                });
+            open = shown.inner.is_some();
+        });
+        // Rising edge only: the list is read when it is opened, not polled.
+        if open && !self.voice_list_open {
+            self.speech.refresh_voices();
+        }
+        self.voice_list_open = open;
+        // With speech switched off the thread publishes Off, whose note says to turn it on.
+        if let Some(note) = voice_note(&status) {
+            ui.colored_label(egui::Color32::GRAY, note);
         }
     }
 }
@@ -181,11 +228,11 @@ impl eframe::App for ClearViewApp {
                 {
                     ui.add_space(8.0);
                     ui.separator();
-                    ui.heading("Screen Reader");
+                    ui.heading("Speech");
                     ui.add_space(4.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("TTS");
+                        ui.label("Speech");
                         let label = if s.tts_enabled { "On" } else { "Off" };
                         if ui.button(label).clicked() {
                             s.tts_enabled = !s.tts_enabled;
@@ -193,11 +240,7 @@ impl eframe::App for ClearViewApp {
                     });
 
                     ui.add_space(4.0);
-
-                    ui.add_enabled(
-                        s.tts_enabled,
-                        egui::Checkbox::new(&mut s.tts_hover_enabled, "Hover echo"),
-                    );
+                    self.voice_picker(ui, &mut s);
 
                     ui.add_space(4.0);
 
@@ -209,6 +252,18 @@ impl eframe::App for ClearViewApp {
                         s.tts_enabled,
                         egui::Slider::new(&mut s.tts_rate, -10..=10).text("Rate"),
                     );
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(s.tts_enabled, |ui| {
+                            if ui.button("Test voice").clicked() {
+                                self.speech.say(cv_core::Utterance::new(cv_core::Kind::Test, TEST_SENTENCE));
+                            }
+                            if ui.button("Stop").clicked() {
+                                self.speech.silence();
+                            }
+                        });
+                    });
                 }
 
                 if s != before {
@@ -218,6 +273,7 @@ impl eframe::App for ClearViewApp {
                     if s.tts_enabled != before.tts_enabled
                         || s.tts_volume != before.tts_volume
                         || s.tts_rate != before.tts_rate
+                        || s.tts_voice != before.tts_voice
                     {
                         self.speech.wake();
                     }
@@ -255,6 +311,10 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         tts_volume,
         tts_rate,
     );
+    // Not `Copy`, so outside the macro.
+    if after.tts_voice != before.tts_voice {
+        live.tts_voice = after.tts_voice.clone();
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +346,7 @@ mod tests {
         let before = AppState::default();
         let after = AppState {
             enabled: true,
+            tts_voice: Some(cv_core::VoiceId { engine: cv_core::Engine::Sapi, id: "v".into() }),
             display_mode: DisplayMode::Docked(Edge::Left),
             panel_size: 20,
             panel_follows_monitor: true,
