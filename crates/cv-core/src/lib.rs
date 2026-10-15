@@ -14,6 +14,8 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
+use voice::{NEUTRAL_MAX, NEUTRAL_RATE_NORMAL};
+
 pub struct Frame {
     pub width: u32,
     pub height: u32,
@@ -140,12 +142,12 @@ pub struct AppState {
     pub pointer_outline_colour: [u8; 3],
     /// Master TTS on/off switch.
     pub tts_enabled: bool,
-    /// Speak the name of the element under the cursor.
-    pub tts_hover_enabled: bool,
-    /// SAPI volume 0–100.
+    /// Speech volume 0–100 (ADR 0012).
     pub tts_volume: u32,
-    /// SAPI rate -10 to 10.
-    pub tts_rate: i32,
+    /// Speech rate, the neutral 0–`NEUTRAL_MAX` (ADR 0012): 50 is the voice's normal rate. Each
+    /// engine maps it onto its own range. A file from before 8.9 had the SAPI scale -10 to 10
+    /// under the key `tts_rate`; the app's settings loader migrates it into this field.
+    pub tts_rate_neutral: u32,
     /// The voice the user picked (roadmap 8.7d, ADR 0012): engine and the engine's own id. None
     /// until one is picked; a voice that is no longer installed stays saved so it comes back.
     pub tts_voice: Option<VoiceId>,
@@ -169,9 +171,8 @@ impl Default for AppState {
             pointer_fill: [26, 102, 255],
             pointer_outline_colour: [255, 255, 255],
             tts_enabled: false,
-            tts_hover_enabled: true,
             tts_volume: 80,
-            tts_rate: 0,
+            tts_rate_neutral: NEUTRAL_RATE_NORMAL,
             tts_voice: None,
         }
     }
@@ -194,7 +195,7 @@ impl AppState {
         self.pointer_size = self.pointer_size.clamp(POINTER_SIZE_MIN, POINTER_SIZE_MAX);
         self.pointer_outline = self.pointer_outline.clamp(0.0, POINTER_OUTLINE_MAX);
         self.tts_volume = self.tts_volume.min(100);
-        self.tts_rate = self.tts_rate.clamp(-10, 10);
+        self.tts_rate_neutral = self.tts_rate_neutral.min(NEUTRAL_MAX);
     }
 
     /// Moves zoom one step in (`direction` > 0) or out (< 0), clamped to the zoom range
@@ -362,9 +363,8 @@ mod tests {
             pointer_fill: [200, 30, 10],
             pointer_outline_colour: [0, 0, 0],
             tts_enabled: true,
-            tts_hover_enabled: false,
             tts_volume: 55,
-            tts_rate: -3,
+            tts_rate_neutral: 35,
             tts_voice: Some(VoiceId { engine: Engine::Sapi, id: "token".into() }),
         }
     }
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn a_file_without_a_voice_loads_none() {
         // Every settings file written before 8.7d.
-        let s: AppState = serde_json::from_str(r#"{"tts_enabled": true, "tts_rate": 2}"#).unwrap();
+        let s: AppState = serde_json::from_str(r#"{"tts_enabled": true}"#).unwrap();
         assert_eq!(s.tts_voice, None);
         assert!(s.tts_enabled);
     }
@@ -407,9 +407,9 @@ mod tests {
 
     #[test]
     fn partial_file_keeps_given_fields() {
-        let s: AppState = serde_json::from_str(r#"{"zoom": 3.0, "tts_rate": 2}"#).unwrap();
+        let s: AppState = serde_json::from_str(r#"{"zoom": 3.0, "tts_rate_neutral": 20}"#).unwrap();
         assert_eq!(s.zoom, 3.0);
-        assert_eq!(s.tts_rate, 2);
+        assert_eq!(s.tts_rate_neutral, 20);
         assert_eq!(s.panel_size, AppState::default().panel_size);
     }
 
@@ -500,7 +500,7 @@ mod tests {
             panel_size: 0,
             edge_threshold: -0.5,
             tts_volume: 500,
-            tts_rate: -50,
+            tts_rate_neutral: 500,
             ..AppState::default()
         };
         s.sanitize();
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(s.panel_size, PANEL_SIZE_MIN);
         assert_eq!(s.edge_threshold, 0.0);
         assert_eq!(s.tts_volume, 100);
-        assert_eq!(s.tts_rate, -10);
+        assert_eq!(s.tts_rate_neutral, 100);
 
         s.panel_size = 400;
         s.zoom = 0.2;

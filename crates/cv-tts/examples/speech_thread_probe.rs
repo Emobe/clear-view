@@ -1,6 +1,6 @@
 //! Dev check for the speech thread (roadmap 8.8b, ADR 0013). Not shipped.
 //!
-//! `CV_TTS_LOG=1 cargo run -p cv-tts --example speech_thread_probe -- [--stop-after-ms N] [--volume 0-100] [--rate -10..10]`
+//! `CV_TTS_LOG=1 cargo run -p cv-tts --example speech_thread_probe -- [--stop-after-ms N] [--volume 0-100] [--rate 0-100]`
 //!
 //! Starts the speech thread with speech on and says a long sentence. Press Enter (or wait
 //! `--stop-after-ms`) to silence it, then it says a short sentence to show speech still works, and
@@ -22,11 +22,11 @@ quickly the voice stops after you do.";
 struct Args {
     stop_after_ms: Option<u64>,
     volume: u32,
-    rate: i32,
+    rate: u32,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { stop_after_ms: None, volume: 100, rate: 0 };
+    let mut args = Args { stop_after_ms: None, volume: 100, rate: 50 };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -55,7 +55,7 @@ fn main() {
         let mut s = state.write();
         s.tts_enabled = true;
         s.tts_volume = args.volume;
-        s.tts_rate = args.rate;
+        s.tts_rate_neutral = args.rate;
     }
     let events = EventHub::new();
     let speech = cv_tts::spawn_speech(state.clone(), &events, || {});
