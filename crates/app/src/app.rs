@@ -250,7 +250,7 @@ impl eframe::App for ClearViewApp {
                     );
                     ui.add_enabled(
                         s.tts_enabled,
-                        egui::Slider::new(&mut s.tts_rate, -10..=10).text("Rate"),
+                        egui::Slider::new(&mut s.tts_rate_neutral, 0..=100).text("Rate"),
                     );
 
                     ui.add_space(4.0);
@@ -272,7 +272,7 @@ impl eframe::App for ClearViewApp {
                     #[cfg(feature = "tts")]
                     if s.tts_enabled != before.tts_enabled
                         || s.tts_volume != before.tts_volume
-                        || s.tts_rate != before.tts_rate
+                        || s.tts_rate_neutral != before.tts_rate_neutral
                         || s.tts_voice != before.tts_voice
                     {
                         self.speech.wake();
@@ -307,9 +307,8 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         pointer_fill,
         pointer_outline_colour,
         tts_enabled,
-        tts_hover_enabled,
         tts_volume,
-        tts_rate,
+        tts_rate_neutral,
     );
     // Not `Copy`, so outside the macro.
     if after.tts_voice != before.tts_voice {
@@ -353,7 +352,7 @@ mod tests {
             color_filter: ColorFilter::Inverted,
             interpolation: Interpolation::CleanEdge,
             edge_threshold: 0.4,
-            tts_rate: 3,
+            tts_rate_neutral: 80,
             ..before.clone()
         };
         let mut live = before.clone();

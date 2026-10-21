@@ -19,9 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use cv_core::voice::{
-    SpeechState, SpeechStatus, VoiceChoice, VoiceId, choose_voice, neutral_rate_from_legacy,
-};
+use cv_core::voice::{SpeechState, SpeechStatus, VoiceChoice, VoiceId, choose_voice};
 use cv_core::{
     CoreEvent, EventHub, SharedState, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for,
 };
@@ -328,7 +326,7 @@ impl Speaker {
     fn sync_settings(&mut self, now: Instant) {
         let (enabled, rate, volume, voice) = {
             let s = self.state.read();
-            (s.tts_enabled, neutral_rate_from_legacy(s.tts_rate), s.tts_volume, s.tts_voice.clone())
+            (s.tts_enabled, s.tts_rate_neutral, s.tts_volume, s.tts_voice.clone())
         };
         if !enabled {
             self.gave_up = false;
