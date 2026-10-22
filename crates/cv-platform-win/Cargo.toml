@@ -10,3 +10,8 @@ cv-core           = { path = "../cv-core" }
 cv-magnifier      = { path = "../cv-magnifier" }
 windows           = { workspace = true }
 raw-window-handle = { workspace = true }
+
+# Dev-only (roadmap 9.1). `test = true` so the password rule's unit tests run in `cargo test`.
+[[example]]
+name = "focus_probe"
+test = true
