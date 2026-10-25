@@ -1,4 +1,5 @@
 pub mod events;
+pub mod focus;
 pub mod geometry;
 pub mod hotkeys;
 pub mod speech;
@@ -6,6 +7,9 @@ pub mod tracking;
 pub mod voice;
 
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
+pub use focus::{
+    Checked, Control, FocusFilter, FocusSource, Password, Reading, Role, States, Value, WindowInfo,
+};
 pub use speech::{Kind, Level, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for};
 pub use tracking::{Following, Tracker};
 pub use voice::{Engine, SpeechState, SpeechStatus, VoiceChoice, VoiceId, VoiceInfo};

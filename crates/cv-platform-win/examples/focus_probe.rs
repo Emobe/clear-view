@@ -221,7 +221,7 @@ mod probe {
         match &uia_focus {
             Ok(u) => {
                 let t = Instant::now();
-                let value = if value_visible(uia_password, msaa_protected) {
+                let value = if cv_core::focus::value_allowed(uia_password, msaa_protected) {
                     uia_value(&u.element)
                 } else {
                     withheld(uia_password, msaa_protected).into()
@@ -234,7 +234,7 @@ mod probe {
         match &msaa_focus {
             Ok(m) => {
                 let t = Instant::now();
-                let value = if value_visible(msaa_protected, uia_password) {
+                let value = if cv_core::focus::value_allowed(msaa_protected, uia_password) {
                     msaa_value(m)
                 } else {
                     withheld(msaa_protected, uia_password).into()
@@ -260,11 +260,7 @@ mod probe {
 
     // ── The password rule ────────────────────────────────────────────────────────
 
-    /// May a source's value be printed? Only when that source says the field is not a password
-    /// and the other source does not say it is. "Can't tell" (`None`) is a password.
-    fn value_visible(own: Option<bool>, other: Option<bool>) -> bool {
-        own == Some(false) && other != Some(true)
-    }
+    // May a source's value be printed? `cv_core::focus::value_allowed` (ADR 0015).
 
     /// What to print in place of a value that may not be shown.
     fn withheld(own: Option<bool>, other: Option<bool>) -> &'static str {
@@ -398,7 +394,7 @@ mod probe {
     }
 
     /// The Value pattern's value, else the start of the Text pattern's document.
-    /// Only called when `value_visible` allowed it.
+    /// Only called when `value_allowed` allowed it.
     fn uia_value(element: &IUIAutomationElement) -> String {
         if let Ok(p) =
             unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
@@ -599,24 +595,13 @@ mod probe {
         use super::*;
 
         #[test]
-        fn a_value_shows_only_when_its_own_source_says_not_password() {
-            assert!(value_visible(Some(false), None));
-            assert!(value_visible(Some(false), Some(false)));
-        }
-
-        #[test]
         fn either_source_saying_password_withholds_both_values() {
-            assert!(!value_visible(Some(true), Some(false)));
-            assert!(!value_visible(Some(false), Some(true)));
-            assert!(!value_visible(Some(true), None));
             assert_eq!(withheld(Some(true), None), "<withheld: password>");
             assert_eq!(withheld(Some(false), Some(true)), "<withheld: password>");
         }
 
         #[test]
         fn cant_tell_counts_as_a_password() {
-            assert!(!value_visible(None, None));
-            assert!(!value_visible(None, Some(false)));
             assert_eq!(withheld(None, None), "<withheld: can't tell>");
             assert_eq!(withheld(None, Some(false)), "<withheld: can't tell>");
         }
