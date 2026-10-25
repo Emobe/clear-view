@@ -46,6 +46,26 @@ impl Drop for CaretGuard {
     }
 }
 
+/// Stops the focus thread when dropped, so a panic in `main` still unhooks it. Only with `tts`.
+#[cfg(feature = "tts")]
+struct FocusGuard(Option<platform::FocusHandle>);
+
+#[cfg(feature = "tts")]
+impl FocusGuard {
+    fn shutdown(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.shutdown();
+        }
+    }
+}
+
+#[cfg(feature = "tts")]
+impl Drop for FocusGuard {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 fn main() -> eframe::Result {
     // Before any window or thread: everything below works in physical pixels.
     platform::set_dpi_awareness();
@@ -101,6 +121,13 @@ fn main() -> eframe::Result {
 
     let mut caret = CaretGuard(Some(platform::spawn_caret_source(events.clone())));
 
+    // Focus thread (ADR 0015), only with `tts`. It takes WinEvents but reads nothing while speech
+    // is off; the speech on/off hotkey and the panel wake it.
+    #[cfg(feature = "tts")]
+    let mut focus = FocusGuard(Some(platform::spawn_focus_source(events.clone(), shared.clone())));
+    #[cfg(feature = "tts")]
+    let focus_waker = focus.0.as_ref().map(|h| h.waker()).expect("the focus thread was just spawned");
+
     // Hotkey thread: Ctrl+Alt+Shift+Z toggles enabled (shows/hides overlay), +Up and +Down zoom.
     // The panel does not poll, so the thread wakes it after a change or a failed registration.
     let hotkey_failures: app::HotkeyFailures = Arc::new(Mutex::new(Vec::new()));
@@ -142,6 +169,7 @@ fn main() -> eframe::Result {
                 if action == Action::ToggleSpeech {
                     // After the state change, so the thread sees the new value.
                     speech.wake();
+                    focus_waker.wake();
                 }
                 wake();
             },
@@ -173,6 +201,8 @@ fn main() -> eframe::Result {
                 hotkey_failures,
                 #[cfg(feature = "tts")]
                 speech_for_panel,
+                #[cfg(feature = "tts")]
+                focus_waker,
             )))
         }),
     );
@@ -180,6 +210,8 @@ fn main() -> eframe::Result {
     // Before the other threads stop, so the system cursor is back first.
     overlay.shutdown();
     caret.shutdown();
+    #[cfg(feature = "tts")]
+    focus.shutdown();
     #[cfg(feature = "tts")]
     speech.shutdown();
 

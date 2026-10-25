@@ -48,12 +48,13 @@ use windows::{
     core::Interface,
 };
 
-use read::{exe_name, foreground, read_chain};
+pub(crate) use read::{Foreground, exe_name, foreground};
+use read::read_chain;
 use tracker::Tracker;
 
 /// UI Automation's connection and transaction timeouts, lowered from 2 s and 20 s so one hung
 /// app cannot stall caret tracking for long. A uia read took up to 36 ms in 4.2.
-const UIA_TIMEOUT_MS: u32 = 500;
+pub(crate) const UIA_TIMEOUT_MS: u32 = 500;
 /// How often to read while only uia or the focus rectangle can see the caret (ADR 0008: 20 Hz).
 const POLL_EVERY: Duration = Duration::from_millis(50);
 /// How long `shutdown` waits for the thread. A read blocked in a hung app can take up to
@@ -133,7 +134,7 @@ fn run(hub: &EventHub, ready: mpsc::Sender<u32>) {
     if let Err(e) = &com {
         eprintln!("[caret] CoInitializeEx failed: {e}; msaa and uia may not answer");
     }
-    let uia = create_uia();
+    let uia = create_uia("caret", "uia and focus rect off");
     let hooks = install_hooks();
 
     run_loop(hub, uia.as_ref());
@@ -147,12 +148,14 @@ fn run(hub: &EventHub, ready: mpsc::Sender<u32>) {
     }
 }
 
-fn create_uia() -> Option<IUIAutomation> {
+/// A UI Automation object with both timeouts at `UIA_TIMEOUT_MS`. `tag` names the thread in the
+/// log lines; `consequence` says what is off when UI Automation is unavailable.
+pub(crate) fn create_uia(tag: &str, consequence: &str) -> Option<IUIAutomation> {
     let uia: IUIAutomation =
         match unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) } {
             Ok(uia) => uia,
             Err(e) => {
-                eprintln!("[caret] UI Automation unavailable: {e}; uia and focus rect off");
+                eprintln!("[{tag}] UI Automation unavailable: {e}; {consequence}");
                 return None;
             }
         };
@@ -164,12 +167,12 @@ fn create_uia() -> Option<IUIAutomation> {
                 r.map(|v| format!("{v} ms")).unwrap_or_else(|_| "?".into())
             };
             eprintln!(
-                "[caret] UIA timeouts: connection {}, transaction {}",
+                "[{tag}] UIA timeouts: connection {}, transaction {}",
                 ms(uia2.ConnectionTimeout()),
                 ms(uia2.TransactionTimeout())
             );
         },
-        Err(e) => eprintln!("[caret] IUIAutomation2 unavailable ({e}); UIA timeouts stay 2 s and 20 s"),
+        Err(e) => eprintln!("[{tag}] IUIAutomation2 unavailable ({e}); UIA timeouts stay 2 s and 20 s"),
     }
     Some(uia)
 }
