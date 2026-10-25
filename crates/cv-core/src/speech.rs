@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::events::CoreEvent;
+use crate::wording::{Verbosity, focus_utterances};
 
 /// The queue holds at most this many waiting utterances; the oldest are dropped first.
 pub const QUEUE_MAX: usize = 32;
@@ -251,20 +252,29 @@ impl SpeechQueue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SpeechSettings {
     pub enabled: bool,
+    pub verbosity: Verbosity,
 }
 
-/// What a core event says. Nothing yet: caret moves speak nothing until 10.4, and focus events
-/// (`FocusChanged`, 9.4a) speak nothing until 9.5 (ADR 0013, ADR 0015). Events carry the text
-/// they need, so this stays pure.
+/// What a core event says. A focus event speaks its control (9.5, `wording`); the window title
+/// and dialog text are 9.6. Caret moves speak nothing until 10.4 (ADR 0013, ADR 0015). Events
+/// carry the text they need, so this stays pure.
 pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utterance> {
-    let _ = (event, settings);
-    Vec::new()
+    if !settings.enabled {
+        return Vec::new();
+    }
+    match event {
+        CoreEvent::FocusChanged { control, .. } => {
+            focus_utterances(control.as_ref(), settings.verbosity)
+        }
+        CoreEvent::CaretMoved { .. } | CoreEvent::CaretLost { .. } => Vec::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::{AppId, CaretSource};
+    use crate::focus::{Control, FocusSource, Password, Role, WindowInfo};
     use crate::ScreenRect;
 
     fn t0() -> Instant {
@@ -625,11 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn events_say_nothing_yet() {
+    fn caret_events_say_nothing_yet() {
         let at = t0();
         let app = AppId { pid: 1, exe: "notepad.exe".into() };
         let rect = ScreenRect { left: 1, top: 2, width: 3, height: 4 };
-        let settings = SpeechSettings { enabled: true };
+        let settings = SpeechSettings { enabled: true, ..SpeechSettings::default() };
         for event in [
             CoreEvent::CaretMoved { at, rect, source: CaretSource::Msaa, app: app.clone() },
             CoreEvent::CaretLost { at, app },
@@ -637,5 +647,44 @@ mod tests {
             assert!(utterances_for(&event, &settings).is_empty());
             assert!(utterances_for(&event, &SpeechSettings::default()).is_empty());
         }
+    }
+
+    fn focus_event(control: Option<Control>) -> CoreEvent {
+        CoreEvent::FocusChanged {
+            at: t0(),
+            app: AppId { pid: 1, exe: "notepad.exe".into() },
+            window: WindowInfo::new("Untitled - Notepad"),
+            window_changed: true,
+            control,
+        }
+    }
+
+    fn on(verbosity: Verbosity) -> SpeechSettings {
+        SpeechSettings { enabled: true, verbosity }
+    }
+
+    #[test]
+    fn a_focus_event_speaks_its_control_as_a_focus_utterance() {
+        let mut c = Control::new("Save", Role::Button, FocusSource::Both);
+        c.states.password = Password::No;
+        let items = utterances_for(&focus_event(Some(c)), &on(Verbosity::Normal));
+        assert_eq!(items, vec![u(Kind::Focus, "Save, button")]);
+    }
+
+    #[test]
+    fn the_verbosity_setting_reaches_the_wording() {
+        let mut c = Control::new("Save", Role::Button, FocusSource::Both);
+        c.states.password = Password::No;
+        let items = utterances_for(&focus_event(Some(c)), &on(Verbosity::Brief));
+        assert_eq!(items, vec![u(Kind::Focus, "Save")]);
+    }
+
+    #[test]
+    fn a_focus_event_with_nothing_to_say_or_speech_off_speaks_nothing() {
+        assert!(utterances_for(&focus_event(None), &on(Verbosity::Normal)).is_empty());
+        let pane = Control::new("", Role::Pane, FocusSource::Msaa);
+        assert!(utterances_for(&focus_event(Some(pane)), &on(Verbosity::Full)).is_empty());
+        let button = Control::new("Save", Role::Button, FocusSource::Both);
+        assert!(utterances_for(&focus_event(Some(button)), &SpeechSettings::default()).is_empty());
     }
 }
