@@ -22,6 +22,9 @@ pub struct ClearViewApp {
     /// A changed `tts_*` field wakes the speech thread (ADR 0013).
     #[cfg(feature = "tts")]
     speech: cv_tts::SpeechHandle,
+    /// Speech on or off wakes the focus thread, which reads `tts_enabled` (ADR 0015).
+    #[cfg(feature = "tts")]
+    focus: crate::platform::FocusWaker,
     /// The voice dropdown was open last frame, so opening it reads the voice list again.
     #[cfg(feature = "tts")]
     voice_list_open: bool,
@@ -38,6 +41,7 @@ impl ClearViewApp {
         repaint: RepaintSlot,
         hotkey_failures: HotkeyFailures,
         #[cfg(feature = "tts")] speech: cv_tts::SpeechHandle,
+        #[cfg(feature = "tts")] focus: crate::platform::FocusWaker,
     ) -> Self {
         // egui only repaints on input or an explicit request, so the panel does not poll.
         // Anything that changes displayed state from another thread must wake it via `repaint`.
@@ -47,6 +51,8 @@ impl ClearViewApp {
             hotkey_failures,
             #[cfg(feature = "tts")]
             speech,
+            #[cfg(feature = "tts")]
+            focus,
             #[cfg(feature = "tts")]
             voice_list_open: false,
         }
@@ -276,6 +282,10 @@ impl eframe::App for ClearViewApp {
                         || s.tts_voice != before.tts_voice
                     {
                         self.speech.wake();
+                    }
+                    #[cfg(feature = "tts")]
+                    if s.tts_enabled != before.tts_enabled {
+                        self.focus.wake();
                     }
                 }
             });

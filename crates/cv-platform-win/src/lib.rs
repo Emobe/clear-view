@@ -1,6 +1,7 @@
 //! Windows backend (ADR 0004): DXGI capture, the pointer, DPI awareness, global hotkeys, the
 //! startup system log, the overlay window (its thread and loop, fullscreen and docked
-//! placement, cursor hiding, clean exit) and the caret thread (ADR 0008).
+//! placement, cursor hiding, clean exit), the caret thread (ADR 0008) and the focus thread
+//! (ADR 0015).
 //! Empty on other targets, so a `--workspace` build elsewhere still resolves.
 #![cfg(windows)]
 
@@ -8,6 +9,7 @@ mod capture;
 mod caret;
 mod display;
 mod dpi;
+mod focus;
 mod hotkey;
 mod overlay;
 mod perf;
@@ -18,6 +20,7 @@ mod sysinfo;
 pub use capture::{Capturer, enumerate_outputs};
 pub use caret::{CaretHandle, spawn_caret_source};
 pub use dpi::set_dpi_awareness;
+pub use focus::{FocusHandle, FocusWaker, spawn_focus_source};
 pub use hotkey::{TOGGLE_LABEL, spawn_hotkey_thread};
 pub use overlay::{OverlayHandle, spawn_overlay};
 pub use sysinfo::log_system_info;

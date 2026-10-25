@@ -42,14 +42,14 @@ use windows::{
 use super::tracker::Found;
 
 /// The foreground window and the process and thread that own it.
-pub(super) struct Foreground {
+pub(crate) struct Foreground {
     pub hwnd: HWND,
     pub pid: u32,
     pub tid: u32,
 }
 
 /// `None` while no window is in the foreground, for example during a switch.
-pub(super) fn foreground() -> Option<Foreground> {
+pub(crate) fn foreground() -> Option<Foreground> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_invalid() {
         return None;
@@ -319,7 +319,7 @@ fn read_doubles(array: *const SAFEARRAY) -> Result<Vec<f64>> {
 
 /// The executable's file name, for example "notepad.exe"; "?" when the process can't be
 /// queried.
-pub(super) fn exe_name(pid: u32) -> String {
+pub(crate) fn exe_name(pid: u32) -> String {
     let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
         return "?".into();
     };
