@@ -268,6 +268,16 @@ fn finish(mut control: Control, source: FocusSource) -> Control {
     control
 }
 
+/// Equal in everything the user would hear or see. Which source answered can flip between two
+/// reads of the same control (UI Automation alone, then both), and that is not a change.
+fn same_but_source(a: &Option<Control>, b: &Option<Control>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Control { source: b.source, ..a.clone() } == *b,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn same_control(a: &Control, b: &Control) -> bool {
     match (a.rect, b.rect) {
         (Some(ra), Some(rb)) => {
@@ -408,7 +418,7 @@ impl FocusFilter {
             && let Some(last) = &self.last
             && last.app == app
             && last.window == window
-            && last.control == control
+            && same_but_source(&last.control, &control)
         {
             return None;
         }
@@ -930,6 +940,18 @@ mod tests {
         assert!(read(&mut f, ms(t, 60), reading("a.exe", "A", Some(c.clone()))).is_some());
         f.winevent(ms(t, 200), false);
         assert_eq!(read(&mut f, ms(t, 260), reading("a.exe", "A", Some(c))), None);
+    }
+
+    #[test]
+    fn the_same_control_from_another_source_is_published_once() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        let both = Control { source: FocusSource::Both, ..uia("Address", Role::Edit) };
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), reading("a.exe", "A", Some(both))).is_some());
+        f.winevent(ms(t, 200), false);
+        let alone = uia("Address", Role::Edit);
+        assert_eq!(read(&mut f, ms(t, 260), reading("a.exe", "A", Some(alone))), None);
     }
 
     #[test]
