@@ -1,6 +1,6 @@
 # 0015: Focus events
 
-Status: Proposed
+Status: Accepted (you, 2026-10-25; set by the agent on your instruction)
 Date: 2026-10-25
 
 ## Context
