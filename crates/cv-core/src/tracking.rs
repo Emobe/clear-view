@@ -207,6 +207,8 @@ impl Tracker {
             // Hold: the view stays where the caret was until the pointer moves or a caret
             // comes back.
             CoreEvent::CaretLost { .. } => self.pending = None,
+            // The view does not follow focus until 9.9 (ADR 0015).
+            CoreEvent::FocusChanged { .. } => {}
         }
     }
 }
@@ -352,6 +354,48 @@ mod tests {
     fn a_caret_while_the_pointer_is_still_takes_the_view() {
         let mut rig = Rig::new();
         rig.on_far_caret();
+    }
+
+    fn focus_changed() -> CoreEvent {
+        use crate::focus::{Control, FocusSource, Role, WindowInfo};
+        let mut control = Control::new("OK", Role::Button, FocusSource::Both);
+        control.rect = Some(ScreenRect { left: 1800, top: 900, width: 80, height: 24 });
+        CoreEvent::FocusChanged {
+            at: Instant::now(),
+            app: app(),
+            window: WindowInfo::new("Untitled"),
+            window_changed: true,
+            control: Some(control),
+        }
+    }
+
+    #[test]
+    fn a_focus_event_changes_neither_the_mode_nor_the_target() {
+        // On the pointer.
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus_changed()]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+
+        // On a caret.
+        let mut rig = Rig::new();
+        rig.on_far_caret();
+        let t = rig.tick(300, p(1000, 500), [focus_changed()]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1500.0, 500.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_focus_event_does_not_cancel_a_pending_focus_rect() {
+        let mut with = Rig::new();
+        let mut without = Rig::new();
+        // The pointer moved a moment ago, so the focus rectangle waits (pending).
+        with.tick(100, p(1100, 500), [focus(1500, 480, 200, 40)]);
+        without.tick(100, p(1100, 500), [focus(1500, 480, 200, 40)]);
+        let a = with.tick(20, p(1100, 500), [focus_changed()]);
+        let b = without.tick(20, p(1100, 500), []);
+        assert_eq!(with.following(), without.following());
+        assert!(approx(a, b), "{a:?} {b:?}");
     }
 
     #[test]

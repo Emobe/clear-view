@@ -254,7 +254,8 @@ pub struct SpeechSettings {
 }
 
 /// What a core event says. Nothing yet: caret moves speak nothing until 10.4, and focus events
-/// do not exist until 9.4 (ADR 0013). Events will carry the text they need, so this stays pure.
+/// (`FocusChanged`, 9.4a) speak nothing until 9.5 (ADR 0013, ADR 0015). Events carry the text
+/// they need, so this stays pure.
 pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utterance> {
     let _ = (event, settings);
     Vec::new()

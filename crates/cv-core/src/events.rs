@@ -8,8 +8,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 use crate::ScreenRect;
+use crate::focus::{Control, Value, WindowInfo};
 
-/// Something the core saw happen. New kinds (focus, element, text) are added as new variants.
+/// Something the core saw happen. New kinds (element, text) are added as new variants.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
@@ -18,24 +19,48 @@ pub enum CoreEvent {
     CaretMoved { at: Instant, rect: ScreenRect, source: CaretSource, app: AppId },
     /// The focused element has no caret any more, or no source gives one.
     CaretLost { at: Instant, app: AppId },
+    /// Focus moved to a new control, or the foreground window changed (ADR 0015). Sent only
+    /// after the focus filter: never for our own process, never twice for the same thing.
+    FocusChanged {
+        at: Instant,
+        app: AppId,
+        window: WindowInfo,
+        /// The foreground window changed since the last `FocusChanged`.
+        window_changed: bool,
+        /// `None`: neither source could read the focused control (Task Manager, a hung window).
+        control: Option<Control>,
+    },
 }
 
 impl CoreEvent {
     /// When it happened, for the speech queue's late-event rule (ADR 0013).
     pub fn at(&self) -> Instant {
         match self {
-            Self::CaretMoved { at, .. } | Self::CaretLost { at, .. } => *at,
+            Self::CaretMoved { at, .. }
+            | Self::CaretLost { at, .. }
+            | Self::FocusChanged { at, .. } => *at,
         }
     }
 
-    /// One line for logs, for example `focus rect (812, 64) 1240x32 in explorer.exe` or
-    /// `lost in explorer.exe`.
+    /// One line for logs, for example `msaa (812, 64) 1240x32 in explorer.exe` or
+    /// `lost in explorer.exe`. A focus event gives the role and source, never the name or the
+    /// value.
     pub fn describe(&self) -> String {
         match self {
             Self::CaretMoved { rect, source, app, .. } => {
                 format!("{} {rect} in {}", source.name(), app.exe)
             }
             Self::CaretLost { app, .. } => format!("lost in {}", app.exe),
+            Self::FocusChanged { app, window_changed, control, .. } => {
+                let new_window = if *window_changed { ", new window" } else { "" };
+                match control {
+                    Some(c) => {
+                        let withheld = if c.value == Value::Withheld { " value withheld" } else { "" };
+                        format!("focus {:?} ({}){withheld} in {}{new_window}", c.role, c.source.name(), app.exe)
+                    }
+                    None => format!("focus no control in {}{new_window}", app.exe),
+                }
+            }
         }
     }
 }
