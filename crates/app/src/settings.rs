@@ -310,10 +310,18 @@ mod tests {
             tts_volume: 35,
             tts_rate_neutral: 85,
             tts_voice: Some(cv_core::VoiceId { engine: cv_core::Engine::OneCore, id: "v".into() }),
+            tts_verbosity: cv_core::Verbosity::Full,
             ..AppState::default()
         };
         save_to(&dir.file(), &state).unwrap();
         assert_eq!(load_from(&dir.file()), state);
+    }
+
+    #[test]
+    fn a_file_without_the_speech_detail_loads_the_default() {
+        let s = load_text("noverbosity", r#"{"zoom": 3.0, "tts_enabled": true}"#);
+        assert_eq!(s.tts_verbosity, cv_core::Verbosity::Normal);
+        assert_eq!(s.zoom, 3.0);
     }
 
     #[test]

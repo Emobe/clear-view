@@ -258,6 +258,18 @@ impl eframe::App for ClearViewApp {
                         s.tts_enabled,
                         egui::Slider::new(&mut s.tts_rate_neutral, 0..=100).text("Rate"),
                     );
+                    ui.add_enabled_ui(s.tts_enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Detail");
+                            egui::ComboBox::from_id_salt("tts_verbosity")
+                                .selected_text(s.tts_verbosity.label())
+                                .show_ui(ui, |ui| {
+                                    for level in cv_core::Verbosity::ALL {
+                                        ui.selectable_value(&mut s.tts_verbosity, level, level.label());
+                                    }
+                                });
+                        });
+                    });
 
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -319,6 +331,7 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         tts_enabled,
         tts_volume,
         tts_rate_neutral,
+        tts_verbosity,
     );
     // Not `Copy`, so outside the macro.
     if after.tts_voice != before.tts_voice {
@@ -368,6 +381,15 @@ mod tests {
         let mut live = before.clone();
         apply_changes(&mut live, &before, &after);
         assert_eq!(live, after);
+    }
+
+    #[test]
+    fn the_speech_detail_is_copied() {
+        let before = AppState::default();
+        let after = AppState { tts_verbosity: cv_core::Verbosity::Full, ..before.clone() };
+        let mut live = AppState { enabled: true, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, AppState { enabled: true, ..after });
     }
 
     #[test]

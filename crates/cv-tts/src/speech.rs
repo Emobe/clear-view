@@ -302,7 +302,8 @@ impl Speaker {
         }
         let events: Vec<CoreEvent> = self.core.try_iter().collect();
         if self.engines.is_some() {
-            let settings = SpeechSettings { enabled: true };
+            let settings =
+                SpeechSettings { enabled: true, verbosity: self.state.read().tts_verbosity };
             for event in &events {
                 if !self.queue.accepts_event(event.at()) {
                     continue;

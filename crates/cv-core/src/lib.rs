@@ -5,6 +5,7 @@ pub mod hotkeys;
 pub mod speech;
 pub mod tracking;
 pub mod voice;
+pub mod wording;
 
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
 pub use focus::{
@@ -13,6 +14,7 @@ pub use focus::{
 pub use speech::{Kind, Level, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for};
 pub use tracking::{Following, Tracker};
 pub use voice::{Engine, SpeechState, SpeechStatus, VoiceChoice, VoiceId, VoiceInfo};
+pub use wording::Verbosity;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -155,6 +157,8 @@ pub struct AppState {
     /// The voice the user picked (roadmap 8.7d, ADR 0012): engine and the engine's own id. None
     /// until one is picked; a voice that is no longer installed stays saved so it comes back.
     pub tts_voice: Option<VoiceId>,
+    /// How much is said about a focused control (roadmap 9.5). Old files load the default.
+    pub tts_verbosity: Verbosity,
 }
 
 impl Default for AppState {
@@ -178,6 +182,7 @@ impl Default for AppState {
             tts_volume: 80,
             tts_rate_neutral: NEUTRAL_RATE_NORMAL,
             tts_voice: None,
+            tts_verbosity: Verbosity::default(),
         }
     }
 }
@@ -370,6 +375,7 @@ mod tests {
             tts_volume: 55,
             tts_rate_neutral: 35,
             tts_voice: Some(VoiceId { engine: Engine::Sapi, id: "token".into() }),
+            tts_verbosity: Verbosity::Full,
         }
     }
 
