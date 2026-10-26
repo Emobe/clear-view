@@ -20,17 +20,124 @@ pub const SETTLE_MAX: Duration = Duration::from_millis(150);
 /// Two rectangles are the same control when every edge is within this many pixels. Starting value.
 pub const RECT_TOLERANCE_PX: i64 = 2;
 
+/// The most `FindAll` calls one dialog walk may make. Starting value (ADR 0016); the focus thread
+/// enforces it.
+pub const DIALOG_CALLS: usize = 8;
+/// How deep a dialog walk may go below the dialog. Starting value (ADR 0016).
+pub const DIALOG_DEPTH: usize = 3;
+/// The most nodes one dialog walk may collect. Starting value (ADR 0016).
+pub const DIALOG_NODES: usize = 64;
+/// The most pieces of text a dialog gives. Starting value (ADR 0016).
+pub const DIALOG_TEXTS: usize = 8;
+
 /// The foreground window.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
     pub title: String,
+    /// The text of a dialog (ADR 0016), chosen by [`dialog_text`]. Empty when the window is not a
+    /// dialog or says nothing. The same on every read in the same window, so the duplicate rule
+    /// of [`FocusFilter`] holds.
+    pub dialog_text: Vec<String>,
 }
 
 impl WindowInfo {
+    /// A window with a title and no dialog text; the fields are public to fill in.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into() }
+        Self { title: title.into(), dialog_text: Vec::new() }
     }
+}
+
+/// One element found in a dialog, in terms both sources can be mapped to (ADR 0016). The focus
+/// thread passes the nodes in tree order, depth first: a container is followed by its children.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogNode {
+    pub name: String,
+    pub role: Role,
+    /// The element can take keyboard focus. Its name is never returned by [`dialog_text`].
+    pub focusable: bool,
+    pub offscreen: bool,
+    /// 0 for a child of the dialog itself.
+    pub depth: usize,
+}
+
+impl DialogNode {
+    /// A node that is not focusable and not offscreen; the fields are public to fill in.
+    pub fn new(name: impl Into<String>, role: Role, depth: usize) -> Self {
+        Self { name: name.into(), role, focusable: false, offscreen: false, depth }
+    }
+}
+
+// ── The dialog text ──────────────────────────────────────────────────────────────────────────
+
+/// Picks the text of a dialog from what the focus thread found in it (ADR 0016).
+///
+/// 1. A walk that did not finish (`complete` false) gives nothing: a dialog too big for the budget
+///    is a window full of controls, not a message.
+/// 2. Only a `Text` node that is neither focusable nor offscreen gives text. A focusable node's
+///    name is never returned; it is used only for the comparison in 3.
+/// 3. Label rule: a text whose name equals the next focusable sibling's name is that control's
+///    label and is dropped. Names are compared without one `&`, a trailing `:`, extra
+///    whitespace and case.
+/// 4. Group rule: a text right after a `Group` sibling is the group's description and is dropped.
+/// 5. A text equal to the title or to an earlier text is dropped, and so is an empty one.
+/// 6. At most [`DIALOG_TEXTS`] pieces, each cut at [`VALUE_MAX`] characters.
+///
+/// A sibling is a node at the same depth with no shallower node between; descendants are skipped.
+pub fn dialog_text(nodes: &[DialogNode], complete: bool, title: &str) -> Vec<String> {
+    if !complete {
+        return Vec::new();
+    }
+    let title = flat_key(title);
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if out.len() >= DIALOG_TEXTS {
+            break;
+        }
+        if node.role != Role::Text || node.focusable || node.offscreen {
+            continue;
+        }
+        let text = node.name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = flat_key(&text);
+        if key.is_empty() || key == title || seen.contains(&key) {
+            continue;
+        }
+        let label = label_key(&text);
+        let labels_next = siblings_after(nodes, i)
+            .find(|n| n.focusable)
+            .is_some_and(|n| label_key(&n.name) == label);
+        let after_group = siblings_before(nodes, i).next().is_some_and(|n| n.role == Role::Group);
+        if labels_next || after_group {
+            continue;
+        }
+        seen.push(key);
+        out.push(text.chars().take(VALUE_MAX).collect());
+    }
+    out
+}
+
+/// The nodes after `i` at the same depth, nearest first, up to the end of the parent.
+fn siblings_after(nodes: &[DialogNode], i: usize) -> impl Iterator<Item = &DialogNode> {
+    let depth = nodes[i].depth;
+    nodes[i + 1..].iter().take_while(move |n| n.depth >= depth).filter(move |n| n.depth == depth)
+}
+
+/// The nodes before `i` at the same depth, nearest first, back to the start of the parent.
+fn siblings_before(nodes: &[DialogNode], i: usize) -> impl Iterator<Item = &DialogNode> {
+    let depth = nodes[i].depth;
+    nodes[..i].iter().rev().take_while(move |n| n.depth >= depth).filter(move |n| n.depth == depth)
+}
+
+/// Whitespace flattened, one `&` marker removed, case ignored.
+fn flat_key(text: &str) -> String {
+    clean_name(text).split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// [`flat_key`] without a trailing colon, for the label rule ("File name:" labels "File name").
+fn label_key(text: &str) -> String {
+    flat_key(text).trim_end_matches(':').trim_end().to_string()
 }
 
 /// What a control is, in terms both UI Automation and MSAA can be mapped to. The platform owns the
@@ -741,6 +848,204 @@ mod tests {
         assert_eq!(text.len(), VALUE_MAX);
     }
 
+    // ── dialog_text (ADR 0016) ──
+
+    fn text(name: &str, depth: usize) -> DialogNode {
+        DialogNode::new(name, Role::Text, depth)
+    }
+
+    fn focusable(name: &str, role: Role, depth: usize) -> DialogNode {
+        let mut n = DialogNode::new(name, role, depth);
+        n.focusable = true;
+        n
+    }
+
+    fn pieces(nodes: &[DialogNode], title: &str) -> Vec<String> {
+        dialog_text(nodes, true, title)
+    }
+
+    #[test]
+    fn a_message_box_gives_its_message() {
+        let nodes = [
+            text("Do you want to save changes to Untitled?", 0),
+            focusable("Save", Role::Button, 0),
+            focusable("Don't Save", Role::Button, 0),
+            focusable("Cancel", Role::Button, 0),
+        ];
+        assert_eq!(pieces(&nodes, "Notepad"), ["Do you want to save changes to Untitled?"]);
+    }
+
+    #[test]
+    fn a_walk_that_did_not_finish_gives_nothing() {
+        let nodes = [text("Hello", 0), focusable("OK", Role::Button, 0)];
+        assert!(dialog_text(&nodes, false, "").is_empty());
+        assert_eq!(dialog_text(&nodes, true, ""), ["Hello"]);
+    }
+
+    #[test]
+    fn a_focusable_nodes_name_never_comes_out() {
+        // An edit whose name is its text (Finding 27(b)), and a "text" that can take focus.
+        let nodes = [
+            focusable("secret file name.txt", Role::Edit, 0),
+            focusable("Click me", Role::Text, 0),
+            focusable("OK", Role::Button, 0),
+        ];
+        assert!(pieces(&nodes, "").is_empty());
+    }
+
+    #[test]
+    fn a_password_node_with_its_name_emptied_says_nothing() {
+        let nodes = [text("Enter your password", 0), focusable("", Role::Edit, 0), text("", 0)];
+        assert_eq!(pieces(&nodes, ""), ["Enter your password"]);
+    }
+
+    #[test]
+    fn only_text_roles_give_text() {
+        let nodes = [
+            DialogNode::new("A link", Role::Link, 0),
+            DialogNode::new("An image", Role::Image, 0),
+            DialogNode::new("A pane", Role::Pane, 0),
+            DialogNode::new("A button", Role::Button, 0),
+            text("A label", 0),
+        ];
+        assert_eq!(pieces(&nodes, ""), ["A label"]);
+    }
+
+    #[test]
+    fn offscreen_text_is_skipped() {
+        let mut hidden = text("Hidden", 0);
+        hidden.offscreen = true;
+        assert_eq!(pieces(&[hidden, text("Shown", 0)], ""), ["Shown"]);
+    }
+
+    #[test]
+    fn a_label_is_dropped_when_the_next_focusable_sibling_has_its_name() {
+        // Save As: "File name:" before the file name box, "Save as type:" before its combo.
+        let nodes = [
+            text("File &name:", 0),
+            focusable("File name", Role::Edit, 0),
+            text("Save as &type:", 0),
+            focusable("Save as type:", Role::ComboBox, 0),
+        ];
+        assert!(pieces(&nodes, "Save As").is_empty());
+    }
+
+    #[test]
+    fn the_label_rule_ignores_case_spacing_and_one_accelerator() {
+        let nodes = [text("USER   name :", 0), focusable("&User name", Role::Edit, 0)];
+        assert!(pieces(&nodes, "").is_empty());
+    }
+
+    #[test]
+    fn a_text_that_does_not_name_the_next_control_is_kept() {
+        let nodes = [text("Enter a name for the new folder", 0), focusable("Name", Role::Edit, 0)];
+        assert_eq!(pieces(&nodes, ""), ["Enter a name for the new folder"]);
+    }
+
+    #[test]
+    fn the_label_rule_looks_past_other_nodes_and_descendants_to_the_next_focusable_sibling() {
+        let nodes = [
+            text("Name", 0),
+            DialogNode::new("", Role::Pane, 0),
+            text("Inner note", 1),
+            focusable("Inner button", Role::Button, 1),
+            text("A second line", 0),
+            focusable("Name", Role::Edit, 0),
+        ];
+        // "Name" labels the edit three siblings on; the inner button is not a sibling.
+        assert_eq!(pieces(&nodes, ""), ["Inner note", "A second line"]);
+    }
+
+    #[test]
+    fn the_label_rule_does_not_cross_into_another_parent() {
+        let nodes = [
+            DialogNode::new("", Role::Pane, 0),
+            text("Name", 1),
+            DialogNode::new("", Role::Pane, 0),
+            focusable("Name", Role::Edit, 1),
+        ];
+        assert_eq!(pieces(&nodes, ""), ["Name"]);
+    }
+
+    #[test]
+    fn a_text_right_after_a_group_is_its_description() {
+        let nodes = [
+            DialogNode::new("Options", Role::Group, 0),
+            text("Choose how the file is saved", 0),
+            text("Another message", 0),
+        ];
+        assert_eq!(pieces(&nodes, ""), ["Another message"]);
+    }
+
+    #[test]
+    fn the_group_rule_needs_the_group_to_be_the_previous_sibling() {
+        let nodes = [
+            DialogNode::new("Options", Role::Group, 0),
+            text("Inside the group", 1),
+            text("After the group", 0),
+        ];
+        // The first text is the group's child (no previous sibling); the second follows the group
+        // at depth 0, so it is the group's description.
+        assert_eq!(pieces(&nodes, ""), ["Inside the group"]);
+    }
+
+    #[test]
+    fn a_text_equal_to_the_title_or_an_earlier_text_is_dropped() {
+        let nodes = [
+            text("Save As", 0),
+            text("Replace file?", 0),
+            text("replace  FILE?", 0),
+            text("It already exists.", 0),
+        ];
+        assert_eq!(pieces(&nodes, "Save as"), ["Replace file?", "It already exists."]);
+    }
+
+    #[test]
+    fn empty_and_blank_texts_are_dropped() {
+        let nodes = [text("", 0), text("  \n ", 0), text("Real", 0)];
+        assert_eq!(pieces(&nodes, ""), ["Real"]);
+    }
+
+    #[test]
+    fn a_text_is_flattened() {
+        assert_eq!(pieces(&[text("Line one\r\n  line   two", 0)], ""), ["Line one line two"]);
+    }
+
+    #[test]
+    fn at_most_dialog_texts_pieces_each_cut_at_value_max() {
+        let nodes: Vec<_> = (0..DIALOG_TEXTS + 4).map(|i| text(&format!("Message {i}"), 0)).collect();
+        let got = pieces(&nodes, "");
+        assert_eq!(got.len(), DIALOG_TEXTS);
+        assert_eq!(got[0], "Message 0");
+        let long = pieces(&[text(&"é".repeat(VALUE_MAX + 20), 0)], "");
+        assert_eq!(long[0].chars().count(), VALUE_MAX);
+    }
+
+    #[test]
+    fn a_save_as_shape_says_nothing() {
+        let nodes = [
+            DialogNode::new("Navigation pane", Role::Pane, 0),
+            focusable("Items view", Role::List, 0),
+            text("File name:", 0),
+            focusable("File name", Role::Edit, 0),
+            text("Save as type:", 0),
+            focusable("Save as type:", Role::ComboBox, 0),
+            focusable("Save", Role::Button, 0),
+            focusable("Cancel", Role::Button, 0),
+        ];
+        assert!(pieces(&nodes, "Save As").is_empty());
+    }
+
+    #[test]
+    fn no_nodes_give_no_text() {
+        assert!(pieces(&[], "Title").is_empty());
+    }
+
+    #[test]
+    fn a_new_window_has_no_dialog_text() {
+        assert!(WindowInfo::new("Notepad").dialog_text.is_empty());
+    }
+
     // ── FocusFilter ──
 
     fn base() -> Instant {
@@ -1000,6 +1305,24 @@ mod tests {
         f.winevent(ms(t, 400), true);
         let e = read(&mut f, ms(t, 460), reading("a.exe", "A", Some(c))).unwrap();
         assert!(parts(&e).0);
+    }
+
+    #[test]
+    fn a_repeat_with_the_same_dialog_text_is_a_duplicate_and_a_change_is_new() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        let with_text = |text: &str| {
+            let mut r = reading("notepad.exe", "Notepad", Some(uia("OK", Role::Button)));
+            r.window.dialog_text = vec![text.into()];
+            r
+        };
+        f.winevent(t, true);
+        let first = read(&mut f, ms(t, 60), with_text("Save changes?")).unwrap();
+        assert!(parts(&first).0);
+        f.winevent(ms(t, 200), false);
+        assert_eq!(read(&mut f, ms(t, 260), with_text("Save changes?")), None);
+        f.winevent(ms(t, 400), false);
+        assert!(read(&mut f, ms(t, 460), with_text("Replace file?")).is_some());
     }
 
     // ── CoreEvent ──
