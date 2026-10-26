@@ -255,16 +255,17 @@ pub struct SpeechSettings {
     pub verbosity: Verbosity,
 }
 
-/// What a core event says. A focus event speaks its control (9.5, `wording`); the window title
-/// and dialog text are 9.6. Caret moves speak nothing until 10.4 (ADR 0013, ADR 0015). Events
-/// carry the text they need, so this stays pure.
+/// What a core event says. A focus event speaks the window title when the window changed and
+/// then its control, as one batch (9.5, 9.6a, `wording`); a dialog's text is 9.6b. Caret moves
+/// speak nothing until 10.4 (ADR 0013, ADR 0015). Events carry the text they need, so this stays
+/// pure.
 pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utterance> {
     if !settings.enabled {
         return Vec::new();
     }
     match event {
-        CoreEvent::FocusChanged { control, .. } => {
-            focus_utterances(control.as_ref(), settings.verbosity)
+        CoreEvent::FocusChanged { window, window_changed, control, .. } => {
+            focus_utterances(window, *window_changed, control.as_ref(), settings.verbosity)
         }
         CoreEvent::CaretMoved { .. } | CoreEvent::CaretLost { .. } => Vec::new(),
     }
@@ -649,33 +650,40 @@ mod tests {
         }
     }
 
-    fn focus_event(control: Option<Control>) -> CoreEvent {
+    fn event_in(title: &str, window_changed: bool, control: Option<Control>) -> CoreEvent {
         CoreEvent::FocusChanged {
             at: t0(),
             app: AppId { pid: 1, exe: "notepad.exe".into() },
-            window: WindowInfo::new("Untitled - Notepad"),
-            window_changed: true,
+            window: WindowInfo::new(title),
+            window_changed,
             control,
         }
+    }
+
+    /// A focus event inside the same window.
+    fn focus_event(control: Option<Control>) -> CoreEvent {
+        event_in("Untitled - Notepad", false, control)
     }
 
     fn on(verbosity: Verbosity) -> SpeechSettings {
         SpeechSettings { enabled: true, verbosity }
     }
 
-    #[test]
-    fn a_focus_event_speaks_its_control_as_a_focus_utterance() {
+    fn save_button() -> Control {
         let mut c = Control::new("Save", Role::Button, FocusSource::Both);
         c.states.password = Password::No;
-        let items = utterances_for(&focus_event(Some(c)), &on(Verbosity::Normal));
+        c
+    }
+
+    #[test]
+    fn a_focus_event_speaks_its_control_as_a_focus_utterance() {
+        let items = utterances_for(&focus_event(Some(save_button())), &on(Verbosity::Normal));
         assert_eq!(items, vec![u(Kind::Focus, "Save, button")]);
     }
 
     #[test]
     fn the_verbosity_setting_reaches_the_wording() {
-        let mut c = Control::new("Save", Role::Button, FocusSource::Both);
-        c.states.password = Password::No;
-        let items = utterances_for(&focus_event(Some(c)), &on(Verbosity::Brief));
+        let items = utterances_for(&focus_event(Some(save_button())), &on(Verbosity::Brief));
         assert_eq!(items, vec![u(Kind::Focus, "Save")]);
     }
 
@@ -684,7 +692,41 @@ mod tests {
         assert!(utterances_for(&focus_event(None), &on(Verbosity::Normal)).is_empty());
         let pane = Control::new("", Role::Pane, FocusSource::Msaa);
         assert!(utterances_for(&focus_event(Some(pane)), &on(Verbosity::Full)).is_empty());
-        let button = Control::new("Save", Role::Button, FocusSource::Both);
-        assert!(utterances_for(&focus_event(Some(button)), &SpeechSettings::default()).is_empty());
+        let off = SpeechSettings::default();
+        assert!(utterances_for(&focus_event(Some(save_button())), &off).is_empty());
+        let changed = event_in("Untitled - Notepad", true, Some(save_button()));
+        assert!(utterances_for(&changed, &off).is_empty());
+    }
+
+    #[test]
+    fn a_new_window_speaks_its_title_then_its_control() {
+        let event = event_in("Untitled - Notepad", true, Some(save_button()));
+        let items = utterances_for(&event, &on(Verbosity::Brief));
+        assert_eq!(items, vec![u(Kind::Focus, "Untitled - Notepad"), u(Kind::Focus, "Save")]);
+    }
+
+    #[test]
+    fn a_new_window_with_no_control_speaks_its_title() {
+        let event = event_in("Task Manager", true, None);
+        assert_eq!(utterances_for(&event, &on(Verbosity::Normal)), vec![u(Kind::Focus, "Task Manager")]);
+    }
+
+    #[test]
+    fn the_title_is_not_spoken_again_inside_the_same_window() {
+        let event = event_in("Untitled - Notepad", false, Some(save_button()));
+        assert_eq!(utterances_for(&event, &on(Verbosity::Normal)), vec![u(Kind::Focus, "Save, button")]);
+    }
+
+    #[test]
+    fn the_control_does_not_cut_off_the_title_in_the_queue() {
+        let b = t0();
+        let mut q = SpeechQueue::new();
+        // Something is speaking, then a window change arrives as one batch.
+        q.push(b, u(Kind::Focus, "old"));
+        let event = event_in("Untitled - Notepad", true, Some(save_button()));
+        let ops = q.push_batch(b, utterances_for(&event, &on(Verbosity::Normal)));
+        assert_eq!(ops, vec![SpeechOp::Stop, speak(2, "Untitled - Notepad")]);
+        assert_eq!(q.waiting(), 1, "the control waits behind the title");
+        assert_eq!(q.finished(b, 2), vec![speak(3, "Save, button")]);
     }
 }
