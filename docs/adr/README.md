@@ -48,3 +48,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0013 Speech pipeline (Accepted; supersedes the threading rule of 0003, extends the `EventHub` of 0004)
 - 0014 Speech hotkeys (Accepted; extends 0005, supersedes only its "bindings are constants in hotkey.rs")
 - 0015 Focus events (Accepted; extends 0004 and 0013, supersedes only 0008's "the caret thread holds every core UIA and MSAA object")
+- 0016 Dialog text (Accepted; extends 0015's read, supersedes nothing)
