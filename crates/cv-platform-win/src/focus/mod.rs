@@ -11,10 +11,14 @@
 //!   With speech off it takes the WinEvents and drops them.
 //! - One read: UI Automation for the control that has focus now (one cached call, no value), MSAA
 //!   for the newest event's object, values only after `value_allowed`, then `focus::merge`.
+//! - A window that comes to the front is also read as a dialog, once (ADR 0016, dialog.rs): its
+//!   text is found by a bounded walk and kept per window, so every later read there carries it.
 //! - It changes nothing system-wide; its hooks are removed when it ends.
 
+mod dialog;
 mod map;
 mod read;
+mod walk;
 
 use std::{
     cell::RefCell,
@@ -209,6 +213,9 @@ struct Session {
     /// The foreground window a UI Automation call timed out in; skipped until the foreground
     /// window changes.
     hung: Option<isize>,
+    /// The foreground window the dialog check last ran for and the text it gave (empty for a
+    /// window that is not a dialog), so the walk runs once per window (ADR 0016).
+    dialog: Option<(isize, Vec<String>)>,
 }
 
 /// Runs messages (the WinEvent callbacks run inside `PeekMessageW`), then moves the queued events
@@ -255,7 +262,7 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
         if wanted && session.filter.due(Instant::now()) {
             session.filter.begin_read();
             let newest = session.newest.take();
-            let reading = read_focus(uia, own_pid, &mut session.hung, newest);
+            let reading = read_focus(uia, own_pid, &mut session.hung, &mut session.dialog, newest);
             // Events that arrived while the read ran make it stale (the filter drops it).
             if !pump(&mut session, wanted) {
                 return;
@@ -294,6 +301,7 @@ fn read_focus(
     uia: Option<(&IUIAutomation, &Requests)>,
     own_pid: u32,
     hung: &mut Option<isize>,
+    dialog: &mut Option<(isize, Vec<String>)>,
     newest: Option<Stored>,
 ) -> Reading {
     let nothing = || Reading { app: None, window: WindowInfo::new(""), control: None };
@@ -311,14 +319,30 @@ fn read_focus(
     }
 
     let exe = exe_name(fg.pid);
-    let window = WindowInfo::new(read::window_title(fg.hwnd));
+    let mut window = WindowInfo::new(read::window_title(fg.hwnd));
     // The shell's staging window and the desktop have no program name: nothing to say.
     let app = (exe != "?").then_some(AppId { pid: fg.pid, exe });
-    let control = if app.is_none() || *hung == Some(fg.hwnd.0 as isize) {
+    let key = fg.hwnd.0 as isize;
+    let control = if app.is_none() || *hung == Some(key) {
         None
     } else {
         read_control(uia, &fg, hung, newest)
     };
+    // The control is kept if the dialog read hangs (ADR 0016); a hung control read skips it.
+    if app.is_some() && *hung != Some(key) {
+        window.dialog_text = match dialog {
+            Some((cached, text)) if *cached == key => text.clone(),
+            _ => {
+                let outcome = dialog::read_dialog(uia, fg.hwnd, &window.title);
+                if outcome.hung {
+                    *hung = Some(key);
+                } else {
+                    *dialog = Some((key, outcome.text.clone()));
+                }
+                outcome.text
+            }
+        };
+    }
     Reading { app, window, control }
 }
 

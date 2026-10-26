@@ -15,11 +15,12 @@ use windows::{
         UI::{
             Accessibility::{
                 AccessibleObjectFromEvent, IAccessible, IUIAutomation, IUIAutomationCacheRequest,
-                IUIAutomationElement, IUIAutomationExpandCollapsePattern,
+                IUIAutomationCondition, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
                 IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern,
                 IUIAutomationTogglePattern, IUIAutomationValuePattern, UIA_BoundingRectanglePropertyId,
                 UIA_ControlTypePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId,
-                UIA_ExpandCollapsePatternId, UIA_FrameworkIdPropertyId, UIA_IsEnabledPropertyId,
+                UIA_ExpandCollapsePatternId, UIA_FrameworkIdPropertyId, UIA_IsDialogPropertyId,
+                UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
                 UIA_IsPasswordPropertyId, UIA_NamePropertyId, UIA_PATTERN_ID, UIA_PROPERTY_ID,
                 UIA_RangeValuePatternId, UIA_RangeValueValuePropertyId,
                 UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId,
@@ -47,6 +48,13 @@ pub(super) struct Stored {
 pub(super) struct Requests {
     state: IUIAutomationCacheRequest,
     value: IUIAutomationCacheRequest,
+    /// A dialog walk's node: name, type, focusable, offscreen, password. No value, no pattern
+    /// (ADR 0016).
+    pub dialog_node: IUIAutomationCacheRequest,
+    /// The window element's `IsDialog`, for a window whose class is not a dialog class.
+    pub dialog_check: IUIAutomationCacheRequest,
+    /// Matches every child.
+    pub any: IUIAutomationCondition,
 }
 
 impl Requests {
@@ -71,7 +79,20 @@ impl Requests {
             &[UIA_ValueValuePropertyId, UIA_RangeValueValuePropertyId],
             &[UIA_ValuePatternId, UIA_RangeValuePatternId],
         )?;
-        Ok(Self { state, value })
+        let dialog_node = request(
+            uia,
+            &[
+                UIA_NamePropertyId,
+                UIA_ControlTypePropertyId,
+                UIA_IsKeyboardFocusablePropertyId,
+                UIA_IsOffscreenPropertyId,
+                UIA_IsPasswordPropertyId,
+            ],
+            &[],
+        )?;
+        let dialog_check = request(uia, &[UIA_IsDialogPropertyId], &[])?;
+        let any = unsafe { uia.CreateTrueCondition() }?;
+        Ok(Self { state, value, dialog_node, dialog_check, any })
     }
 }
 
@@ -229,7 +250,7 @@ pub(super) fn msaa_value(reading: &MsaaReading) -> Option<String> {
     (!text.is_empty()).then(|| map::cut_value(&text))
 }
 
-fn variant_i4(v: &VARIANT) -> Option<i32> {
+pub(super) fn variant_i4(v: &VARIANT) -> Option<i32> {
     // SAFETY: the union field read is the one `vt` says is set.
     unsafe {
         let inner = &*v.Anonymous.Anonymous;
