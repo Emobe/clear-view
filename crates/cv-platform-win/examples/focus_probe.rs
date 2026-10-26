@@ -17,6 +17,12 @@
 //!   the other source does not say it is (uia `IsPassword`, msaa `PROTECTED`). "Can't tell"
 //!   counts as a password, so the log never holds one.
 //! - Each source's time in ms is logged, and how long the event waited before it was read.
+//! - Roadmap 9.6c1 (ADR 0017) adds three lines per event, for dialogs outside the foreground
+//!   window: `gui` (`GetGUIThreadInfo(0)`: `hwndActive`, `hwndFocus`, and the focus window's
+//!   root with the ADR's "read window" verdict), `chain` (the `GA_PARENT` windows from the focus
+//!   window up to that root, the nearest dialog class marked) and `xaml` (the focused element's
+//!   framework and the nearest `IsDialog` ancestor by `NormalizeElementBuildCache`). They print
+//!   classes, titles and element names only, never a value.
 //!
 //! Run: `cargo run -p cv-platform-win --example focus_probe` (add `> probe.txt` to keep the
 //! output). Ctrl+C stops it; it changes nothing system-wide, so there is nothing to restore.
@@ -50,17 +56,21 @@ mod probe {
                     ExpandCollapseState_Expanded, ExpandCollapseState_LeafNode,
                     ExpandCollapseState_PartiallyExpanded, GetRoleTextW, GetStateTextW,
                     HWINEVENTHOOK, IAccessible, IUIAutomation, IUIAutomation2, IUIAutomationElement,
-                    IUIAutomationExpandCollapsePattern, IUIAutomationSelectionItemPattern,
-                    IUIAutomationTextPattern, IUIAutomationTogglePattern, IUIAutomationValuePattern,
-                    SetWinEventHook, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
-                    UIA_ExpandCollapsePatternId, UIA_InvokePatternId, UIA_PATTERN_ID,
+                    IUIAutomationElement9, IUIAutomationExpandCollapsePattern,
+                    IUIAutomationSelectionItemPattern, IUIAutomationTextPattern,
+                    IUIAutomationTogglePattern, IUIAutomationValuePattern, SetWinEventHook,
+                    ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
+                    UIA_ControlTypePropertyId, UIA_ExpandCollapsePatternId,
+                    UIA_FrameworkIdPropertyId, UIA_InvokePatternId, UIA_IsDialogPropertyId,
+                    UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId, UIA_PATTERN_ID,
                     UIA_RangeValuePatternId, UIA_ScrollPatternId, UIA_SelectionItemPatternId,
                     UIA_SelectionPatternId, UIA_TextPatternId, UIA_TogglePatternId,
                     UIA_ValuePatternId, UIA_WindowPatternId,
                 },
                 WindowsAndMessaging::{
                     CHILDID_SELF, DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND,
-                    GA_ROOT, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowTextW,
+                    GA_PARENT, GA_ROOT, GUITHREADINFO, GetAncestor, GetClassNameW,
+                    GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW,
                     GetWindowThreadProcessId, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
                     PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage, WINEVENT_OUTOFCONTEXT,
                     WINEVENT_SKIPOWNPROCESS,
@@ -76,6 +86,8 @@ mod probe {
     const MAX_TEXT: usize = 80;
     /// UI Automation's timeouts, as on the caret thread, so one hung app cannot stall the probe.
     const UIA_TIMEOUT_MS: u32 = 500;
+    /// The most `GA_PARENT` steps the `chain` line takes from the focus window (ADR 0017, I2).
+    const CHAIN_MAX: usize = 16;
 
     /// What the hook callback saw, queued for the loop.
     struct Event {
@@ -205,6 +217,7 @@ mod probe {
                 println!("  root  {}", window_line(root));
             }
         }
+        let read_window = gui_report(fg);
 
         // Read everything about both sources first: each one's password answer gates the
         // other's value.
@@ -228,6 +241,9 @@ mod probe {
                 };
                 uia_time += t.elapsed();
                 println!("  uia   {}\n        value {value}   {}", u.text, ms(uia_time));
+                if let Some(uia) = uia {
+                    println!("  xaml  {}", xaml_line(uia, &u.element, read_window));
+                }
             }
             Err(msg) => println!("  uia   {msg}   {}", ms(uia_time)),
         }
@@ -513,6 +529,219 @@ mod probe {
         names.join(",")
     }
 
+    // ── Dialogs outside the foreground window (roadmap 9.6c1, ADR 0017) ──────────
+
+    /// The dialog classes of ADR 0016 (`focus/map.rs` `is_dialog_class`; an example cannot reach
+    /// that module, so the list is repeated here).
+    fn is_dialog_class(class: &str) -> bool {
+        matches!(class, "#32770" | "NUIDialog" | "Shell_Dialog" | "Shell_SystemDialog")
+    }
+
+    /// The part of a window the verdicts look at.
+    struct Link {
+        class: String,
+        title: String,
+    }
+
+    /// ADR 0017 W2: would the focus window's root replace the foreground window?
+    #[derive(Debug, PartialEq)]
+    enum Verdict {
+        SameAsForeground,
+        ReadWindow,
+        ForegroundStays,
+    }
+
+    impl Verdict {
+        fn text(&self) -> &'static str {
+            match self {
+                Verdict::SameAsForeground => "focus root IS the foreground window",
+                Verdict::ReadWindow => {
+                    "focus root DIFFERS from the foreground and has a title or a dialog class: \
+                     it would be the read window"
+                }
+                Verdict::ForegroundStays => {
+                    "focus root differs from the foreground but has no title and no dialog \
+                     class: the foreground window stays"
+                }
+            }
+        }
+    }
+
+    fn read_window_verdict(root_is_foreground: bool, root: &Link) -> Verdict {
+        if root_is_foreground {
+            Verdict::SameAsForeground
+        } else if !root.title.is_empty() || is_dialog_class(&root.class) {
+            Verdict::ReadWindow
+        } else {
+            Verdict::ForegroundStays
+        }
+    }
+
+    /// The nearest window with a dialog class on the way up (ADR 0017 I2). `chain` starts at the
+    /// focus window and ends at its root when `reached_root` is true; the root is the read
+    /// window, never an inner dialog, so it is left out. Gives the index into `chain`.
+    fn inner_dialog(chain: &[Link], reached_root: bool) -> Option<usize> {
+        let below_root = if reached_root { chain.len().saturating_sub(1) } else { chain.len() };
+        chain[..below_root].iter().position(|link| is_dialog_class(&link.class))
+    }
+
+    /// The `GA_PARENT` windows from `focus` up to `root`, at most `CHAIN_MAX` steps; the flag says
+    /// whether the root was reached.
+    fn parent_chain(focus: HWND, root: HWND) -> (Vec<HWND>, bool) {
+        let mut chain = vec![focus];
+        let mut current = focus;
+        while current != root && chain.len() <= CHAIN_MAX {
+            current = unsafe { GetAncestor(current, GA_PARENT) };
+            if current.is_invalid() {
+                return (chain, false);
+            }
+            chain.push(current);
+        }
+        let reached = current == root;
+        (chain, reached)
+    }
+
+    /// Prints the `gui` and `chain` lines. Returns the read window ADR 0017 W2 would pick: the
+    /// focus window's root when the verdict says so, else the foreground window.
+    fn gui_report(fg: HWND) -> HWND {
+        let t = Instant::now();
+        let mut info =
+            GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        let got = unsafe { GetGUIThreadInfo(0, &mut info) };
+        let took = ms(t.elapsed());
+        if let Err(e) = got {
+            println!("  gui   {} (GetGUIThreadInfo)   {took}", describe(&e));
+            return fg;
+        }
+        println!(
+            "  gui   active {}  focus {}   {took}",
+            hex_or_none(info.hwndActive),
+            hex_or_none(info.hwndFocus)
+        );
+        if info.hwndFocus.is_invalid() {
+            println!("        no focus window: the foreground window stays");
+            return fg;
+        }
+        let root = unsafe { GetAncestor(info.hwndFocus, GA_ROOT) };
+        if root.is_invalid() {
+            println!("        focus window has no root: the foreground window stays");
+            return fg;
+        }
+        let link = |hwnd| Link { class: class_name(hwnd), title: window_text(hwnd) };
+        let verdict = read_window_verdict(root == fg, &link(root));
+        if verdict == Verdict::SameAsForeground {
+            println!("        focus root {}: {}", hex(root), verdict.text());
+        } else {
+            println!("        focus root {}\n        {}", window_line(root), verdict.text());
+        }
+
+        let (windows, reached) = parent_chain(info.hwndFocus, root);
+        let links: Vec<Link> = windows.iter().map(|hwnd| link(*hwnd)).collect();
+        let inner = inner_dialog(&links, reached);
+        println!(
+            "  chain {} window(s) from the focus window{}",
+            links.len(),
+            if reached { " to its root" } else { " (cut: the root was not reached)" }
+        );
+        for (i, (hwnd, link)) in windows.iter().zip(&links).enumerate() {
+            let mark = if inner == Some(i) {
+                "   <- inner dialog"
+            } else if reached && i + 1 == links.len() {
+                "   <- root"
+            } else if is_dialog_class(&link.class) {
+                "   (dialog class)"
+            } else {
+                ""
+            };
+            println!("        {i}: {} class {:?} \"{}\"{mark}", hex(*hwnd), link.class, link.title);
+        }
+        println!(
+            "        inner dialog: {}",
+            inner.map_or("none".to_string(), |i| format!("#{i}"))
+        );
+
+        if verdict == Verdict::ReadWindow { root } else { fg }
+    }
+
+    /// The `xaml` line: the focused element's framework, then what the nearest `IsDialog`
+    /// ancestor is (ADR 0017 I2). One `NormalizeElementBuildCache` call, timed alone.
+    fn xaml_line(uia: &IUIAutomation, focused: &IUIAutomationElement, read_window: HWND) -> String {
+        let framework = bstr(unsafe { focused.CurrentFrameworkId() });
+        let (found, took) = normalize_dialog(uia, focused);
+        let found = match found {
+            Ok(element) => describe_normalized(&element, read_window),
+            Err(e) => format!("normalize failed: {}", describe(&e)),
+        };
+        format!("focused fw {framework:?}\n        normalize {found}   {}", ms(took))
+    }
+
+    /// `NormalizeElementBuildCache` from `focused` with a walker on `IsDialog == true`, and the
+    /// time of that one call (zero when the setup failed). Normalize returns the root when no
+    /// ancestor matches, so the caller must read `IsDialog` on the result.
+    fn normalize_dialog(
+        uia: &IUIAutomation,
+        focused: &IUIAutomationElement,
+    ) -> (Result<IUIAutomationElement>, Duration) {
+        let setup = || -> Result<_> {
+            let condition =
+                unsafe { uia.CreatePropertyCondition(UIA_IsDialogPropertyId, &true.into()) }?;
+            let walker = unsafe { uia.CreateTreeWalker(&condition) }?;
+            let request = unsafe { uia.CreateCacheRequest() }?;
+            for property in [
+                UIA_NamePropertyId,
+                UIA_ControlTypePropertyId,
+                UIA_FrameworkIdPropertyId,
+                UIA_IsDialogPropertyId,
+                UIA_NativeWindowHandlePropertyId,
+            ] {
+                unsafe { request.AddProperty(property) }?;
+            }
+            Ok((walker, request))
+        };
+        let (walker, request) = match setup() {
+            Ok(pair) => pair,
+            Err(e) => return (Err(e), Duration::ZERO),
+        };
+        let t = Instant::now();
+        let found = unsafe { walker.NormalizeElementBuildCache(focused, &request) };
+        (found, t.elapsed())
+    }
+
+    fn describe_normalized(element: &IUIAutomationElement, read_window: HWND) -> String {
+        use windows::core::Interface;
+        let is_dialog = element
+            .cast::<IUIAutomationElement9>()
+            .ok()
+            .and_then(|e| unsafe { e.CachedIsDialog() }.ok())
+            .map(|b| b.as_bool());
+        let verdict = match is_dialog {
+            Some(true) => "an IsDialog ancestor",
+            Some(false) => "no IsDialog ancestor (the root came back)",
+            None => "IsDialog unreadable",
+        };
+        let control_type = match unsafe { element.CachedControlType() } {
+            Ok(id) => format!("{} {}", control_type_name(id.0), id.0),
+            Err(e) => describe(&e),
+        };
+        let hwnd = unsafe { element.CachedNativeWindowHandle() }.unwrap_or_default();
+        let hwnd_text = if hwnd.is_invalid() {
+            "no window".to_string()
+        } else if hwnd == read_window {
+            format!("{} = the read window", hex(hwnd))
+        } else {
+            hex(hwnd)
+        };
+        format!(
+            "{verdict}: name {:?}  type {control_type}  fw {:?}  hwnd {hwnd_text}",
+            bstr(unsafe { element.CachedName() }),
+            bstr(unsafe { element.CachedFrameworkId() }),
+        )
+    }
+
+    fn hex_or_none(hwnd: HWND) -> String {
+        if hwnd.is_invalid() { "none".into() } else { hex(hwnd) }
+    }
+
     // ── Windows and text ─────────────────────────────────────────────────────────
 
     fn window_line(hwnd: HWND) -> String {
@@ -614,6 +843,67 @@ mod probe {
             assert_eq!(control_type_name(50041), "?");
             assert_eq!(control_type_name(0), "?");
             assert_eq!(control_type_name(-1), "?");
+        }
+
+        fn link(class: &str, title: &str) -> Link {
+            Link { class: class.into(), title: title.into() }
+        }
+
+        #[test]
+        fn the_dialog_classes_are_the_four_of_adr_0016() {
+            for class in ["#32770", "NUIDialog", "Shell_Dialog", "Shell_SystemDialog"] {
+                assert!(is_dialog_class(class), "{class}");
+            }
+            assert!(!is_dialog_class("Notepad"));
+            assert!(!is_dialog_class("#32768"));
+        }
+
+        #[test]
+        fn a_focus_root_that_is_the_foreground_changes_nothing() {
+            let root = link("CabinetWClass", "Documents");
+            assert_eq!(read_window_verdict(true, &root), Verdict::SameAsForeground);
+        }
+
+        #[test]
+        fn another_root_is_the_read_window_only_with_a_title_or_a_dialog_class() {
+            assert_eq!(
+                read_window_verdict(false, &link("OperationStatusWindow", "Replace or Skip Files")),
+                Verdict::ReadWindow
+            );
+            assert_eq!(read_window_verdict(false, &link("#32770", "")), Verdict::ReadWindow);
+            assert_eq!(
+                read_window_verdict(false, &link("ComboLBox", "")),
+                Verdict::ForegroundStays
+            );
+        }
+
+        #[test]
+        fn the_inner_dialog_is_the_nearest_dialog_class_below_the_root() {
+            // A control in a property page in a property sheet: the page is the inner dialog.
+            let chain = [link("Button", "Read-only"), link("#32770", "General"), link("#32770", "Properties")];
+            assert_eq!(inner_dialog(&chain, true), Some(1));
+        }
+
+        #[test]
+        fn the_root_is_never_the_inner_dialog() {
+            // Focus on the sheet's tab control: only the sheet (the root) is above it.
+            let chain = [link("SysTabControl32", "Tab1"), link("#32770", "Properties")];
+            assert_eq!(inner_dialog(&chain, true), None);
+            // The focus window being the root itself.
+            assert_eq!(inner_dialog(&[link("#32770", "Save as")], true), None);
+        }
+
+        #[test]
+        fn the_focus_window_can_be_the_inner_dialog() {
+            let chain = [link("#32770", "Page"), link("#32770", "Sheet")];
+            assert_eq!(inner_dialog(&chain, true), Some(0));
+        }
+
+        #[test]
+        fn a_cut_chain_counts_every_window_it_has() {
+            let chain = [link("Edit", ""), link("#32770", "Page")];
+            assert_eq!(inner_dialog(&chain, false), Some(1));
+            assert_eq!(inner_dialog(&[], false), None);
         }
 
         #[test]
