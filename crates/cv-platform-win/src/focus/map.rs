@@ -30,10 +30,46 @@ const STATE_MIXED: u32 = 0x20;
 const STATE_EXPANDED: u32 = 0x200;
 const STATE_COLLAPSED: u32 = 0x400;
 const STATE_PROTECTED: u32 = 0x2000_0000;
+const STATE_INVISIBLE: u32 = 0x8000;
+const STATE_OFFSCREEN: u32 = 0x1_0000;
+const STATE_FOCUSABLE: u32 = 0x10_0000;
 
 /// `STATE_SYSTEM_PROTECTED` is set: MSAA's way of saying "password".
 pub(super) fn msaa_protected(state: u32) -> bool {
     state & STATE_PROTECTED != 0
+}
+
+/// `STATE_SYSTEM_FOCUSABLE`: the element can take keyboard focus (MSAA has no separate property).
+pub(super) fn msaa_focusable(state: u32) -> bool {
+    state & STATE_FOCUSABLE != 0
+}
+
+/// `STATE_SYSTEM_OFFSCREEN`: scrolled out of view, not hidden.
+pub(super) fn msaa_offscreen(state: u32) -> bool {
+    state & STATE_OFFSCREEN != 0
+}
+
+/// A dialog walk leaves out an element MSAA says is invisible or unavailable (ADR 0016). An
+/// unreadable state keeps the element.
+pub(super) fn msaa_dialog_skipped(state: Option<u32>) -> bool {
+    state.is_some_and(|s| s & (STATE_INVISIBLE | STATE_UNAVAILABLE) != 0)
+}
+
+/// Whether a dialog node's name must be emptied before it leaves the platform code: MSAA says
+/// protected, or the state could not be read ("can't tell" counts as a password).
+pub(super) fn msaa_name_withheld(state: Option<u32>) -> bool {
+    state.is_none_or(msaa_protected)
+}
+
+/// The same for UI Automation's `IsPassword`: true, or unreadable.
+pub(super) fn uia_name_withheld(is_password: Option<bool>) -> bool {
+    is_password != Some(false)
+}
+
+/// Window classes that are dialogs (ADR 0016): the standard dialog, Office's, and the shell's
+/// dialog hosts. NVDA's list without `Shell_Flyout` and the UAC host.
+pub(super) fn is_dialog_class(class: &str) -> bool {
+    matches!(class, "#32770" | "NUIDialog" | "Shell_Dialog" | "Shell_SystemDialog")
 }
 
 /// A UI Automation control type id (50000 to 50040) as a neutral role.
@@ -403,6 +439,47 @@ mod tests {
         assert!(!is_hung(-1, 999, 500));
         // Task Manager: access denied, and quick.
         assert!(!is_hung(0x8007_0005_u32 as i32, 4, 500));
+    }
+
+    #[test]
+    fn msaa_state_bits_match_the_documented_values() {
+        // STATE_SYSTEM_* in oleacc.h.
+        assert!(msaa_focusable(0x10_0000));
+        assert!(!msaa_focusable(0));
+        assert!(msaa_offscreen(0x1_0000));
+        assert!(!msaa_offscreen(0x8000));
+        assert!(!msaa_focusable(STATE_CHECKED | STATE_SELECTED));
+    }
+
+    #[test]
+    fn a_dialog_walk_skips_invisible_and_unavailable_but_keeps_an_unreadable_state() {
+        assert!(msaa_dialog_skipped(Some(0x8000)));
+        assert!(msaa_dialog_skipped(Some(STATE_UNAVAILABLE)));
+        assert!(msaa_dialog_skipped(Some(0x8000 | 0x10_0000)));
+        assert!(!msaa_dialog_skipped(Some(0x10_0000)));
+        assert!(!msaa_dialog_skipped(Some(0x1_0000)));
+        assert!(!msaa_dialog_skipped(None));
+    }
+
+    #[test]
+    fn a_name_is_withheld_for_a_password_and_when_it_can_not_be_told() {
+        assert!(msaa_name_withheld(Some(STATE_PROTECTED)));
+        assert!(msaa_name_withheld(Some(STATE_PROTECTED | 0x10_0000)));
+        assert!(msaa_name_withheld(None));
+        assert!(!msaa_name_withheld(Some(0)));
+        assert!(uia_name_withheld(Some(true)));
+        assert!(uia_name_withheld(None));
+        assert!(!uia_name_withheld(Some(false)));
+    }
+
+    #[test]
+    fn the_dialog_class_list_is_the_standard_dialog_and_the_shell_hosts() {
+        for class in ["#32770", "NUIDialog", "Shell_Dialog", "Shell_SystemDialog"] {
+            assert!(is_dialog_class(class), "{class}");
+        }
+        for class in ["Shell_Flyout", "Notepad", "CabinetWClass", "#32769", "", "#32770 "] {
+            assert!(!is_dialog_class(class), "{class}");
+        }
     }
 
     #[test]
