@@ -1,6 +1,6 @@
 # 0017: Dialogs outside the foreground window
 
-Status: Proposed
+Status: Accepted (you, 2026-10-26; set by the agent on your instruction)
 Date: 2026-10-26
 
 ## Context
