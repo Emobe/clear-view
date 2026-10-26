@@ -11,10 +11,12 @@
 //! - A control with no name, no value and a role that says nothing is not spoken (the Alt+Tab pane,
 //!   Finding 27(c)). Positions and per-role wording are 9.7's.
 //! - When the foreground window changed, the title is spoken first, at every verbosity level, then
-//!   the control. A title equal to the control's name is said once, by the control. A window with
-//!   no title says nothing. A dialog's text is 9.6b's.
+//!   the dialog's text (roadmap 9.6b1, ADR 0016) as one utterance, then the control. A title or a
+//!   piece of dialog text equal to the control's name is said once, by the control. A window with
+//!   no title says nothing.
 //!
-//! The numbers ([`NAME_MAX`], [`VALUE_SPOKEN_MAX`], [`TITLE_MAX`]) are starting values.
+//! The numbers ([`NAME_MAX`], [`VALUE_SPOKEN_MAX`], [`TITLE_MAX`], [`DIALOG_SPOKEN_MAX`]) are
+//! starting values.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +30,8 @@ pub const NAME_MAX: usize = 80;
 pub const VALUE_SPOKEN_MAX: usize = 100;
 /// A window title is cut at a word near this many characters (browser tabs run long).
 pub const TITLE_MAX: usize = 80;
+/// A dialog's text is cut at a word near this many characters (ADR 0016). Starting value.
+pub const DIALOG_SPOKEN_MAX: usize = 300;
 
 /// How much is said about a focused control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -55,10 +59,10 @@ impl Verbosity {
     }
 }
 
-/// The utterances for a focus event, in the order they are spoken: the window title when the
-/// foreground window changed, then the control. Both are `Kind::Focus`, so the queue speaks them
-/// as one batch and the control does not cut the title off (ADR 0013, ADR 0015). Either may be
-/// missing; the list is empty when there is nothing to say.
+/// The utterances for a focus event, in the order they are spoken: the window title and the
+/// dialog's text when the foreground window changed, then the control. All are `Kind::Focus`, so
+/// the queue speaks them as one batch and the control does not cut the title off (ADR 0013,
+/// ADR 0015, ADR 0016). Any may be missing; the list is empty when there is nothing to say.
 pub fn focus_utterances(
     window: &WindowInfo,
     window_changed: bool,
@@ -67,16 +71,21 @@ pub fn focus_utterances(
 ) -> Vec<Utterance> {
     let phrase = control.map(|c| describe_control(c, verbosity)).unwrap_or_default();
     let mut title = if window_changed { describe_window(&window.title) } else { String::new() };
+    // The name the control speaks, if any. A name that is not spoken (a document's text) is none.
+    let control_name = control
+        .and_then(|c| spoken_name(&c.name, is_text_role(c.role)).0)
+        .map(|name| name.to_lowercase());
     // A title that is the name the control speaks is said once, by the control, whose phrase has
-    // the role ("Save As, dialog"). A name that is not spoken (a document's text) does not count.
-    if let Some(c) = control
-        && !title.is_empty()
-        && let (Some(name), _) = spoken_name(&c.name, is_text_role(c.role))
-        && name.to_lowercase() == title.to_lowercase()
-    {
+    // the role ("Save As, dialog").
+    if !title.is_empty() && control_name.as_deref() == Some(title.to_lowercase().as_str()) {
         title.clear();
     }
-    [title, phrase]
+    let dialog = if window_changed {
+        describe_dialog_text(&window.dialog_text, control_name.as_deref())
+    } else {
+        String::new()
+    };
+    [title, dialog, phrase]
         .into_iter()
         .filter(|text| !text.is_empty())
         .map(|text| Utterance::new(Kind::Focus, text))
@@ -87,6 +96,25 @@ pub fn focus_utterances(
 /// verbosity level. A title is not cleaned of `&` as a control name is: it is not a Win32 label.
 pub fn describe_window(title: &str) -> String {
     cut_at_word(&flatten(title), TITLE_MAX)
+}
+
+/// A dialog's text as one utterance, or an empty string. The pieces are joined with ". " (a plain
+/// space after one that already ends in a stop), flattened, and cut at a word near
+/// [`DIALOG_SPOKEN_MAX`]. A piece equal to the name the control speaks (`control_name`, lowercase)
+/// is left out: the control says it. Said at every verbosity level, like the title (ADR 0016).
+pub fn describe_dialog_text(pieces: &[String], control_name: Option<&str>) -> String {
+    let mut out = String::new();
+    for piece in pieces {
+        let piece = flatten(piece);
+        if piece.is_empty() || control_name == Some(piece.to_lowercase().as_str()) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(if out.ends_with(['.', '!', '?', ':']) { " " } else { ". " });
+        }
+        out.push_str(&piece);
+    }
+    cut_at_word(&out, DIALOG_SPOKEN_MAX)
 }
 
 /// One phrase for a control, or an empty string when there is nothing worth saying.
@@ -496,6 +524,108 @@ mod tests {
         c.value = Value::Text("hunter2".into());
         let items = focus("Sign in", true, Some(&c), Verbosity::Full);
         assert_eq!(said(&items), ["Sign in", "Password, password edit"]);
+    }
+
+    // ── The dialog text (9.6b1, ADR 0016) ──
+
+    fn dialog(title: &str, pieces: &[&str]) -> WindowInfo {
+        let mut w = WindowInfo::new(title);
+        w.dialog_text = pieces.iter().map(|p| p.to_string()).collect();
+        w
+    }
+
+    fn focus_in(
+        w: &WindowInfo,
+        changed: bool,
+        c: Option<&Control>,
+        v: Verbosity,
+    ) -> Vec<Utterance> {
+        focus_utterances(w, changed, c, v)
+    }
+
+    #[test]
+    fn a_new_dialog_says_title_then_text_then_control() {
+        let w = dialog("Notepad", &["Do you want to save changes to Untitled?"]);
+        let c = control("Save", Role::Button);
+        let items = focus_in(&w, true, Some(&c), Verbosity::Normal);
+        assert_eq!(said(&items), ["Notepad", "Do you want to save changes to Untitled?", "Save, button"]);
+        assert!(items.iter().all(|u| u.kind == Kind::Focus));
+    }
+
+    #[test]
+    fn the_dialog_text_is_spoken_at_every_verbosity_level() {
+        let w = dialog("Notepad", &["Save changes?"]);
+        let c = control("Save", Role::Button);
+        for v in Verbosity::ALL {
+            assert_eq!(said(&focus_in(&w, true, Some(&c), v))[1], "Save changes?", "{v:?}");
+        }
+    }
+
+    #[test]
+    fn the_dialog_text_is_not_repeated_when_the_window_did_not_change() {
+        let w = dialog("Notepad", &["Save changes?"]);
+        let c = control("Cancel", Role::Button);
+        assert_eq!(said(&focus_in(&w, false, Some(&c), Verbosity::Normal)), ["Cancel, button"]);
+        assert!(focus_in(&w, false, None, Verbosity::Normal).is_empty());
+    }
+
+    #[test]
+    fn the_dialog_text_is_spoken_alone_when_there_is_no_control() {
+        let w = dialog("", &["Save changes?"]);
+        assert_eq!(said(&focus_in(&w, true, None, Verbosity::Normal)), ["Save changes?"]);
+    }
+
+    #[test]
+    fn the_dialog_text_is_one_utterance_joined_with_stops() {
+        let w = dialog("", &["Replace file?", "It already exists", "Really"]);
+        assert_eq!(
+            said(&focus_in(&w, true, None, Verbosity::Normal)),
+            ["Replace file? It already exists. Really"]
+        );
+    }
+
+    #[test]
+    fn a_piece_equal_to_the_control_name_is_said_once_by_the_control() {
+        let w = dialog("Notepad", &["Save", "Save changes?"]);
+        let c = control("&SAVE", Role::Button);
+        assert_eq!(
+            said(&focus_in(&w, true, Some(&c), Verbosity::Normal)),
+            ["Notepad", "Save changes?", "SAVE, button"]
+        );
+        // A name the control does not speak (a document's text) does not remove a piece.
+        let name = "x ".repeat(100);
+        let c = control(&name, Role::Pane);
+        let w = dialog("", &[name.trim()]);
+        assert_eq!(focus_in(&w, true, Some(&c), Verbosity::Normal).len(), 2);
+    }
+
+    #[test]
+    fn the_dialog_text_is_flattened_and_cut_at_a_word() {
+        assert_eq!(describe_dialog_text(&["Line one\r\n line   two".into()], None), "Line one line two");
+        let long = "alpha beta ".repeat(60);
+        let spoken = describe_dialog_text(std::slice::from_ref(&long), None);
+        assert!(spoken.chars().count() <= DIALOG_SPOKEN_MAX, "{}", spoken.len());
+        assert!(spoken.ends_with("beta") || spoken.ends_with("alpha"), "{spoken}");
+        assert!(long.starts_with(&spoken));
+        assert!(spoken.chars().count() > DIALOG_SPOKEN_MAX - 12);
+    }
+
+    #[test]
+    fn empty_dialog_text_says_nothing() {
+        assert_eq!(describe_dialog_text(&[], None), "");
+        assert_eq!(describe_dialog_text(&["  ".into(), "".into()], None), "");
+        let w = dialog("Notepad", &[" "]);
+        assert_eq!(said(&focus_in(&w, true, None, Verbosity::Normal)), ["Notepad"]);
+    }
+
+    #[test]
+    fn a_password_control_after_dialog_text_is_still_never_read() {
+        let mut c = control("Password", Role::Edit);
+        c.states.password = Password::Yes;
+        c.value = Value::Text("hunter2".into());
+        let w = dialog("Sign in", &["Enter your password"]);
+        let items = focus_in(&w, true, Some(&c), Verbosity::Full);
+        assert_eq!(said(&items), ["Sign in", "Enter your password", "Password, password edit"]);
     }
 
     // ── Names that are the control's text (Finding 27(b)) ──
