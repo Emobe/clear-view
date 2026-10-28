@@ -50,4 +50,4 @@ What gets easier, what gets harder, what to revisit and when.
 - 0015 Focus events (Accepted; extends 0004 and 0013, supersedes only 0008's "the caret thread holds every core UIA and MSAA object")
 - 0016 Dialog text (Accepted; extends 0015's read, supersedes nothing)
 - 0017 Dialogs outside the foreground window (Accepted; supersedes in part 0015's "foreground window" and `window_changed` rule and hung key, and 0016's per-foreground-window dialog check, its "D3, later" section and the walk entering nested dialogs)
-- 0018 Dialogs inside the foreground window (Proposed; supersedes 0017's read window (W2) and what rests on it, and 0015's "`window_changed` is a foreground WinEvent"; keeps 0017's inner dialog, property pages, cost rules and cv-core fields)
+- 0018 Dialogs inside the foreground window (Accepted; supersedes 0017's read window (W2) and what rests on it, and 0015's "`window_changed` is a foreground WinEvent"; keeps 0017's inner dialog, property pages, cost rules and cv-core fields)
