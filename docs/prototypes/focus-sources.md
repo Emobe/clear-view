@@ -51,3 +51,27 @@ Each source is either right (the control a user would hear: a useful name, a rol
 - **File Explorer address bar and search box**, a rename (F2): not visited.
 - **Chrome**: not installed; Brave stands in.
 - **A Start menu search result list, the Win+X menu, and flyouts other than the tray overflow**: not visited.
+
+## Dialogs outside the foreground window (9.6c1, ADR 0017)
+
+Run by you on 2026-10-27 with the extended `focus_probe` (`probe-9.6c1.txt`, 224 events in about 175 s; not committed, it holds window titles). New lines per event: `gui` (`GetGUIThreadInfo(0)`: `hwndActive`, `hwndFocus`, the focus window's root and ADR 0017's read-window verdict), `chain` (the `GA_PARENT` windows from the focus window to its root, the nearest dialog class marked) and `xaml` (the focused element's framework and one `NormalizeElementBuildCache` with an `IsDialog == true` walker). One run, so "always" below means in this run. STATUS Findings 35 to 38 hold the detail.
+
+| Case | Foreground | Focus root | Win32 chain | Normalize |
+|---|---|---|---|---|
+| Explorer "Replace or Skip Files" (`OperationStatusWindow`, DirectUI) | the dialog, with a foreground WinEvent | the foreground | none | error, no `IsDialog` ancestor |
+| Notepad "save changes" prompt (XAML) | Notepad | the foreground | none (`InputSiteWindowClass`, `DesktopChildSiteBridge`, `Notepad`) | XAML `Window` named "Notepad", `IsDialog` true, no `hwnd`; from the Save button on, not on the first unnamed pane |
+| A file's Properties (property sheet, Win32) | the sheet (titled, `#32770`) | the foreground | the page (`#32770`) as inner dialog, also when focus is in a list on the page | the page, with its `hwnd` ("General", "Digital Signatures", "Security"); on OK or Cancel, the sheet itself |
+| Notepad Save As (`#32770`) | the dialog | the foreground | none | the dialog itself (equal to the read window) |
+| Settings | Settings | the foreground | none | error always; no dialog came up in the run |
+| Alt+Tab | `ForegroundStaging`, then "Task Switching" | "Task Switching" on one event while the foreground was still `ForegroundStaging` | none | error |
+
+Cost: `GetGUIThreadInfo(0)` under 1 ms on all events; Normalize median 1.1 ms when it found a dialog, 3.6 ms when it failed, worst 48 ms.
+
+What it means for ADR 0017 (the ADR decides; these are readings of the log):
+
+- **Stop condition 1 fired**: "Replace or Skip"'s focus root is the foreground window. This contradicts the inference in Finding 31 for this run; the 9.6b2 run, which got no `new window`, is not explained.
+- **Stop condition 2 did not fire**: Normalize found Notepad's prompt (the Win32 chain did not).
+- The Win32 chain (I2) finds property pages; Normalize finds XAML dialogs and the same pages. Both are cheap here.
+- Normalize returns an error when nothing matches, not the root.
+- A closing dialog can be the focus root while the foreground is a stub window.
+- Not measured: a Settings `ContentDialog`, a message box or task dialog opened without taking the foreground, the dialog text of any of these.
