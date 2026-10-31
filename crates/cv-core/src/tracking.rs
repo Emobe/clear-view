@@ -365,6 +365,7 @@ mod tests {
             app: app(),
             window: WindowInfo::new("Untitled"),
             window_changed: true,
+            dialog_changed: false,
             control: Some(control),
         }
     }

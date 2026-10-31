@@ -59,13 +59,15 @@ impl Verbosity {
     }
 }
 
-/// The utterances for a focus event, in the order they are spoken: the window title and the
-/// dialog's text when the foreground window changed, then the control. All are `Kind::Focus`, so
-/// the queue speaks them as one batch and the control does not cut the title off (ADR 0013,
-/// ADR 0015, ADR 0016). Any may be missing; the list is empty when there is nothing to say.
+/// The utterances for a focus event, in the order they are spoken: when the foreground window
+/// changed, the window title, the inner dialog's name and the dialog's text; when only the inner
+/// dialog changed, its name and the dialog's text; then the control. All are `Kind::Focus`, so the
+/// queue speaks them as one batch and the control does not cut the title off (ADR 0013, ADR 0015,
+/// ADR 0016, ADR 0018). Any may be missing; the list is empty when there is nothing to say.
 pub fn focus_utterances(
     window: &WindowInfo,
     window_changed: bool,
+    dialog_changed: bool,
     control: Option<&Control>,
     verbosity: Verbosity,
 ) -> Vec<Utterance> {
@@ -80,12 +82,15 @@ pub fn focus_utterances(
     if !title.is_empty() && control_name.as_deref() == Some(title.to_lowercase().as_str()) {
         title.clear();
     }
-    let dialog = if window_changed {
-        describe_dialog_text(&window.dialog_text, control_name.as_deref())
+    let (dialog_name, dialog) = if window_changed || dialog_changed {
+        (
+            describe_dialog_name(&window.dialog_name, &window.title, control_name.as_deref()),
+            describe_dialog_text(&window.dialog_text, control_name.as_deref()),
+        )
     } else {
-        String::new()
+        (String::new(), String::new())
     };
-    [title, dialog, phrase]
+    [title, dialog_name, dialog, phrase]
         .into_iter()
         .filter(|text| !text.is_empty())
         .map(|text| Utterance::new(Kind::Focus, text))
@@ -96,6 +101,22 @@ pub fn focus_utterances(
 /// verbosity level. A title is not cleaned of `&` as a control name is: it is not a Win32 label.
 pub fn describe_window(title: &str) -> String {
     cut_at_word(&flatten(title), TITLE_MAX)
+}
+
+/// An inner dialog's name as it is spoken (ADR 0018), or an empty string: flattened and cut at a
+/// word near [`TITLE_MAX`]. Dropped when the window title contains it, ignoring case (Notepad's
+/// prompt is named "Notepad" inside "Untitled - Notepad"), and when it is the name the control
+/// speaks (`control_name`, lowercase): the control says it. Said at every verbosity level.
+pub fn describe_dialog_name(name: &str, title: &str, control_name: Option<&str>) -> String {
+    let name = flatten(name);
+    let lower = name.to_lowercase();
+    if name.is_empty()
+        || flatten(title).to_lowercase().contains(&lower)
+        || control_name == Some(lower.as_str())
+    {
+        return String::new();
+    }
+    cut_at_word(&name, TITLE_MAX)
 }
 
 /// A dialog's text as one utterance, or an empty string. The pieces are joined with ". " (a plain
@@ -396,7 +417,7 @@ mod tests {
     }
 
     fn focus(title: &str, changed: bool, c: Option<&Control>, v: Verbosity) -> Vec<Utterance> {
-        focus_utterances(&window(title), changed, c, v)
+        focus_utterances(&window(title), changed, false, c, v)
     }
 
     fn said(items: &[Utterance]) -> Vec<&str> {
@@ -540,7 +561,7 @@ mod tests {
         c: Option<&Control>,
         v: Verbosity,
     ) -> Vec<Utterance> {
-        focus_utterances(w, changed, c, v)
+        focus_utterances(w, changed, false, c, v)
     }
 
     #[test]
@@ -626,6 +647,119 @@ mod tests {
         let w = dialog("Sign in", &["Enter your password"]);
         let items = focus_in(&w, true, Some(&c), Verbosity::Full);
         assert_eq!(said(&items), ["Sign in", "Enter your password", "Password, password edit"]);
+    }
+
+    // ── The inner dialog (9.6c2, ADR 0018) ──
+
+    fn inner(title: &str, name: &str, pieces: &[&str]) -> WindowInfo {
+        let mut w = dialog(title, pieces);
+        w.dialog_name = name.into();
+        w
+    }
+
+    fn focus_flags(
+        w: &WindowInfo,
+        window_changed: bool,
+        dialog_changed: bool,
+        c: Option<&Control>,
+    ) -> Vec<Utterance> {
+        focus_utterances(w, window_changed, dialog_changed, c, Verbosity::Normal)
+    }
+
+    #[test]
+    fn a_new_window_says_title_dialog_name_text_then_control() {
+        let w = inner("CLAUDE.md Properties", "General", &["Type of file:", "Markdown Source File"]);
+        let c = control("OK", Role::Button);
+        let items = focus_flags(&w, true, false, Some(&c));
+        assert_eq!(
+            said(&items),
+            ["CLAUDE.md Properties", "General", "Type of file: Markdown Source File", "OK, button"]
+        );
+        assert!(items.iter().all(|u| u.kind == Kind::Focus));
+    }
+
+    #[test]
+    fn a_new_dialog_in_the_same_window_says_name_text_then_control() {
+        let w = inner("CLAUDE.md Properties", "Security", &["Object name:", "D:\\CLAUDE.md"]);
+        let c = control("Edit", Role::Button);
+        assert_eq!(
+            said(&focus_flags(&w, false, true, Some(&c))),
+            ["Security", "Object name: D:\\CLAUDE.md", "Edit, button"]
+        );
+    }
+
+    #[test]
+    fn no_change_says_only_the_control() {
+        let w = inner("CLAUDE.md Properties", "General", &["Type of file:"]);
+        let c = control("OK", Role::Button);
+        assert_eq!(said(&focus_flags(&w, false, false, Some(&c))), ["OK, button"]);
+    }
+
+    #[test]
+    fn the_dialog_name_and_text_are_spoken_at_every_verbosity_level() {
+        let w = inner("a Properties", "General", &["Location:"]);
+        let c = control("OK", Role::Button);
+        for v in Verbosity::ALL {
+            let items = focus_utterances(&w, false, true, Some(&c), v);
+            assert_eq!(said(&items)[..2], ["General", "Location:"], "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_dialog_name_the_title_contains_is_dropped() {
+        let w = inner("Untitled - Notepad", "NOTEPAD", &["Do you want to save changes to Untitled?"]);
+        let c = control("Save", Role::Button);
+        assert_eq!(
+            said(&focus_flags(&w, false, true, Some(&c))),
+            ["Do you want to save changes to Untitled?", "Save, button"]
+        );
+        assert_eq!(describe_dialog_name("Notepad", "Untitled - Notepad", None), "");
+        assert_eq!(describe_dialog_name("General", "CLAUDE.md Properties", None), "General");
+    }
+
+    #[test]
+    fn a_dialog_name_equal_to_the_control_name_is_said_once_by_the_control() {
+        let w = inner("a Properties", "Details", &[]);
+        let c = control("Details", Role::TabItem);
+        let items = focus_flags(&w, false, true, Some(&c));
+        assert_eq!(items.len(), 1);
+        assert!(items[0].text.starts_with("Details"), "{}", items[0].text);
+    }
+
+    #[test]
+    fn an_empty_dialog_name_says_nothing() {
+        assert_eq!(describe_dialog_name("", "a Properties", None), "");
+        assert_eq!(describe_dialog_name(" \r\n ", "a Properties", None), "");
+        let w = inner("a Properties", "", &[]);
+        let c = control("OK", Role::Button);
+        assert_eq!(said(&focus_flags(&w, false, true, Some(&c))), ["OK, button"]);
+    }
+
+    #[test]
+    fn a_dialog_name_is_flattened_and_cut_at_a_word() {
+        assert_eq!(describe_dialog_name("Line\r\none", "", None), "Line one");
+        let long = "alpha beta ".repeat(20);
+        let spoken = describe_dialog_name(&long, "", None);
+        assert!(spoken.chars().count() <= TITLE_MAX, "{}", spoken.len());
+        assert!(long.starts_with(&spoken));
+    }
+
+    #[test]
+    fn a_piece_ending_in_a_colon_is_joined_to_the_next_by_a_space() {
+        let pieces =
+            ["Type of file:".to_string(), "Text Document".into(), "Opens with:".into(), "Notepad".into()];
+        assert_eq!(describe_dialog_text(&pieces, None), "Type of file: Text Document. Opens with: Notepad");
+    }
+
+    #[test]
+    fn a_password_control_in_an_inner_dialog_is_still_never_read() {
+        let mut c = control("Password", Role::Edit);
+        c.states.password = Password::Yes;
+        c.value = Value::Text("hunter2".into());
+        let w = inner("Settings", "Sign in", &["Enter your password"]);
+        let items = focus_utterances(&w, false, true, Some(&c), Verbosity::Full);
+        assert_eq!(said(&items), ["Sign in", "Enter your password", "Password, password edit"]);
+        assert!(items.iter().all(|u| !u.text.contains("hunter2")));
     }
 
     // ── Names that are the control's text (Finding 27(b)) ──

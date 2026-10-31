@@ -25,8 +25,12 @@ pub enum CoreEvent {
         at: Instant,
         app: AppId,
         window: WindowInfo,
-        /// The foreground window changed since the last `FocusChanged`.
+        /// The foreground window changed since the last `FocusChanged`: a foreground WinEvent
+        /// arrived, or a read saw a new foreground window (ADR 0018).
         window_changed: bool,
+        /// The window did not change, and focus entered an inner dialog (a property page, a
+        /// prompt inside the window) other than the last one (ADR 0018).
+        dialog_changed: bool,
         /// `None`: neither source could read the focused control (Task Manager, a hung window).
         control: Option<Control>,
     },
@@ -51,8 +55,12 @@ impl CoreEvent {
                 format!("{} {rect} in {}", source.name(), app.exe)
             }
             Self::CaretLost { app, .. } => format!("lost in {}", app.exe),
-            Self::FocusChanged { app, window_changed, control, .. } => {
-                let new_window = if *window_changed { ", new window" } else { "" };
+            Self::FocusChanged { app, window_changed, dialog_changed, control, .. } => {
+                let new_window = match (*window_changed, *dialog_changed) {
+                    (true, _) => ", new window",
+                    (false, true) => ", new dialog",
+                    (false, false) => "",
+                };
                 match control {
                     Some(c) => {
                         let withheld = if c.value == Value::Withheld { " value withheld" } else { "" };

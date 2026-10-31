@@ -29,22 +29,28 @@ pub const DIALOG_DEPTH: usize = 3;
 pub const DIALOG_NODES: usize = 64;
 /// The most pieces of text a dialog gives. Starting value (ADR 0016).
 pub const DIALOG_TEXTS: usize = 8;
+/// The most milliseconds one dialog read may take; past it the walk stops as incomplete and says
+/// nothing. Starting value (ADR 0018); the focus thread enforces it.
+pub const DIALOG_MS: u64 = 250;
 
 /// The foreground window.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
     pub title: String,
-    /// The text of a dialog (ADR 0016), chosen by [`dialog_text`]. Empty when the window is not a
-    /// dialog or says nothing. The same on every read in the same window, so the duplicate rule
-    /// of [`FocusFilter`] holds.
+    /// The name of the dialog inside the window that holds the focus (a property page, a XAML
+    /// prompt; ADR 0018). Empty when there is none.
+    pub dialog_name: String,
+    /// The text of a dialog (ADR 0016), chosen by [`dialog_text`]: the inner dialog's when there
+    /// is one, else the window's. Empty when it is not a dialog or says nothing. The same on every
+    /// read in the same dialog, so the duplicate rule of [`FocusFilter`] holds.
     pub dialog_text: Vec<String>,
 }
 
 impl WindowInfo {
-    /// A window with a title and no dialog text; the fields are public to fill in.
+    /// A window with a title, no inner dialog and no dialog text; the fields are public to fill in.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), dialog_text: Vec::new() }
+        Self { title: title.into(), dialog_name: String::new(), dialog_text: Vec::new() }
     }
 }
 
@@ -437,14 +443,22 @@ pub struct Reading {
     pub window: WindowInfo,
     /// `None`: neither source could read the focused control.
     pub control: Option<Control>,
+    /// The foreground window, opaque and compared only for equality (ADR 0018). A new key sets
+    /// `window_changed` even when its foreground WinEvent has not arrived yet.
+    pub window_key: u64,
+    /// The inner dialog that holds the focus, opaque (ADR 0018); `None` when there is none. A new
+    /// key inside the same window sets `dialog_changed`.
+    pub dialog_key: Option<u64>,
 }
 
-/// What was last published, for the duplicate rule.
+/// What was last published, for the duplicate rule and the key rules.
 #[derive(Debug)]
 struct Published {
     app: AppId,
     window: WindowInfo,
     control: Option<Control>,
+    window_key: u64,
+    dialog_key: Option<u64>,
 }
 
 /// Decides when the focus thread reads and what it publishes (ADR 0015). The thread calls
@@ -512,27 +526,40 @@ impl FocusFilter {
         }
         self.dropped_last = false;
 
-        let Reading { app, window, control } = reading;
-        // No program name: nothing to say. The window change stays pending.
+        let Reading { app, window, control, window_key, dialog_key } = reading;
+        // No program name: nothing to say, and no key changes. The window change stays pending.
         let app = app?;
+        // A foreground WinEvent, or a read that already sees a new foreground window (ADR 0018).
+        let window_changed =
+            self.window_changed || self.last.as_ref().is_some_and(|l| l.window_key != window_key);
         // Neither source could read the control: say so once, when the window becomes the
         // foreground, not for every later event in it.
-        if control.is_none() && !self.window_changed {
+        if control.is_none() && !window_changed {
             return None;
         }
-        let window_changed = self.window_changed;
+        // Focus entered another inner dialog in the same window. Leaving one for the window's own
+        // controls is no dialog change.
+        let dialog_changed = !window_changed
+            && dialog_key.is_some()
+            && self.last.as_ref().is_none_or(|l| l.dialog_key != dialog_key);
         if !window_changed
             && let Some(last) = &self.last
             && last.app == app
             && last.window == window
+            && last.dialog_key == dialog_key
             && same_but_source(&last.control, &control)
         {
             return None;
         }
         self.window_changed = false;
-        self.last =
-            Some(Published { app: app.clone(), window: window.clone(), control: control.clone() });
-        Some(CoreEvent::FocusChanged { at: now, app, window, window_changed, control })
+        self.last = Some(Published {
+            app: app.clone(),
+            window: window.clone(),
+            control: control.clone(),
+            window_key,
+            dialog_key,
+        });
+        Some(CoreEvent::FocusChanged { at: now, app, window, window_changed, dialog_changed, control })
     }
 }
 
@@ -1061,7 +1088,24 @@ mod tests {
     }
 
     fn reading(exe: &str, title: &str, control: Option<Control>) -> Reading {
-        Reading { app: Some(app(exe)), window: WindowInfo::new(title), control }
+        Reading { app: Some(app(exe)), window: WindowInfo::new(title), control, ..nobody(0) }
+    }
+
+    /// A reading with no program name (the shell's staging window) in the window `window_key`.
+    fn nobody(window_key: u64) -> Reading {
+        Reading { app: None, window: WindowInfo::new(""), control: None, window_key, dialog_key: None }
+    }
+
+    /// A reading with both keys, in the window `title` of `notepad.exe`.
+    fn keyed(title: &str, control: Control, window_key: u64, dialog_key: Option<u64>) -> Reading {
+        Reading { window_key, dialog_key, ..reading("notepad.exe", title, Some(control)) }
+    }
+
+    fn flags(e: &CoreEvent) -> (bool, bool) {
+        let CoreEvent::FocusChanged { window_changed, dialog_changed, .. } = e else {
+            panic!("not a focus event")
+        };
+        (*window_changed, *dialog_changed)
     }
 
     fn read(f: &mut FocusFilter, at: Instant, r: Reading) -> Option<CoreEvent> {
@@ -1138,13 +1182,15 @@ mod tests {
         f.winevent(t, true);
         let c = uia("OK", Role::Button);
         let e = read(&mut f, ms(t, 60), reading("notepad.exe", "Untitled", Some(c.clone()))).unwrap();
-        let CoreEvent::FocusChanged { at, app: a, window, window_changed, control } = e else {
+        let CoreEvent::FocusChanged { at, app: a, window, window_changed, dialog_changed, control } = e
+        else {
             panic!()
         };
         assert_eq!(at, ms(t, 60));
         assert_eq!(a, app("notepad.exe"));
         assert_eq!(window, WindowInfo::new("Untitled"));
         assert!(window_changed);
+        assert!(!dialog_changed);
         assert_eq!(control, Some(c));
     }
 
@@ -1197,7 +1243,7 @@ mod tests {
         let t = base();
         let mut f = FocusFilter::new();
         f.winevent(t, true);
-        let r = Reading { app: None, window: WindowInfo::new(""), control: None };
+        let r = nobody(0);
         assert_eq!(read(&mut f, ms(t, 60), r), None);
     }
 
@@ -1206,7 +1252,7 @@ mod tests {
         let t = base();
         let mut f = FocusFilter::new();
         f.winevent(t, true);
-        let r = Reading { app: None, window: WindowInfo::new(""), control: None };
+        let r = nobody(0);
         assert_eq!(read(&mut f, ms(t, 60), r), None);
         f.winevent(ms(t, 100), false);
         let e = read(&mut f, ms(t, 160), reading("a.exe", "A", Some(uia("A", Role::Button)))).unwrap();
@@ -1300,7 +1346,7 @@ mod tests {
         assert!(read(&mut f, ms(t, 60), reading("a.exe", "A", Some(c.clone()))).is_some());
         // Switch to a window with no program name and back to the same control.
         f.winevent(ms(t, 200), true);
-        let none = Reading { app: None, window: WindowInfo::new(""), control: None };
+        let none = nobody(0);
         assert_eq!(read(&mut f, ms(t, 260), none), None);
         f.winevent(ms(t, 400), true);
         let e = read(&mut f, ms(t, 460), reading("a.exe", "A", Some(c))).unwrap();
@@ -1325,6 +1371,154 @@ mod tests {
         assert!(read(&mut f, ms(t, 460), with_text("Replace file?")).is_some());
     }
 
+    // ── Window and dialog keys (ADR 0018) ──
+
+    #[test]
+    fn a_new_window_key_is_a_window_change_before_its_winevent() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        let e = read(&mut f, ms(t, 60), keyed("Explorer", uia("Files", Role::List), 1, None)).unwrap();
+        assert!(flags(&e).0);
+        // The dialog is already the foreground when its button's event is read.
+        f.winevent(ms(t, 200), false);
+        let e = read(&mut f, ms(t, 260), keyed("Replace or Skip Files", uia("Skip", Role::Button), 2, None));
+        assert_eq!(flags(&e.unwrap()), (true, false));
+    }
+
+    #[test]
+    fn the_same_window_key_with_no_winevent_is_no_window_change() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 1, None)).is_some());
+        f.winevent(ms(t, 200), false);
+        let e = read(&mut f, ms(t, 260), keyed("A", uia("B", Role::Edit), 1, None)).unwrap();
+        assert_eq!(flags(&e), (false, false));
+    }
+
+    #[test]
+    fn a_winevent_still_changes_the_window_with_the_same_key() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 1, None)).is_some());
+        f.winevent(ms(t, 200), true);
+        let e = read(&mut f, ms(t, 260), keyed("A", uia("A", Role::Edit), 1, None)).unwrap();
+        assert!(flags(&e).0);
+    }
+
+    #[test]
+    fn the_first_reading_changes_the_window_only_by_its_winevent() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, false);
+        let e = read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 5, None)).unwrap();
+        assert!(!flags(&e).0);
+    }
+
+    #[test]
+    fn a_reading_with_no_program_changes_no_key() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 1, None)).is_some());
+        f.winevent(ms(t, 200), false);
+        assert_eq!(read(&mut f, ms(t, 260), nobody(9)), None);
+        // Back in window 1 with a new control: the key is still 1, so the window did not change.
+        f.winevent(ms(t, 400), false);
+        let e = read(&mut f, ms(t, 460), keyed("A", uia("B", Role::Edit), 1, None)).unwrap();
+        assert!(!flags(&e).0);
+    }
+
+    #[test]
+    fn entering_an_inner_dialog_is_a_dialog_change() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("Notepad", uia("Text", Role::Document), 1, None)).is_some());
+        f.winevent(ms(t, 200), false);
+        let e = read(&mut f, ms(t, 260), keyed("Notepad", uia("Save", Role::Button), 1, Some(7))).unwrap();
+        assert_eq!(flags(&e), (false, true));
+        // Another control in the same dialog is no change.
+        f.winevent(ms(t, 400), false);
+        let r = keyed("Notepad", uia("Don't save", Role::Button), 1, Some(7));
+        let e = read(&mut f, ms(t, 460), r).unwrap();
+        assert_eq!(flags(&e), (false, false));
+    }
+
+    #[test]
+    fn moving_to_another_page_is_a_dialog_change() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        let r = keyed("a Properties", uia("General", Role::TabItem), 1, Some(10));
+        let e = read(&mut f, ms(t, 60), r).unwrap();
+        // The window changed, so the page is spoken as part of it, not as a dialog change.
+        assert_eq!(flags(&e), (true, false));
+        f.winevent(ms(t, 200), false);
+        let r = keyed("a Properties", uia("Security", Role::TabItem), 1, Some(11));
+        let e = read(&mut f, ms(t, 260), r).unwrap();
+        assert_eq!(flags(&e), (false, true));
+    }
+
+    #[test]
+    fn leaving_an_inner_dialog_is_no_dialog_change() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        let r = keyed("a Properties", uia("Name", Role::Edit), 1, Some(10));
+        assert!(read(&mut f, ms(t, 60), r).is_some());
+        f.winevent(ms(t, 200), false);
+        let e = read(&mut f, ms(t, 260), keyed("a Properties", uia("OK", Role::Button), 1, None)).unwrap();
+        assert_eq!(flags(&e), (false, false));
+    }
+
+    #[test]
+    fn a_new_dialog_key_alone_is_not_a_duplicate() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("OK", Role::Button), 1, Some(3))).is_some());
+        f.winevent(ms(t, 200), false);
+        assert_eq!(read(&mut f, ms(t, 260), keyed("A", uia("OK", Role::Button), 1, Some(3))), None);
+        f.winevent(ms(t, 400), false);
+        let e = read(&mut f, ms(t, 460), keyed("A", uia("OK", Role::Button), 1, Some(4))).unwrap();
+        assert_eq!(flags(&e), (false, true));
+        // Out of the dialog, the same control again is not a duplicate either.
+        f.winevent(ms(t, 600), false);
+        assert!(read(&mut f, ms(t, 660), keyed("A", uia("OK", Role::Button), 1, None)).is_some());
+    }
+
+    #[test]
+    fn a_new_window_key_with_no_control_is_said_once() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 1, None)).is_some());
+        f.winevent(ms(t, 200), false);
+        let blank = Reading { control: None, ..keyed("Task Manager", uia("x", Role::Edit), 2, None) };
+        assert!(flags(&read(&mut f, ms(t, 260), blank.clone()).unwrap()).0);
+        f.winevent(ms(t, 400), false);
+        assert_eq!(read(&mut f, ms(t, 460), blank), None);
+    }
+
+    #[test]
+    fn a_new_dialog_with_no_control_says_nothing() {
+        let t = base();
+        let mut f = FocusFilter::new();
+        f.winevent(t, true);
+        assert!(read(&mut f, ms(t, 60), keyed("A", uia("A", Role::Edit), 1, None)).is_some());
+        f.winevent(ms(t, 200), false);
+        let blank = Reading { control: None, ..keyed("A", uia("x", Role::Edit), 1, Some(5)) };
+        assert_eq!(read(&mut f, ms(t, 260), blank), None);
+    }
+
+    #[test]
+    fn a_new_window_has_no_dialog_name() {
+        assert!(WindowInfo::new("Notepad").dialog_name.is_empty());
+    }
+
     // ── CoreEvent ──
 
     #[test]
@@ -1347,8 +1541,19 @@ mod tests {
             app: app("Taskmgr.exe"),
             window: WindowInfo::new("Task Manager"),
             window_changed: false,
+            dialog_changed: false,
             control: None,
         };
         assert_eq!(none.describe(), "focus no control in Taskmgr.exe");
+
+        let page = CoreEvent::FocusChanged {
+            at: t,
+            app: app("explorer.exe"),
+            window: WindowInfo::new("a Properties"),
+            window_changed: false,
+            dialog_changed: true,
+            control: None,
+        };
+        assert_eq!(page.describe(), "focus no control in explorer.exe, new dialog");
     }
 }
