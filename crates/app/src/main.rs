@@ -162,6 +162,17 @@ fn main() -> eframe::Result {
                         return;
                     }
                     Action::ToggleSpeech => eprintln!("[keys] speech on/off"),
+                    // The reading commands (roadmap 9.8a) change no state: the speech thread
+                    // answers from the last focus event.
+                    Action::ReadTitle | Action::RepeatFocus => {
+                        let what = if action == Action::ReadTitle { "read title" } else { "repeat focus" };
+                        eprintln!("[keys] {what}");
+                        #[cfg(feature = "tts")]
+                        if let Some(command) = action.read_command() {
+                            speech.read(command);
+                        }
+                        return;
+                    }
                     _ => {}
                 }
                 state.write().apply(action);

@@ -55,7 +55,7 @@ const fn letter(c: char) -> Chord {
 
 // The Win key is avoided: the shell owns those combinations (Win+= is Windows Magnifier).
 // Silence is not here: it is a lone Ctrl, not a chord (`SilenceKey`).
-pub const DEFAULT_BINDINGS: [Binding; 4] = [
+pub const DEFAULT_BINDINGS: [Binding; 6] = [
     Binding { chord: letter('Z'), action: Action::Toggle, label: "Ctrl+Alt+Shift+Z", speech: false },
     Binding {
         chord: Chord { key: Key::Up },
@@ -70,6 +70,10 @@ pub const DEFAULT_BINDINGS: [Binding; 4] = [
         speech: false,
     },
     Binding { chord: letter('S'), action: Action::ToggleSpeech, label: "Ctrl+Alt+Shift+S", speech: true },
+    // The reading commands (roadmap 9.8a). The chords are ADR 0014's table: T for the title, F for
+    // the focused item. W (read the active window) is added by 9.8b, with its Action.
+    Binding { chord: letter('T'), action: Action::ReadTitle, label: "Ctrl+Alt+Shift+T", speech: true },
+    Binding { chord: letter('F'), action: Action::RepeatFocus, label: "Ctrl+Alt+Shift+F", speech: true },
 ];
 
 /// The magnifier on/off binding, for the settings panel.
@@ -140,7 +144,10 @@ mod tests {
     #[test]
     fn speech_bindings_are_marked_speech() {
         for b in &DEFAULT_BINDINGS {
-            let is_speech = matches!(b.action, Action::Silence | Action::ToggleSpeech);
+            let is_speech = matches!(
+                b.action,
+                Action::Silence | Action::ToggleSpeech | Action::ReadTitle | Action::RepeatFocus
+            );
             assert_eq!(b.speech, is_speech, "{}", b.label);
         }
     }
@@ -229,5 +236,22 @@ mod tests {
         assert!(!s.feed(KeyId::Other, true));
         assert!(!s.feed(KeyId::Other, false));
         assert!(!s.feed(KeyId::LeftCtrl, true));
+    }
+
+    #[test]
+    fn the_reading_commands_use_the_chords_of_adr_0014() {
+        let by_action = |a: Action| DEFAULT_BINDINGS.iter().find(|b| b.action == a).map(|b| (b.label, b.speech));
+        assert_eq!(by_action(Action::ReadTitle), Some(("Ctrl+Alt+Shift+T", true)));
+        assert_eq!(by_action(Action::RepeatFocus), Some(("Ctrl+Alt+Shift+F", true)));
+    }
+
+    #[test]
+    fn only_the_reading_actions_have_a_read_command() {
+        use crate::ReadCommand;
+        assert_eq!(Action::ReadTitle.read_command(), Some(ReadCommand::Title));
+        assert_eq!(Action::RepeatFocus.read_command(), Some(ReadCommand::Item));
+        for a in [Action::Toggle, Action::ZoomIn, Action::ZoomOut, Action::Silence, Action::ToggleSpeech] {
+            assert_eq!(a.read_command(), None);
+        }
     }
 }

@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 
 use cv_core::voice::{SpeechState, SpeechStatus, VoiceChoice, VoiceId, choose_voice};
 use cv_core::{
-    CoreEvent, EventHub, SharedState, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for,
+    CoreEvent, EventHub, FocusMemory, ReadCommand, SharedState, SpeechOp, SpeechQueue, SpeechSettings,
+    Utterance, utterances_for,
 };
 use windows::Win32::Foundation::WAIT_FAILED;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
@@ -43,6 +44,8 @@ enum Command {
     /// Stop and clear the queue. Carries the time of the request, so a core event older than it
     /// is refused even when the thread handles the command late.
     Silence(Instant),
+    /// Speak what a reading command says about the last focus event (roadmap 9.8a).
+    Read(ReadCommand),
     /// Speech settings in `AppState` changed.
     Wake,
     /// Read the voice list again (the panel's voice picker was opened).
@@ -74,6 +77,13 @@ impl SpeechHandle {
     /// Speak a list in order; the first item's kind decides what it cuts off.
     pub fn say_batch(&self, utterances: Vec<Utterance>) {
         self.send(Command::Say(utterances));
+    }
+
+    /// Answer a reading command (read the title, repeat the focused item) from the last focus
+    /// event the thread saw. It cuts off what is speaking. Ignored while speech is off. The
+    /// thread makes no UI Automation or MSAA call for it (ADR 0013).
+    pub fn read(&self, command: ReadCommand) {
+        self.send(Command::Read(command));
     }
 
     /// Stop speaking and clear the queue.
@@ -192,6 +202,7 @@ fn run_thread(
             command_event,
             core_event,
             queue: SpeechQueue::new(),
+            memory: FocusMemory::new(),
             engines: None,
             gave_up: false,
             publisher,
@@ -260,6 +271,8 @@ struct Speaker {
     command_event: Arc<Event>,
     core_event: Arc<Event>,
     queue: SpeechQueue,
+    /// The last focus event, for the reading commands. Cleared when speech goes off.
+    memory: FocusMemory,
     /// None while speech is off.
     engines: Option<Engines>,
     /// Speech is on but the engines could not start; not retried until it is turned off and on.
@@ -287,10 +300,29 @@ impl Speaker {
         // Settings before the commands, so a request sent right after speech was turned on finds
         // the engines made.
         self.sync_settings(now);
+        // Events are taken before the commands, so a reading command sees a focus event that
+        // arrived with it. Every one is remembered, also one the queue refuses as late below: a
+        // late event still says where the focus is.
+        let events: Vec<CoreEvent> = self.core.try_iter().collect();
+        if self.engines.is_some() {
+            for event in &events {
+                self.memory.observe(event);
+            }
+        }
         for command in commands {
             match command {
                 Command::Say(items) => {
                     if self.engines.is_some() {
+                        let ops = self.queue.push_batch(now, items);
+                        self.run_ops(now, ops);
+                    }
+                }
+                Command::Read(command) => {
+                    if self.engines.is_some() {
+                        let settings =
+                            SpeechSettings { enabled: true, verbosity: self.state.read().tts_verbosity };
+                        let items = self.memory.utterances(command, &settings);
+                        self.log.line(format_args!("read command {command:?}"));
                         let ops = self.queue.push_batch(now, items);
                         self.run_ops(now, ops);
                     }
@@ -300,7 +332,6 @@ impl Speaker {
                 Command::Wake | Command::Shutdown => {}
             }
         }
-        let events: Vec<CoreEvent> = self.core.try_iter().collect();
         if self.engines.is_some() {
             let settings =
                 SpeechSettings { enabled: true, verbosity: self.state.read().tts_verbosity };
@@ -333,6 +364,7 @@ impl Speaker {
             self.gave_up = false;
             if self.engines.is_some() {
                 self.log.line(format_args!("speech off"));
+                self.memory.clear();
                 let ops = self.queue.silence(now);
                 self.run_ops(now, ops);
                 self.stop_engines();
@@ -592,11 +624,12 @@ mod tests {
         let (handle, rx, event) = handle_without_thread();
         handle.say(Utterance::new(Kind::Test, "one"));
         handle.silence();
+        handle.read(ReadCommand::Title);
         handle.wake();
         handle.refresh_voices();
         assert_eq!(unsafe { WaitForSingleObject(event.handle(), 0) }.0, 0, "the event is signalled");
         let got: Vec<Command> = rx.try_iter().collect();
-        assert!(matches!(got.as_slice(), [Command::Say(items), Command::Silence(_), Command::Wake, Command::RefreshVoices] if items.len() == 1));
+        assert!(matches!(got.as_slice(), [Command::Say(items), Command::Silence(_), Command::Read(ReadCommand::Title), Command::Wake, Command::RefreshVoices] if items.len() == 1));
     }
 
     #[test]
