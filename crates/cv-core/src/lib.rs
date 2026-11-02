@@ -12,7 +12,9 @@ pub use focus::{
     Checked, Control, DialogNode, FocusFilter, FocusSource, Password, Position, Reading, Role,
     States, Value, WindowInfo,
 };
-pub use speech::{Kind, Level, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for};
+pub use speech::{
+    FocusMemory, Kind, Level, ReadCommand, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for,
+};
 pub use tracking::{Following, Tracker};
 pub use voice::{Engine, SpeechState, SpeechStatus, VoiceChoice, VoiceId, VoiceInfo};
 pub use wording::Verbosity;
@@ -236,6 +238,23 @@ pub enum Action {
     /// Speech on or off (`tts_enabled`). In `hotkeys::DEFAULT_BINDINGS` as a speech binding;
     /// not registered before roadmap 8.6b.
     ToggleSpeech,
+    /// Speak the title of the window that has focus (roadmap 9.8a, ADR 0014: Ctrl+Alt+Shift+T).
+    /// Changes no `AppState` field: the caller sends it to the speech thread.
+    ReadTitle,
+    /// Speak the focused item again (roadmap 9.8a, ADR 0014: Ctrl+Alt+Shift+F). Changes no
+    /// `AppState` field: the caller sends it to the speech thread.
+    RepeatFocus,
+}
+
+impl Action {
+    /// The reading command this action asks the speech thread for, if it is one.
+    pub fn read_command(self) -> Option<ReadCommand> {
+        match self {
+            Action::ReadTitle => Some(ReadCommand::Title),
+            Action::RepeatFocus => Some(ReadCommand::Item),
+            _ => None,
+        }
+    }
 }
 
 impl AppState {
@@ -246,6 +265,7 @@ impl AppState {
             Action::ZoomOut => self.step_zoom(-1),
             Action::Silence => {}
             Action::ToggleSpeech => self.tts_enabled = !self.tts_enabled,
+            Action::ReadTitle | Action::RepeatFocus => {}
         }
     }
 }

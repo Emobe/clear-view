@@ -10,6 +10,8 @@
 //!   `Value::Withheld` say nothing, not even that a value exists.
 //! - A control with no name, no value and a role that says nothing is not spoken (the Alt+Tab pane,
 //!   Finding 27(c)).
+//! - Reading commands (roadmap 9.8a) speak the same title and control phrase from the last focus
+//!   event, as `Kind::Command`: [`read_command_utterances`].
 //! - Roadmap 9.7: a list item, menu item, tab, tree item or radio button says its place among its
 //!   siblings ("3 of 7") at Normal and Full, when UI Automation gave it. A radio button with no
 //!   toggle state says "checked" or "not checked" from its selection, and a tab says "selected" or
@@ -25,7 +27,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::focus::{Checked, Control, Password, Role, Value, WindowInfo, clean_name};
-use crate::speech::{Kind, Utterance};
+use crate::speech::{Kind, ReadCommand, Utterance};
 
 /// A name longer than this is cut at a word (or, for a text box or document, taken to be the text
 /// itself and not read).
@@ -101,6 +103,35 @@ pub fn focus_utterances(
         .map(|text| Utterance::new(Kind::Focus, text))
         .collect()
 }
+
+/// What a reading command says (roadmap 9.8a): one `Kind::Command` utterance, so it cuts off
+/// whatever is speaking. `window` and `control` are the last focus event's, `None` when none was
+/// seen. [`ReadCommand::Title`] says the window title as a focus announcement does;
+/// [`ReadCommand::Item`] says the control as a focus announcement does, at `verbosity`. The
+/// control's value is spoken only as [`describe_control`] allows, so a password field says nothing
+/// about its value. When there is nothing to say, a short phrase says so, because a key press
+/// should always be answered.
+pub fn read_command_utterances(
+    command: ReadCommand,
+    window: Option<&WindowInfo>,
+    control: Option<&Control>,
+    verbosity: Verbosity,
+) -> Vec<Utterance> {
+    let (text, nothing) = match command {
+        ReadCommand::Title => match window {
+            None => (String::new(), "No window"),
+            Some(w) => (describe_window(&w.title), "No window title"),
+        },
+        ReadCommand::Item => {
+            (control.map(|c| describe_control(c, verbosity)).unwrap_or_default(), NOTHING_IN_FOCUS)
+        }
+    };
+    let text = if text.is_empty() { nothing.to_string() } else { text };
+    vec![Utterance::new(Kind::Command, text)]
+}
+
+/// Said by [`ReadCommand::Item`] when the last focus event had no control worth saying.
+const NOTHING_IN_FOCUS: &str = "Nothing in focus";
 
 /// The window title as it is spoken, or an empty string for a window with no title. Said at every
 /// verbosity level. A title is not cleaned of `&` as a control name is: it is not a Win32 label.
@@ -1139,5 +1170,69 @@ mod tests {
         c.states.password = Password::Yes;
         c.value = Value::Text("hunter2".into());
         assert!(!say(&c).contains("hunter2"));
+    }
+
+    // --- Reading commands (roadmap 9.8a) ---
+
+    fn read(command: ReadCommand, window: Option<&WindowInfo>, c: Option<&Control>, v: Verbosity) -> Vec<String> {
+        read_command_utterances(command, window, c, v)
+            .into_iter()
+            .map(|u| {
+                assert_eq!(u.kind, Kind::Command);
+                u.text
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_title_command_says_the_title_flattened_and_cut() {
+        let w = WindowInfo::new("Inbox
+- Mail");
+        assert_eq!(read(ReadCommand::Title, Some(&w), None, Verbosity::Brief), ["Inbox - Mail"]);
+        let long = WindowInfo::new("word ".repeat(40));
+        let said = &read(ReadCommand::Title, Some(&long), None, Verbosity::Normal)[0];
+        assert!(said.chars().count() <= TITLE_MAX, "{said}");
+    }
+
+    #[test]
+    fn the_title_command_says_so_when_there_is_no_window_or_no_title() {
+        assert_eq!(read(ReadCommand::Title, None, None, Verbosity::Normal), ["No window"]);
+        let w = WindowInfo::new("  ");
+        assert_eq!(read(ReadCommand::Title, Some(&w), None, Verbosity::Normal), ["No window title"]);
+    }
+
+    #[test]
+    fn the_item_command_repeats_the_control_phrase_at_each_level() {
+        let c = control("Save", Role::Button);
+        assert_eq!(read(ReadCommand::Item, None, Some(&c), Verbosity::Normal), ["Save, button"]);
+        assert_eq!(read(ReadCommand::Item, None, Some(&c), Verbosity::Brief), ["Save"]);
+        assert_eq!(read(ReadCommand::Item, None, Some(&c), Verbosity::Normal), [describe_control(&c, Verbosity::Normal)]);
+    }
+
+    #[test]
+    fn the_item_command_does_not_say_the_title_even_when_the_control_is_the_title() {
+        let w = WindowInfo::new("Save As");
+        let c = control("Save As", Role::Dialog);
+        assert_eq!(read(ReadCommand::Item, Some(&w), Some(&c), Verbosity::Normal), ["Save As, dialog"]);
+    }
+
+    #[test]
+    fn the_item_command_says_so_when_there_is_nothing_to_repeat() {
+        assert_eq!(read(ReadCommand::Item, None, None, Verbosity::Normal), ["Nothing in focus"]);
+        let pane = Control::new("", Role::Pane, FocusSource::Msaa);
+        assert_eq!(read(ReadCommand::Item, None, Some(&pane), Verbosity::Full), ["Nothing in focus"]);
+    }
+
+    #[test]
+    fn the_item_command_never_says_a_password_value() {
+        let mut c = Control::new("Password", Role::Edit, FocusSource::Uia);
+        c.states.password = Password::Yes;
+        c.value = Value::Text("hunter2".into());
+        let said = read(ReadCommand::Item, None, Some(&c), Verbosity::Full).join(" ");
+        assert!(!said.contains("hunter2"), "{said}");
+        let mut cant_tell = Control::new("Field", Role::Edit, FocusSource::Msaa);
+        cant_tell.value = Value::Text("secret".into());
+        let said = read(ReadCommand::Item, None, Some(&cant_tell), Verbosity::Full).join(" ");
+        assert!(!said.contains("secret"), "{said}");
     }
 }

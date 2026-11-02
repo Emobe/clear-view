@@ -15,7 +15,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::events::CoreEvent;
-use crate::wording::{Verbosity, focus_utterances};
+use crate::focus::{Control, WindowInfo};
+use crate::wording::{Verbosity, focus_utterances, read_command_utterances};
 
 /// The queue holds at most this many waiting utterances; the oldest are dropped first.
 pub const QUEUE_MAX: usize = 32;
@@ -268,6 +269,53 @@ pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utter
             focus_utterances(window, *window_changed, *dialog_changed, control.as_ref(), settings.verbosity)
         }
         CoreEvent::CaretMoved { .. } | CoreEvent::CaretLost { .. } => Vec::new(),
+    }
+}
+
+/// A reading command on a hotkey (roadmap 9.8, ADR 0014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadCommand {
+    /// Say the title of the window that has focus.
+    Title,
+    /// Say the focused item again.
+    Item,
+}
+
+/// The window and control of the last focus event the speech thread saw, so a reading command can
+/// answer without a UI Automation or MSAA call (ADR 0013: the speech thread never asks for more).
+/// What it says is what the last focus event carried, so a value that changed since is not
+/// reflected. Pure: the thread feeds it events and asks it for utterances.
+#[derive(Debug, Clone, Default)]
+pub struct FocusMemory {
+    last: Option<(WindowInfo, Option<Control>)>,
+}
+
+impl FocusMemory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remembers a focus event. Other events change nothing. Call it for every event, also one
+    /// the queue refuses as late: the focus really did move.
+    pub fn observe(&mut self, event: &CoreEvent) {
+        if let CoreEvent::FocusChanged { window, control, .. } = event {
+            self.last = Some((window.clone(), control.clone()));
+        }
+    }
+
+    /// Forgets everything, for when speech is turned off.
+    pub fn clear(&mut self) {
+        self.last = None;
+    }
+
+    /// What `command` says now: one `Kind::Command` utterance, which cuts off whatever is
+    /// speaking. Nothing while speech is off.
+    pub fn utterances(&self, command: ReadCommand, settings: &SpeechSettings) -> Vec<Utterance> {
+        if !settings.enabled {
+            return Vec::new();
+        }
+        let last = self.last.as_ref();
+        read_command_utterances(command, last.map(|(w, _)| w), last.and_then(|(_, c)| c.as_ref()), settings.verbosity)
     }
 }
 
@@ -741,5 +789,63 @@ mod tests {
         assert_eq!(ops, vec![SpeechOp::Stop, speak(2, "Untitled - Notepad")]);
         assert_eq!(q.waiting(), 1, "the control waits behind the title");
         assert_eq!(q.finished(b, 2), vec![speak(3, "Save, button")]);
+    }
+
+    // --- Reading commands (roadmap 9.8a) ---
+
+    fn remembering(event: &CoreEvent) -> FocusMemory {
+        let mut m = FocusMemory::new();
+        m.observe(event);
+        m
+    }
+
+    #[test]
+    fn a_read_title_command_says_the_remembered_title_as_a_command() {
+        let m = remembering(&event_in("Untitled - Notepad", true, Some(save_button())));
+        assert_eq!(
+            m.utterances(ReadCommand::Title, &on(Verbosity::Normal)),
+            vec![u(Kind::Command, "Untitled - Notepad")]
+        );
+    }
+
+    #[test]
+    fn a_repeat_command_says_the_remembered_control_at_the_current_detail() {
+        let m = remembering(&focus_event(Some(save_button())));
+        assert_eq!(m.utterances(ReadCommand::Item, &on(Verbosity::Normal)), vec![u(Kind::Command, "Save, button")]);
+        assert_eq!(m.utterances(ReadCommand::Item, &on(Verbosity::Brief)), vec![u(Kind::Command, "Save")]);
+    }
+
+    #[test]
+    fn the_newest_focus_event_wins_and_caret_events_change_nothing() {
+        let mut m = remembering(&event_in("First", true, Some(save_button())));
+        m.observe(&event_in("Second", true, None));
+        let caret = CoreEvent::CaretLost { at: t0(), app: AppId { pid: 1, exe: "x.exe".into() } };
+        m.observe(&caret);
+        assert_eq!(m.utterances(ReadCommand::Title, &on(Verbosity::Normal)), vec![u(Kind::Command, "Second")]);
+    }
+
+    #[test]
+    fn a_command_with_speech_off_speaks_nothing() {
+        let m = remembering(&focus_event(Some(save_button())));
+        let off = SpeechSettings::default();
+        assert!(m.utterances(ReadCommand::Title, &off).is_empty());
+        assert!(m.utterances(ReadCommand::Item, &off).is_empty());
+    }
+
+    #[test]
+    fn clear_forgets_the_window() {
+        let mut m = remembering(&focus_event(Some(save_button())));
+        m.clear();
+        assert_eq!(m.utterances(ReadCommand::Title, &on(Verbosity::Normal)), vec![u(Kind::Command, "No window")]);
+    }
+
+    #[test]
+    fn a_command_cuts_off_what_is_speaking() {
+        let b = t0();
+        let mut q = SpeechQueue::new();
+        q.push(b, u(Kind::Focus, "old"));
+        let m = remembering(&focus_event(Some(save_button())));
+        let ops = q.push_batch(b, m.utterances(ReadCommand::Item, &on(Verbosity::Normal)));
+        assert_eq!(ops, vec![SpeechOp::Stop, speak(2, "Save, button")]);
     }
 }
