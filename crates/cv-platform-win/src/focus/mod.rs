@@ -304,7 +304,10 @@ fn read_focus(
     dialog: &mut Option<(isize, Vec<String>)>,
     newest: Option<Stored>,
 ) -> Reading {
-    let nothing = || Reading { app: None, window: WindowInfo::new(""), control: None };
+    // 9.6c3 fills the window and dialog keys (ADR 0018); a key that never changes keeps the
+    // filter's window rule as it was.
+    let nothing =
+        || Reading { app: None, window: WindowInfo::new(""), control: None, window_key: 0, dialog_key: None };
     let Some(fg) = foreground() else {
         return nothing();
     };
@@ -343,7 +346,7 @@ fn read_focus(
             }
         };
     }
-    Reading { app, window, control }
+    Reading { app, window, control, window_key: 0, dialog_key: None }
 }
 
 /// Both sources, the values the password rule allows, and the merge.

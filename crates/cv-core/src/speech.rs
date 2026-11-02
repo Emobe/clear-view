@@ -264,8 +264,8 @@ pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utter
         return Vec::new();
     }
     match event {
-        CoreEvent::FocusChanged { window, window_changed, control, .. } => {
-            focus_utterances(window, *window_changed, control.as_ref(), settings.verbosity)
+        CoreEvent::FocusChanged { window, window_changed, dialog_changed, control, .. } => {
+            focus_utterances(window, *window_changed, *dialog_changed, control.as_ref(), settings.verbosity)
         }
         CoreEvent::CaretMoved { .. } | CoreEvent::CaretLost { .. } => Vec::new(),
     }
@@ -656,6 +656,7 @@ mod tests {
             app: AppId { pid: 1, exe: "notepad.exe".into() },
             window: WindowInfo::new(title),
             window_changed,
+            dialog_changed: false,
             control,
         }
     }
@@ -679,6 +680,18 @@ mod tests {
     fn a_focus_event_speaks_its_control_as_a_focus_utterance() {
         let items = utterances_for(&focus_event(Some(save_button())), &on(Verbosity::Normal));
         assert_eq!(items, vec![u(Kind::Focus, "Save, button")]);
+    }
+
+    #[test]
+    fn a_dialog_change_speaks_the_dialog_name_then_the_control() {
+        let mut event = focus_event(Some(save_button()));
+        if let CoreEvent::FocusChanged { window, dialog_changed, .. } = &mut event {
+            window.dialog_name = "General".into();
+            *dialog_changed = true;
+        }
+        let items = utterances_for(&event, &on(Verbosity::Normal));
+        assert_eq!(items, vec![u(Kind::Focus, "General"), u(Kind::Focus, "Save, button")]);
+        assert!(utterances_for(&event, &SpeechSettings::default()).is_empty());
     }
 
     #[test]
