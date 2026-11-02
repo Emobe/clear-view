@@ -265,11 +265,6 @@ pub(super) fn msaa_states(state: Option<u32>) -> States {
     states
 }
 
-/// Roles whose MSAA state has a `checked` bit that is simply absent when they are not ticked.
-pub(super) fn msaa_checkable(role: Role) -> bool {
-    matches!(role, Role::CheckBox | Role::RadioButton)
-}
-
 /// UI Automation's `IsPassword`: `None` when the property could not be read.
 pub(super) fn uia_password(is_password: Option<bool>) -> Password {
     match is_password {
@@ -428,15 +423,6 @@ mod tests {
         assert_eq!(ticked.checked, Some(Checked::On));
         assert_eq!(msaa_states(Some(0)).checked, None);
         assert_eq!(msaa_states(Some(STATE_MIXED)).checked, Some(Checked::Mixed));
-    }
-
-    #[test]
-    fn only_checkboxes_and_radio_buttons_are_not_checked_by_the_absence_of_the_bit() {
-        assert!(msaa_checkable(Role::CheckBox));
-        assert!(msaa_checkable(Role::RadioButton));
-        for role in [Role::Button, Role::MenuItem, Role::ListItem, Role::TreeItem, Role::Unknown] {
-            assert!(!msaa_checkable(role), "{role:?}");
-        }
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! no value property, and a value is fetched (UI Automation) or read (MSAA) only after
 //! `cv_core::focus::value_allowed` says so.
 
-use cv_core::{Checked, Control, FocusSource, Position, ScreenRect, Value};
+use cv_core::{Control, FocusSource, Position, ScreenRect, Value};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -66,24 +66,33 @@ pub(super) struct Requests {
 
 impl Requests {
     pub fn new(uia: &IUIAutomation) -> Result<Self> {
+        let state_properties = [
+            UIA_NamePropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_ClassNamePropertyId,
+            UIA_IsPasswordPropertyId,
+            UIA_IsEnabledPropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_FrameworkIdPropertyId,
+            UIA_ToggleToggleStatePropertyId,
+            UIA_ExpandCollapseExpandCollapseStatePropertyId,
+            UIA_SelectionItemIsSelectedPropertyId,
+        ];
+        let state_patterns =
+            [UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId];
+        // The position properties (roadmap 9.7) may be unknown to an older Windows build. If the
+        // request that includes them cannot be made, fall back to the one without, so only the
+        // "3 of 7" is lost and not every focus read.
         let state = request(
             uia,
-            &[
-                UIA_NamePropertyId,
-                UIA_ControlTypePropertyId,
-                UIA_ClassNamePropertyId,
-                UIA_IsPasswordPropertyId,
-                UIA_IsEnabledPropertyId,
-                UIA_BoundingRectanglePropertyId,
-                UIA_FrameworkIdPropertyId,
-                UIA_ToggleToggleStatePropertyId,
-                UIA_ExpandCollapseExpandCollapseStatePropertyId,
-                UIA_SelectionItemIsSelectedPropertyId,
-                UIA_PositionInSetPropertyId,
-                UIA_SizeOfSetPropertyId,
-            ],
-            &[UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId],
-        )?;
+            &[&state_properties[..], &[UIA_PositionInSetPropertyId, UIA_SizeOfSetPropertyId]]
+                .concat(),
+            &state_patterns,
+        )
+        .or_else(|e| {
+            eprintln!("[focus] position properties off: {e}");
+            request(uia, &state_properties, &state_patterns)
+        })?;
         let value = request(
             uia,
             &[UIA_ValueValuePropertyId, UIA_RangeValueValuePropertyId],
@@ -281,11 +290,6 @@ pub(super) fn msaa_read(event: &Stored) -> Option<MsaaReading> {
 
     let mut control = Control::new(name, role, FocusSource::Msaa);
     control.states = map::msaa_states(state);
-    // MSAA states a checkbox or radio button as checked only when it is ticked, so a readable
-    // state without the bit on one of those roles is "not checked" (roadmap 9.7).
-    if control.states.checked.is_none() && state.is_some() && map::msaa_checkable(role) {
-        control.states.checked = Some(Checked::Off);
-    }
     let (mut left, mut top, mut width, mut height) = (0, 0, 0, 0);
     if unsafe { acc.accLocation(&mut left, &mut top, &mut width, &mut height, &child) }.is_ok() {
         control.rect = screen_rect(left, top, left + width, top + height);

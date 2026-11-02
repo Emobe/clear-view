@@ -41,7 +41,7 @@ pub const DIALOG_SPOKEN_MAX: usize = 300;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Verbosity {
     /// The name, whether it is checked or unavailable, and the value. The role only when there
-    /// is no name.
+    /// is no name. A tab also says whether it is selected.
     Brief,
     /// Adds the role (not for labels or list items that have a name), expanded or collapsed, and
     /// the position ("3 of 7") of items that have one.
@@ -1060,6 +1060,27 @@ mod tests {
         }
         assert_eq!(at(&on, Verbosity::Full), "Medium, radio button, checked");
         assert_eq!(at(&off, Verbosity::Brief), "Large, not checked");
+    }
+
+    #[test]
+    fn a_selected_uia_radio_button_merged_with_msaa_is_checked_not_unchecked() {
+        // UIA gives a radio button SelectionItem but no Toggle, and MSAA never says unchecked
+        // (ADR 0015), so the merged control has selected = true and checked = None.
+        use crate::ScreenRect;
+        use crate::focus::{FocusSource, merge};
+        let area = Some(ScreenRect { left: 0, top: 0, width: 10, height: 10 });
+        let mut u = control("Medium", Role::RadioButton);
+        u.states.selected = Some(true);
+        u.rect = area;
+        let mut m = Control::new("Medium", Role::RadioButton, FocusSource::Msaa);
+        m.states.password = Password::No;
+        m.rect = area;
+        let merged = merge(Some(u), Some(m)).unwrap();
+        assert_eq!(merged.states.checked, None);
+        for v in Verbosity::ALL {
+            let said = at(&merged, v);
+            assert!(said.ends_with("checked") && !said.contains("not checked"), "{v:?}: {said}");
+        }
     }
 
     #[test]
