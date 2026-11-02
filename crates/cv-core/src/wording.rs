@@ -1186,8 +1186,7 @@ mod tests {
 
     #[test]
     fn the_title_command_says_the_title_flattened_and_cut() {
-        let w = WindowInfo::new("Inbox
-- Mail");
+        let w = WindowInfo::new("Inbox\n- Mail");
         assert_eq!(read(ReadCommand::Title, Some(&w), None, Verbosity::Brief), ["Inbox - Mail"]);
         let long = WindowInfo::new("word ".repeat(40));
         let said = &read(ReadCommand::Title, Some(&long), None, Verbosity::Normal)[0];
