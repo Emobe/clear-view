@@ -17,12 +17,14 @@ use windows::{
                 AccessibleObjectFromEvent, IAccessible, IUIAutomation, IUIAutomationCacheRequest,
                 IUIAutomationCondition, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
                 IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern,
-                IUIAutomationTogglePattern, IUIAutomationValuePattern, UIA_BoundingRectanglePropertyId,
-                UIA_ControlTypePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId,
-                UIA_ExpandCollapsePatternId, UIA_FrameworkIdPropertyId, UIA_IsDialogPropertyId,
+                IUIAutomationTogglePattern, IUIAutomationTreeWalker, IUIAutomationValuePattern,
+                UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
+                UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_ExpandCollapsePatternId,
+                UIA_FrameworkIdPropertyId, UIA_IsDialogPropertyId,
                 UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
-                UIA_IsPasswordPropertyId, UIA_NamePropertyId, UIA_PATTERN_ID, UIA_PROPERTY_ID,
-                UIA_RangeValuePatternId, UIA_RangeValueValuePropertyId,
+                UIA_IsPasswordPropertyId, UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId,
+                UIA_PATTERN_ID, UIA_PROPERTY_ID, UIA_RangeValuePatternId,
+                UIA_RangeValueValuePropertyId, UIA_RuntimeIdPropertyId,
                 UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId,
                 UIA_ToggleToggleStatePropertyId, UIA_TogglePatternId, UIA_ValuePatternId,
                 UIA_ValueValuePropertyId,
@@ -48,11 +50,15 @@ pub(super) struct Stored {
 pub(super) struct Requests {
     state: IUIAutomationCacheRequest,
     value: IUIAutomationCacheRequest,
-    /// A dialog walk's node: name, type, focusable, offscreen, password. No value, no pattern
-    /// (ADR 0016).
+    /// A dialog walk's node: name, type, focusable, offscreen, password, and the class and
+    /// `IsDialog` that tell a nested dialog (ADR 0016, 0018). No value, no pattern.
     pub dialog_node: IUIAutomationCacheRequest,
     /// The window element's `IsDialog`, for a window whose class is not a dialog class.
     pub dialog_check: IUIAutomationCacheRequest,
+    /// The nearest ancestor that says `IsDialog` (ADR 0018, the XAML lookup): the walker and the
+    /// request that fetches its name, window handle, runtime id and `IsDialog`. `None` when either
+    /// could not be made, which only turns that lookup off.
+    pub dialog_ancestor: Option<(IUIAutomationTreeWalker, IUIAutomationCacheRequest)>,
     /// Matches every child.
     pub any: IUIAutomationCondition,
 }
@@ -64,6 +70,7 @@ impl Requests {
             &[
                 UIA_NamePropertyId,
                 UIA_ControlTypePropertyId,
+                UIA_ClassNamePropertyId,
                 UIA_IsPasswordPropertyId,
                 UIA_IsEnabledPropertyId,
                 UIA_BoundingRectanglePropertyId,
@@ -87,13 +94,38 @@ impl Requests {
                 UIA_IsKeyboardFocusablePropertyId,
                 UIA_IsOffscreenPropertyId,
                 UIA_IsPasswordPropertyId,
+                UIA_ClassNamePropertyId,
+                UIA_IsDialogPropertyId,
             ],
             &[],
         )?;
         let dialog_check = request(uia, &[UIA_IsDialogPropertyId], &[])?;
+        let dialog_ancestor = dialog_ancestor(uia)
+            .map_err(|e| eprintln!("[focus] dialog ancestor lookup off: {e}"))
+            .ok();
         let any = unsafe { uia.CreateTrueCondition() }?;
-        Ok(Self { state, value, dialog_node, dialog_check, any })
+        Ok(Self { state, value, dialog_node, dialog_check, dialog_ancestor, any })
     }
+}
+
+/// A walker that matches `IsDialog == true`, and the cache request for what it returns. A walker
+/// with a condition makes `NormalizeElementBuildCache` give the nearest ancestor that matches.
+fn dialog_ancestor(
+    uia: &IUIAutomation,
+) -> Result<(IUIAutomationTreeWalker, IUIAutomationCacheRequest)> {
+    let condition = unsafe { uia.CreatePropertyCondition(UIA_IsDialogPropertyId, &true.into()) }?;
+    let walker = unsafe { uia.CreateTreeWalker(&condition) }?;
+    let request = request(
+        uia,
+        &[
+            UIA_NamePropertyId,
+            UIA_NativeWindowHandlePropertyId,
+            UIA_RuntimeIdPropertyId,
+            UIA_IsDialogPropertyId,
+        ],
+        &[],
+    )?;
+    Ok((walker, request))
 }
 
 fn request(
@@ -132,9 +164,11 @@ pub(super) struct UiaReading {
     pub control: Control,
     /// `IsPassword`; `None` when the property could not be read.
     pub password: Option<bool>,
-    /// For the log.
+    /// For the XAML dialog lookup and the log.
     pub framework: String,
-    element: IUIAutomationElement,
+    /// The window class of the element (STATUS Finding 29).
+    pub class: String,
+    pub element: IUIAutomationElement,
 }
 
 /// The focused element, with one cross-process call. An error is the call's own, so the caller
@@ -148,6 +182,7 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
         .map(|t| map::uia_role(t.0))
         .unwrap_or_default();
     let framework = unsafe { element.CachedFrameworkId() }.map(|f| f.to_string()).unwrap_or_default();
+    let class = unsafe { element.CachedClassName() }.map(|c| c.to_string()).unwrap_or_default();
 
     let mut control = Control::new(name, role, FocusSource::Uia);
     control.states.password = map::uia_password(password);
@@ -173,7 +208,7 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
     {
         control.states.selected = Some(selected.as_bool());
     }
-    Ok(UiaReading { control, password, framework, element })
+    Ok(UiaReading { control, password, framework, class, element })
 }
 
 /// The Value pattern's string, else the RangeValue pattern's number, from a fresh cache. Never

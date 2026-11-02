@@ -1,6 +1,8 @@
-//! The bounded walk of a dialog's tree (ADR 0016), as pure logic. A `Source` fetches one level of
-//! children (UI Automation or MSAA, in dialog.rs); `walk` decides what to enter and when to stop.
-//! Tested here with a fake tree, because the real ones need a dialog on screen.
+//! The bounded walk of a dialog's tree (ADR 0016, 0018), as pure logic. A `Source` fetches one
+//! level of children (UI Automation or MSAA, in dialog.rs); `walk` decides what to enter and when
+//! to stop. Tested here with a fake tree, because the real ones need a dialog on screen.
+
+use std::time::Instant;
 
 use cv_core::{
     DialogNode, Role,
@@ -11,7 +13,9 @@ use cv_core::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Hung;
 
-/// The children of one node, each with a handle when it could have children of its own.
+/// The children of one node, each with a handle when it could have children of its own. A node
+/// that is itself a dialog (a property page, a nested prompt) has no handle: it is kept but not
+/// entered (ADR 0018).
 pub(super) type Children<H> = Vec<(DialogNode, Option<H>)>;
 
 /// One level of a tree.
@@ -23,6 +27,24 @@ pub(super) trait Source {
     /// its own. The node's `depth` is set by the walk. A refused or failed call is an empty list;
     /// a timeout is `Err(Hung)`.
     fn children(&mut self, parent: &Self::Handle) -> Result<Children<Self::Handle>, Hung>;
+
+    /// True once the source stopped partway through a level because the time ran out (the
+    /// children it returned are the ones it got to). The walk then ends as incomplete.
+    fn out_of_time(&self) -> bool {
+        false
+    }
+}
+
+/// What bounds a walk besides the call, depth and node budgets.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Limits {
+    /// `DIALOG_MS` after the dialog read started: no further call is made past it and the walk is
+    /// incomplete (ADR 0018). `None` for no time limit.
+    pub deadline: Option<Instant>,
+    /// Stop after the first level when it holds only `Pane` nodes (a `#32770` whose UI Automation
+    /// proxy answers `Pane` for everything): the rest of this source's walk would find nothing, and
+    /// MSAA takes over (ADR 0017 T2).
+    pub panes_stop: bool,
 }
 
 /// What a walk found.
@@ -34,6 +56,8 @@ pub(super) struct Walk {
     pub complete: bool,
     /// `children` calls made.
     pub calls: usize,
+    /// The first level held only panes and `Limits::panes_stop` ended the walk there.
+    pub panes_only: bool,
 }
 
 /// A role the walk goes into: containers with no meaning of their own. Lists, trees, tables,
@@ -48,20 +72,44 @@ fn enters(node: &DialogNode) -> bool {
     is_container(node.role) && !node.focusable && !node.offscreen
 }
 
-/// Walks below `root` with the budget `DIALOG_CALLS`, `DIALOG_DEPTH` and `DIALOG_NODES`.
-pub(super) fn walk<S: Source>(source: &mut S, root: &S::Handle) -> Result<Walk, Hung> {
-    let mut out = Walk { nodes: Vec::new(), complete: true, calls: 0 };
-    visit(source, root, 0, &mut out)?;
+/// Walks below `root` with the budget `DIALOG_CALLS`, `DIALOG_DEPTH` and `DIALOG_NODES`, and the
+/// time and early-stop rules in `limits`.
+pub(super) fn walk<S: Source>(source: &mut S, root: &S::Handle, limits: &Limits) -> Result<Walk, Hung> {
+    let mut out = Walk { nodes: Vec::new(), complete: true, calls: 0, panes_only: false };
+    visit(source, root, 0, limits, &mut out)?;
     Ok(out)
 }
 
-fn visit<S: Source>(source: &mut S, parent: &S::Handle, depth: usize, out: &mut Walk) -> Result<(), Hung> {
-    if out.calls >= DIALOG_CALLS {
+fn visit<S: Source>(
+    source: &mut S,
+    parent: &S::Handle,
+    depth: usize,
+    limits: &Limits,
+    out: &mut Walk,
+) -> Result<(), Hung> {
+    if out.calls >= DIALOG_CALLS || limits.deadline.is_some_and(|d| Instant::now() >= d) {
         out.complete = false;
         return Ok(());
     }
     out.calls += 1;
-    for (mut node, handle) in source.children(parent)? {
+    let children = source.children(parent)?;
+    if source.out_of_time() {
+        out.complete = false;
+    }
+    if depth == 0
+        && limits.panes_stop
+        && !children.is_empty()
+        && children.iter().all(|(node, _)| node.role == Role::Pane)
+    {
+        // Kept as nodes (they hold no text), so the caller sees a walk without any.
+        for (mut node, _) in children {
+            node.depth = depth;
+            out.nodes.push(node);
+        }
+        out.panes_only = true;
+        return Ok(());
+    }
+    for (mut node, handle) in children {
         if out.nodes.len() >= DIALOG_NODES {
             out.complete = false;
             return Ok(());
@@ -73,7 +121,7 @@ fn visit<S: Source>(source: &mut S, parent: &S::Handle, depth: usize, out: &mut 
             if depth + 1 >= DIALOG_DEPTH {
                 out.complete = false;
             } else {
-                visit(source, &handle, depth + 1, out)?;
+                visit(source, &handle, depth + 1, limits, out)?;
             }
         }
     }
@@ -98,6 +146,8 @@ mod tests {
         next: Vec<Vec<usize>>,
         calls: Vec<usize>,
         hang_on: Option<usize>,
+        /// Reported by `out_of_time`.
+        late: bool,
     }
 
     impl Source for Fake {
@@ -114,6 +164,10 @@ mod tests {
                 .zip(self.next[*parent].iter().map(|&n| (n != 0).then_some(n)))
                 .collect())
         }
+
+        fn out_of_time(&self) -> bool {
+            self.late
+        }
     }
 
     fn node(name: &str, role: Role) -> DialogNode {
@@ -121,7 +175,7 @@ mod tests {
     }
 
     fn fake(kids: Vec<Vec<DialogNode>>, next: Vec<Vec<usize>>) -> Fake {
-        Fake { kids, next, calls: Vec::new(), hang_on: None }
+        Fake { kids, next, calls: Vec::new(), hang_on: None, late: false }
     }
 
     fn names(walk: &Walk) -> Vec<(&str, usize)> {
@@ -138,7 +192,7 @@ mod tests {
             ],
             vec![vec![1, 0], vec![0, 0]],
         );
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(names(&walk), [("p", 0), ("hello", 1), ("again", 1), ("ok", 0)]);
         assert!(walk.complete);
         assert_eq!(walk.calls, 2);
@@ -167,7 +221,7 @@ mod tests {
             // Every node would lead to node 1 if it were entered.
             vec![vec![1; 10], vec![0]],
         );
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(f.calls, [0]);
         assert_eq!(walk.nodes.len(), 10);
         assert!(walk.complete);
@@ -178,7 +232,7 @@ mod tests {
         let mut hidden = node("hidden", Role::Pane);
         hidden.offscreen = true;
         let mut f = fake(vec![vec![hidden], vec![node("x", Role::Text)]], vec![vec![1], vec![0]]);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(f.calls, [0]);
         assert!(walk.complete);
     }
@@ -186,7 +240,7 @@ mod tests {
     #[test]
     fn a_node_without_a_handle_is_not_entered() {
         let mut f = fake(vec![vec![node("p", Role::Pane)]], vec![vec![0]]);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(walk.calls, 1);
         assert!(walk.complete);
     }
@@ -198,7 +252,7 @@ mod tests {
         let kids = (0..n).map(|i| vec![node(&format!("p{i}"), Role::Pane)]).collect();
         let next = (0..n).map(|i| vec![i + 1]).collect();
         let mut f = fake(kids, next);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(walk.nodes.len(), DIALOG_DEPTH);
         assert_eq!(walk.nodes.last().unwrap().depth, DIALOG_DEPTH - 1);
         assert!(!walk.complete);
@@ -216,7 +270,7 @@ mod tests {
             next.push(vec![0]);
         }
         let mut f = fake(kids, next);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(walk.calls, DIALOG_CALLS);
         assert_eq!(f.calls.len(), DIALOG_CALLS);
         assert!(!walk.complete);
@@ -226,7 +280,7 @@ mod tests {
     fn the_node_budget_stops_the_walk_and_marks_it_incomplete() {
         let many = (0..DIALOG_NODES + 5).map(|i| node(&format!("t{i}"), Role::Text)).collect();
         let mut f = fake(vec![many], vec![vec![0; DIALOG_NODES + 5]]);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(walk.nodes.len(), DIALOG_NODES);
         assert!(!walk.complete);
     }
@@ -235,7 +289,7 @@ mod tests {
     fn exactly_the_node_budget_is_complete() {
         let many = (0..DIALOG_NODES).map(|i| node(&format!("t{i}"), Role::Text)).collect();
         let mut f = fake(vec![many], vec![vec![0; DIALOG_NODES]]);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert_eq!(walk.nodes.len(), DIALOG_NODES);
         assert!(walk.complete);
     }
@@ -247,13 +301,13 @@ mod tests {
             vec![vec![1], vec![0]],
         );
         f.hang_on = Some(1);
-        assert_eq!(walk(&mut f, &0), Err(Hung));
+        assert_eq!(walk(&mut f, &0, &Limits::default()), Err(Hung));
     }
 
     #[test]
     fn an_empty_dialog_is_a_complete_walk_with_no_nodes() {
         let mut f = fake(vec![vec![]], vec![vec![]]);
-        let walk = walk(&mut f, &0).unwrap();
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
         assert!(walk.nodes.is_empty());
         assert!(walk.complete);
         assert_eq!(walk.calls, 1);
@@ -268,5 +322,86 @@ mod tests {
         assert!(!needs_msaa("#32770", &with_text));
         assert!(!needs_msaa("NUIDialog", &panes));
         assert!(!needs_msaa("Shell_Dialog", &[]));
+    }
+
+    #[test]
+    fn a_walk_past_its_deadline_makes_no_call_and_is_incomplete() {
+        let mut f = fake(vec![vec![node("t", Role::Text)]], vec![vec![0]]);
+        let limits = Limits { deadline: Some(Instant::now()), panes_stop: false };
+        let walk = walk(&mut f, &0, &limits).unwrap();
+        assert!(f.calls.is_empty());
+        assert!(walk.nodes.is_empty());
+        assert!(!walk.complete);
+    }
+
+    #[test]
+    fn a_walk_with_time_left_is_not_cut() {
+        let mut f = fake(vec![vec![node("t", Role::Text)]], vec![vec![0]]);
+        let limits = Limits {
+            deadline: Some(Instant::now() + std::time::Duration::from_secs(3600)),
+            panes_stop: false,
+        };
+        let walk = walk(&mut f, &0, &limits).unwrap();
+        assert!(walk.complete);
+        assert_eq!(walk.nodes.len(), 1);
+    }
+
+    #[test]
+    fn a_source_that_ran_out_of_time_makes_the_walk_incomplete_and_the_dialog_says_nothing() {
+        let mut f = fake(vec![vec![node("t", Role::Text)]], vec![vec![0]]);
+        f.late = true;
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
+        assert!(!walk.complete);
+        assert!(cv_core::focus::dialog_text(&walk.nodes, walk.complete, "").is_empty());
+    }
+
+    #[test]
+    fn a_first_level_of_only_panes_ends_the_walk_when_asked_to() {
+        // The elevated Save As: UI Automation's Win32 proxy answers Pane for everything.
+        let mut f = fake(
+            vec![vec![node("a", Role::Pane), node("b", Role::Pane)], vec![node("deeper", Role::Text)]],
+            vec![vec![1, 0], vec![0]],
+        );
+        let limits = Limits { panes_stop: true, ..Limits::default() };
+        let walk = walk(&mut f, &0, &limits).unwrap();
+        assert_eq!(f.calls, [0]);
+        assert!(walk.panes_only);
+        assert!(needs_msaa("#32770", &walk.nodes));
+    }
+
+    #[test]
+    fn the_panes_rule_does_not_apply_to_a_level_with_other_nodes_or_none_or_when_not_asked() {
+        let mixed = || {
+            fake(
+                vec![vec![node("a", Role::Pane), node("ok", Role::Button)], vec![node("t", Role::Text)]],
+                vec![vec![1, 0], vec![0]],
+            )
+        };
+        let asked = Limits { panes_stop: true, ..Limits::default() };
+        let mut f = mixed();
+        let w = walk(&mut f, &0, &asked).unwrap();
+        assert!(!w.panes_only);
+        assert_eq!(f.calls, [0, 1]);
+
+        let mut f = fake(vec![vec![]], vec![vec![]]);
+        assert!(!walk(&mut f, &0, &asked).unwrap().panes_only);
+
+        let mut f = fake(vec![vec![node("a", Role::Pane)], vec![node("t", Role::Text)]], vec![vec![1], vec![0]]);
+        let w = walk(&mut f, &0, &Limits::default()).unwrap();
+        assert!(!w.panes_only);
+        assert_eq!(f.calls, [0, 1]);
+    }
+
+    #[test]
+    fn a_nested_dialog_node_without_a_handle_is_kept_and_its_text_not_walked() {
+        // A property page: the sheet's walk keeps the page's node but gets no handle to enter.
+        let mut f = fake(
+            vec![vec![node("General", Role::Pane), node("ok", Role::Button)], vec![node("page text", Role::Text)]],
+            vec![vec![0, 0], vec![0]],
+        );
+        let walk = walk(&mut f, &0, &Limits::default()).unwrap();
+        assert_eq!(f.calls, [0]);
+        assert_eq!(names(&walk), [("General", 0), ("ok", 0)]);
+        assert!(walk.complete);
     }
 }
