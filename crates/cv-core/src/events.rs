@@ -64,7 +64,15 @@ impl CoreEvent {
                 match control {
                     Some(c) => {
                         let withheld = if c.value == Value::Withheld { " value withheld" } else { "" };
-                        format!("focus {:?} ({}){withheld} in {}{new_window}", c.role, c.source.name(), app.exe)
+                        let place = c
+                            .position
+                            .map_or(String::new(), |p| format!(" item {} of {}", p.index, p.size));
+                        format!(
+                            "focus {:?} ({}){place}{withheld} in {}{new_window}",
+                            c.role,
+                            c.source.name(),
+                            app.exe
+                        )
                     }
                     None => format!("focus no control in {}{new_window}", app.exe),
                 }
@@ -333,5 +341,21 @@ mod tests {
         assert_eq!(moved(5).describe(), "msaa (5, 10) 2x20 in notepad.exe");
         let lost = CoreEvent::CaretLost { at: Instant::now(), app: app() };
         assert_eq!(lost.describe(), "lost in notepad.exe");
+    }
+
+    #[test]
+    fn describe_gives_a_focused_items_place_but_not_its_name() {
+        use crate::focus::{Control, FocusSource, Position, Role, WindowInfo};
+        let mut c = Control::new("Secret name", Role::ListItem, FocusSource::Uia);
+        c.position = Position::from_raw(3, 7);
+        let e = CoreEvent::FocusChanged {
+            at: Instant::now(),
+            app: app(),
+            window: WindowInfo::new("Title"),
+            window_changed: false,
+            dialog_changed: false,
+            control: Some(c),
+        };
+        assert_eq!(e.describe(), "focus ListItem (uia) item 3 of 7 in notepad.exe");
     }
 }

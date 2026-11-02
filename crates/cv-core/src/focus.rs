@@ -249,6 +249,27 @@ pub enum Value {
     Withheld,
 }
 
+/// Where a control sits among its siblings: item `index` of `size`, both counting from 1
+/// (roadmap 9.7). Only UI Automation says it (`PositionInSet` and `SizeOfSet`); MSAA has no such
+/// property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    pub index: u32,
+    pub size: u32,
+}
+
+impl Position {
+    /// From the raw numbers a source gives. `None` unless both are at least 1 and the index is
+    /// not past the size: UI Automation's default for "not supported" is 0, and a provider that
+    /// fills in only one of the two, or gets them inconsistent, says nothing worth speaking.
+    pub fn from_raw(index: i32, size: i32) -> Option<Self> {
+        if index < 1 || size < 1 || index > size {
+            return None;
+        }
+        Some(Self { index: index as u32, size: size as u32 })
+    }
+}
+
 /// Which source a control's fields came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusSource {
@@ -279,6 +300,8 @@ pub struct Control {
     pub value: Value,
     /// Physical virtual-screen pixels, for 9.9.
     pub rect: Option<ScreenRect>,
+    /// Item `index` of `size` among its siblings, when UI Automation says so (roadmap 9.7).
+    pub position: Option<Position>,
     pub source: FocusSource,
 }
 
@@ -291,6 +314,7 @@ impl Control {
             states: States::default(),
             value: Value::None,
             rect: None,
+            position: None,
             source,
         }
     }
@@ -355,7 +379,15 @@ pub fn merge(uia: Option<Control>, msaa: Option<Control>) -> Option<Control> {
     } else {
         msaa.value
     };
-    let combined = Control { name, role, states, value, rect: uia.rect.or(msaa.rect), source: FocusSource::Both };
+    let combined = Control {
+        name,
+        role,
+        states,
+        value,
+        rect: uia.rect.or(msaa.rect),
+        position: uia.position.or(msaa.position),
+        source: FocusSource::Both,
+    };
     Some(finish(combined, FocusSource::Both))
 }
 
@@ -583,6 +615,60 @@ mod tests {
 
     fn rect(left: i32, top: i32, width: u32, height: u32) -> Option<ScreenRect> {
         Some(ScreenRect { left, top, width, height })
+    }
+
+    // ── Position ──
+
+    #[test]
+    fn a_position_needs_both_numbers_and_the_index_inside_the_set() {
+        assert_eq!(Position::from_raw(3, 7), Some(Position { index: 3, size: 7 }));
+        assert_eq!(Position::from_raw(1, 1), Some(Position { index: 1, size: 1 }));
+        assert_eq!(Position::from_raw(7, 7), Some(Position { index: 7, size: 7 }));
+    }
+
+    #[test]
+    fn uia_zero_for_not_supported_gives_no_position() {
+        assert_eq!(Position::from_raw(0, 0), None);
+        assert_eq!(Position::from_raw(3, 0), None);
+        assert_eq!(Position::from_raw(0, 7), None);
+    }
+
+    #[test]
+    fn a_position_past_the_size_or_negative_gives_none() {
+        assert_eq!(Position::from_raw(8, 7), None);
+        assert_eq!(Position::from_raw(-1, 7), None);
+        assert_eq!(Position::from_raw(3, -7), None);
+    }
+
+    #[test]
+    fn a_merged_control_takes_uias_position() {
+        let mut u = uia("Inbox", Role::ListItem);
+        u.rect = rect(0, 0, 100, 20);
+        u.position = Position::from_raw(3, 7);
+        let mut m = msaa("Inbox", Role::ListItem);
+        m.rect = rect(0, 0, 100, 20);
+        let merged = merge(Some(u), Some(m)).unwrap();
+        assert_eq!(merged.position, Position::from_raw(3, 7));
+    }
+
+    #[test]
+    fn a_position_survives_uia_alone_and_msaa_alone_has_none() {
+        let mut u = uia("Inbox", Role::ListItem);
+        u.position = Position::from_raw(2, 5);
+        assert_eq!(merge(Some(u), None).unwrap().position, Position::from_raw(2, 5));
+        assert_eq!(merge(None, Some(msaa("Inbox", Role::ListItem))).unwrap().position, None);
+    }
+
+    #[test]
+    fn a_different_position_is_a_different_reading_for_the_duplicate_rule() {
+        let mut a = uia("Item", Role::ListItem);
+        a.position = Position::from_raw(1, 3);
+        let mut b = a.clone();
+        b.position = Position::from_raw(2, 3);
+        assert!(!same_but_source(&Some(a.clone()), &Some(b)));
+        let mut same = a.clone();
+        same.source = FocusSource::Both;
+        assert!(same_but_source(&Some(a), &Some(same)));
     }
 
     // ── value_allowed ──

@@ -7,7 +7,7 @@
 //! no value property, and a value is fetched (UI Automation) or read (MSAA) only after
 //! `cv_core::focus::value_allowed` says so.
 
-use cv_core::{Control, FocusSource, ScreenRect, Value};
+use cv_core::{Checked, Control, FocusSource, Position, ScreenRect, Value};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -15,7 +15,8 @@ use windows::{
         UI::{
             Accessibility::{
                 AccessibleObjectFromEvent, IAccessible, IUIAutomation, IUIAutomationCacheRequest,
-                IUIAutomationCondition, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
+                IUIAutomationCondition, IUIAutomationElement, IUIAutomationElement4,
+                IUIAutomationExpandCollapsePattern,
                 IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern,
                 IUIAutomationTogglePattern, IUIAutomationTreeWalker, IUIAutomationValuePattern,
                 UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
@@ -23,16 +24,16 @@ use windows::{
                 UIA_FrameworkIdPropertyId, UIA_IsDialogPropertyId,
                 UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
                 UIA_IsPasswordPropertyId, UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId,
-                UIA_PATTERN_ID, UIA_PROPERTY_ID, UIA_RangeValuePatternId,
+                UIA_PATTERN_ID, UIA_PROPERTY_ID, UIA_PositionInSetPropertyId, UIA_RangeValuePatternId,
                 UIA_RangeValueValuePropertyId, UIA_RuntimeIdPropertyId,
-                UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId,
+                UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId, UIA_SizeOfSetPropertyId,
                 UIA_ToggleToggleStatePropertyId, UIA_TogglePatternId, UIA_ValuePatternId,
                 UIA_ValueValuePropertyId,
             },
             WindowsAndMessaging::GetWindowTextW,
         },
     },
-    core::Result,
+    core::{Interface, Result},
 };
 
 use super::map;
@@ -78,6 +79,8 @@ impl Requests {
                 UIA_ToggleToggleStatePropertyId,
                 UIA_ExpandCollapseExpandCollapseStatePropertyId,
                 UIA_SelectionItemIsSelectedPropertyId,
+                UIA_PositionInSetPropertyId,
+                UIA_SizeOfSetPropertyId,
             ],
             &[UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId],
         )?;
@@ -208,6 +211,13 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
     {
         control.states.selected = Some(selected.as_bool());
     }
+    // Item n of m (roadmap 9.7). Both are in the same cache request, so no further cross-process
+    // call; 0 means the provider does not say, and a provider without the interface says nothing.
+    if let Ok(e4) = element.cast::<IUIAutomationElement4>() {
+        let index = unsafe { e4.CachedPositionInSet() }.unwrap_or(0);
+        let size = unsafe { e4.CachedSizeOfSet() }.unwrap_or(0);
+        control.position = Position::from_raw(index, size);
+    }
     Ok(UiaReading { control, password, framework, class, element })
 }
 
@@ -271,6 +281,11 @@ pub(super) fn msaa_read(event: &Stored) -> Option<MsaaReading> {
 
     let mut control = Control::new(name, role, FocusSource::Msaa);
     control.states = map::msaa_states(state);
+    // MSAA states a checkbox or radio button as checked only when it is ticked, so a readable
+    // state without the bit on one of those roles is "not checked" (roadmap 9.7).
+    if control.states.checked.is_none() && state.is_some() && map::msaa_checkable(role) {
+        control.states.checked = Some(Checked::Off);
+    }
     let (mut left, mut top, mut width, mut height) = (0, 0, 0, 0);
     if unsafe { acc.accLocation(&mut left, &mut top, &mut width, &mut height, &child) }.is_ok() {
         control.rect = screen_rect(left, top, left + width, top + height);
