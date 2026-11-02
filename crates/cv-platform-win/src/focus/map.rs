@@ -66,10 +66,75 @@ pub(super) fn uia_name_withheld(is_password: Option<bool>) -> bool {
     is_password != Some(false)
 }
 
-/// Window classes that are dialogs (ADR 0016): the standard dialog, Office's, and the shell's
-/// dialog hosts. NVDA's list without `Shell_Flyout` and the UAC host.
+/// Window classes that are dialogs (ADR 0016, 0018): the standard dialog, Office's, the shell's
+/// dialog hosts, and the file operation windows ("Replace or Skip Files", which the 9.6c1 probe
+/// found is an `OperationStatusWindow`; it is also the copy progress window, whose text is then
+/// read once). NVDA's list without `Shell_Flyout` and the UAC host.
 pub(super) fn is_dialog_class(class: &str) -> bool {
-    matches!(class, "#32770" | "NUIDialog" | "Shell_Dialog" | "Shell_SystemDialog")
+    matches!(
+        class,
+        "#32770" | "NUIDialog" | "Shell_Dialog" | "Shell_SystemDialog" | "OperationStatusWindow"
+    )
+}
+
+/// STATUS Finding 29: while focus moves, UI Automation sometimes reports the desktop itself (a
+/// `Pane` of class `#32769`, named for the virtual desktop) as the focused element. That is no
+/// reading of a control, so it is not used.
+pub(super) fn is_desktop_pane(role: Role, class: &str) -> bool {
+    role == Role::Pane && class == "#32769"
+}
+
+/// Content whose framework can hold a dialog that is no window (`ContentDialog`, Notepad's
+/// prompt): the only place the `IsDialog` ancestor lookup runs (ADR 0018).
+pub(super) fn is_xaml_framework(framework: &str) -> bool {
+    framework.eq_ignore_ascii_case("XAML") || framework.eq_ignore_ascii_case("WinUI")
+}
+
+/// The index of the nearest window with a dialog class in a `GA_PARENT` chain that starts at the
+/// focus window (ADR 0018, I2).
+pub(super) fn nearest_dialog<'a>(classes: impl IntoIterator<Item = &'a str>) -> Option<usize> {
+    classes.into_iter().position(is_dialog_class)
+}
+
+/// Whether the focus belongs to the foreground window: the root of `GetGUIThreadInfo(0)`'s focus
+/// window is the foreground window. Any other root (a closing dialog, Alt+Tab's "Task Switching")
+/// gives no chain and no inner dialog (ADR 0018, Finding 38).
+pub(super) fn focus_in_foreground(focus_root: isize, fg: isize) -> bool {
+    focus_root != 0 && focus_root == fg
+}
+
+/// Whether the result of the `IsDialog` ancestor lookup is an inner dialog: it says `IsDialog`
+/// and is not the foreground window's own element (a window handle equal to it). A XAML dialog
+/// has no handle of its own (0). A failed or unreadable answer is no dialog (Finding 37).
+pub(super) fn normalized_is_inner(is_dialog: Option<bool>, hwnd: isize, fg: isize) -> bool {
+    is_dialog == Some(true) && (hwnd == 0 || hwnd != fg)
+}
+
+/// A node the dialog walk keeps but does not enter, UI Automation side: a dialog by class, or by
+/// `IsDialog` (a property page, a nested prompt). NVDA does the same to stop double reporting.
+pub(super) fn is_nested_dialog(class: &str, is_dialog: Option<bool>) -> bool {
+    is_dialog_class(class) || is_dialog == Some(true)
+}
+
+/// The same for MSAA, from the raw role: a dialog or a property page.
+pub(super) fn msaa_nested_dialog(role: u32) -> bool {
+    role == ROLE_SYSTEM_DIALOG || role == ROLE_SYSTEM_PROPERTYPAGE
+}
+
+/// An opaque key for a dialog that has no window handle: FNV-1a over the bytes. Only compared for
+/// equality, never shown (ADR 0018).
+pub(super) fn key_of(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, b| (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The key of a UI Automation runtime id; `None` for an empty one.
+pub(super) fn runtime_id_key(id: &[i32]) -> Option<u64> {
+    (!id.is_empty()).then(|| key_of(id.iter().flat_map(|part| part.to_le_bytes())))
+}
+
+/// The key of a name, for a dialog with neither a window handle nor a readable runtime id.
+pub(super) fn name_key(name: &str) -> u64 {
+    key_of(name.bytes())
 }
 
 /// A UI Automation control type id (50000 to 50040) as a neutral role.
@@ -474,7 +539,7 @@ mod tests {
 
     #[test]
     fn the_dialog_class_list_is_the_standard_dialog_and_the_shell_hosts() {
-        for class in ["#32770", "NUIDialog", "Shell_Dialog", "Shell_SystemDialog"] {
+        for class in ["#32770", "NUIDialog", "Shell_Dialog", "Shell_SystemDialog", "OperationStatusWindow"] {
             assert!(is_dialog_class(class), "{class}");
         }
         for class in ["Shell_Flyout", "Notepad", "CabinetWClass", "#32769", "", "#32770 "] {
@@ -490,5 +555,82 @@ mod tests {
         assert_eq!(read_plan(true, 1, 9, 5, Some(5)), Plan::Hung);
         assert_eq!(read_plan(true, 1, 9, 5, Some(6)), Plan::Read);
         assert_eq!(read_plan(true, 1, 9, 5, None), Plan::Read);
+    }
+
+    #[test]
+    fn operation_status_window_is_a_dialog_class() {
+        // "Replace or Skip Files" (9.6c1 probe, Finding 35).
+        assert!(is_dialog_class("OperationStatusWindow"));
+        assert!(!is_dialog_class("OperationStatusWindow2"));
+        assert!(!is_dialog_class("operationstatuswindow"));
+    }
+
+    #[test]
+    fn a_pane_of_the_desktop_class_is_no_reading_but_other_panes_and_classes_are() {
+        // Finding 29: "Desktop 1".
+        assert!(is_desktop_pane(Role::Pane, "#32769"));
+        assert!(!is_desktop_pane(Role::Pane, "#32770"));
+        assert!(!is_desktop_pane(Role::Pane, ""));
+        assert!(!is_desktop_pane(Role::Button, "#32769"));
+        assert!(!is_desktop_pane(Role::Custom, "#32769"));
+    }
+
+    #[test]
+    fn only_xaml_and_winui_content_gets_the_dialog_ancestor_lookup() {
+        assert!(is_xaml_framework("XAML"));
+        assert!(is_xaml_framework("WinUI"));
+        assert!(is_xaml_framework("xaml"));
+        for framework in ["DirectUI", "Win32", "Chrome", "WPF", "", "?"] {
+            assert!(!is_xaml_framework(framework), "{framework}");
+        }
+    }
+
+    #[test]
+    fn the_nearest_dialog_class_in_a_chain_is_the_inner_dialog() {
+        // A list on a property page: list, the page, the sheet's tab, the sheet.
+        assert_eq!(nearest_dialog(["SysListView32", "#32770", "SysTabControl32", "#32770"]), Some(1));
+        assert_eq!(nearest_dialog(["#32770"]), Some(0));
+        // Notepad's prompt: no dialog class on the way up.
+        assert_eq!(nearest_dialog(["InputSiteWindowClass", "DesktopChildSiteBridge"]), None);
+        assert_eq!(nearest_dialog([]), None);
+    }
+
+    #[test]
+    fn the_chain_is_used_only_when_the_focus_root_is_the_foreground_window() {
+        assert!(focus_in_foreground(7, 7));
+        // A closing dialog or "Task Switching".
+        assert!(!focus_in_foreground(8, 7));
+        assert!(!focus_in_foreground(0, 0));
+        assert!(!focus_in_foreground(0, 7));
+    }
+
+    #[test]
+    fn a_normalized_element_is_an_inner_dialog_only_when_it_says_so_and_is_not_the_window() {
+        assert!(normalized_is_inner(Some(true), 0, 7));
+        assert!(normalized_is_inner(Some(true), 9, 7));
+        assert!(!normalized_is_inner(Some(true), 7, 7));
+        assert!(!normalized_is_inner(Some(false), 0, 7));
+        assert!(!normalized_is_inner(None, 0, 7));
+    }
+
+    #[test]
+    fn a_nested_dialog_is_kept_but_not_entered() {
+        assert!(is_nested_dialog("#32770", None));
+        assert!(is_nested_dialog("Anything", Some(true)));
+        assert!(!is_nested_dialog("Anything", Some(false)));
+        assert!(!is_nested_dialog("", None));
+        assert!(msaa_nested_dialog(ROLE_SYSTEM_DIALOG));
+        assert!(msaa_nested_dialog(ROLE_SYSTEM_PROPERTYPAGE));
+        assert!(!msaa_nested_dialog(ROLE_SYSTEM_PANE));
+        assert!(!msaa_nested_dialog(ROLE_SYSTEM_PUSHBUTTON));
+    }
+
+    #[test]
+    fn dialog_keys_differ_for_different_ids_and_names_and_agree_for_the_same() {
+        assert_eq!(runtime_id_key(&[42, 1, 2]), runtime_id_key(&[42, 1, 2]));
+        assert_ne!(runtime_id_key(&[42, 1, 2]), runtime_id_key(&[42, 1, 3]));
+        assert_eq!(runtime_id_key(&[]), None);
+        assert_eq!(name_key("Notepad"), name_key("Notepad"));
+        assert_ne!(name_key("Notepad"), name_key("General"));
     }
 }
