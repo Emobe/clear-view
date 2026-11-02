@@ -9,7 +9,11 @@
 //! - A value is spoken only when the control is known not to be a password. "Can't tell" and
 //!   `Value::Withheld` say nothing, not even that a value exists.
 //! - A control with no name, no value and a role that says nothing is not spoken (the Alt+Tab pane,
-//!   Finding 27(c)). Positions and per-role wording are 9.7's.
+//!   Finding 27(c)).
+//! - Roadmap 9.7: a list item, menu item, tab, tree item or radio button says its place among its
+//!   siblings ("3 of 7") at Normal and Full, when UI Automation gave it. A radio button with no
+//!   toggle state says "checked" or "not checked" from its selection, and a tab says "selected" or
+//!   "not selected" at every level. Checked and expanded states were already spoken (9.5).
 //! - When the foreground window changed, the title is spoken first, at every verbosity level, then
 //!   the dialog's text (roadmap 9.6b1, ADR 0016) as one utterance, then the control. A title or a
 //!   piece of dialog text equal to the control's name is said once, by the control. A window with
@@ -37,9 +41,10 @@ pub const DIALOG_SPOKEN_MAX: usize = 300;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Verbosity {
     /// The name, whether it is checked or unavailable, and the value. The role only when there
-    /// is no name.
+    /// is no name. A tab also says whether it is selected.
     Brief,
-    /// Adds the role (not for labels or list items that have a name) and expanded or collapsed.
+    /// Adds the role (not for labels or list items that have a name), expanded or collapsed, and
+    /// the position ("3 of 7") of items that have one.
     #[default]
     Normal,
     /// Adds every role and "selected".
@@ -164,11 +169,9 @@ pub fn describe_control(c: &Control, verbosity: Verbosity) -> String {
     if let Some(r) = role {
         parts.push(r);
     }
-    match c.states.checked {
-        Some(Checked::On) => parts.push("checked"),
-        Some(Checked::Off) => parts.push("not checked"),
-        Some(Checked::Mixed) => parts.push("partially checked"),
-        None => {}
+    let (check_word, selected_word) = check_and_selected_words(c, verbosity);
+    if let Some(w) = check_word {
+        parts.push(w);
     }
     if verbosity != Verbosity::Brief {
         match c.states.expanded {
@@ -177,8 +180,12 @@ pub fn describe_control(c: &Control, verbosity: Verbosity) -> String {
             None => {}
         }
     }
-    if verbosity == Verbosity::Full && c.states.selected == Some(true) {
-        parts.push("selected");
+    if let Some(w) = selected_word {
+        parts.push(w);
+    }
+    let position = spoken_position(c, verbosity);
+    if let Some(p) = &position {
+        parts.push(p);
     }
     if c.states.enabled == Some(false) {
         parts.push("unavailable");
@@ -187,6 +194,52 @@ pub fn describe_control(c: &Control, verbosity: Verbosity) -> String {
         parts.push(v);
     }
     parts.join(", ")
+}
+
+/// The words for "checked" and for "selected". A radio button with no toggle state is checked when
+/// it is selected (UI Automation gives radio buttons the SelectionItem pattern, not Toggle), and
+/// then says nothing more about selection. A tab says whether it is the selected one at every
+/// level. Any other control says "selected" at Full.
+fn check_and_selected_words(
+    c: &Control,
+    verbosity: Verbosity,
+) -> (Option<&'static str>, Option<&'static str>) {
+    let check = match c.states.checked {
+        Some(Checked::On) => Some("checked"),
+        Some(Checked::Off) => Some("not checked"),
+        Some(Checked::Mixed) => Some("partially checked"),
+        None => None,
+    };
+    match c.role {
+        Role::RadioButton if check.is_none() => {
+            let from_selection = c.states.selected.map(|on| if on { "checked" } else { "not checked" });
+            (from_selection, None)
+        }
+        Role::RadioButton => (check, None),
+        Role::TabItem => {
+            let word = c.states.selected.map(|on| if on { "selected" } else { "not selected" });
+            (check, word)
+        }
+        _ => {
+            let word = (verbosity == Verbosity::Full && c.states.selected == Some(true))
+                .then_some("selected");
+            (check, word)
+        }
+    }
+}
+
+/// "3 of 7", for the roles where a place in a set means something, at Normal and Full.
+fn spoken_position(c: &Control, verbosity: Verbosity) -> Option<String> {
+    if verbosity == Verbosity::Brief {
+        return None;
+    }
+    if !matches!(
+        c.role,
+        Role::ListItem | Role::MenuItem | Role::TabItem | Role::TreeItem | Role::RadioButton
+    ) {
+        return None;
+    }
+    c.position.map(|p| format!("{} of {}", p.index, p.size))
 }
 
 /// Roles whose name may be the control's own text, not a label (Finding 27(b)).
@@ -915,5 +968,176 @@ mod tests {
             let json = serde_json::to_string(&v).unwrap();
             assert_eq!(serde_json::from_str::<Verbosity>(&json).unwrap(), v);
         }
+    }
+
+    // ── 9.7: position, checked and expanded state ──
+
+    fn at_place(name: &str, role: Role, index: i32, size: i32) -> Control {
+        let mut c = control(name, role);
+        c.position = crate::focus::Position::from_raw(index, size);
+        c
+    }
+
+    #[test]
+    fn items_say_their_place_at_normal_and_full_but_not_brief() {
+        for role in [Role::MenuItem, Role::TabItem, Role::TreeItem, Role::RadioButton] {
+            let c = at_place("Open", role, 3, 7);
+            assert!(at(&c, Verbosity::Normal).ends_with("3 of 7"), "{role:?}");
+            assert!(at(&c, Verbosity::Full).ends_with("3 of 7"), "{role:?}");
+            assert!(!at(&c, Verbosity::Brief).contains("3 of 7"), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_list_item_with_a_name_says_the_name_then_its_place() {
+        let c = at_place("Downloads", Role::ListItem, 3, 7);
+        assert_eq!(at(&c, Verbosity::Normal), "Downloads, 3 of 7");
+        assert_eq!(at(&c, Verbosity::Full), "Downloads, list item, 3 of 7");
+        assert_eq!(at(&c, Verbosity::Brief), "Downloads");
+    }
+
+    #[test]
+    fn a_menu_item_says_name_role_then_place() {
+        let c = at_place("Save As", Role::MenuItem, 4, 12);
+        assert_eq!(say(&c), "Save As, menu item, 4 of 12");
+    }
+
+    #[test]
+    fn place_comes_after_the_states_and_before_unavailable() {
+        let mut c = at_place("Appearance", Role::TreeItem, 2, 9);
+        c.states.expanded = Some(true);
+        c.states.selected = Some(true);
+        c.states.enabled = Some(false);
+        assert_eq!(
+            at(&c, Verbosity::Full),
+            "Appearance, tree item, expanded, selected, 2 of 9, unavailable"
+        );
+        assert_eq!(at(&c, Verbosity::Normal), "Appearance, tree item, expanded, 2 of 9, unavailable");
+    }
+
+    #[test]
+    fn roles_where_a_place_means_nothing_do_not_say_it() {
+        for role in [Role::Button, Role::CheckBox, Role::Edit, Role::Text, Role::Group, Role::Link] {
+            let c = at_place("Thing", role, 1, 2);
+            assert!(!say(&c).contains("of 2"), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_control_with_no_position_says_none() {
+        assert_eq!(say(&control("Open", Role::MenuItem)), "Open, menu item");
+    }
+
+    #[test]
+    fn a_nameless_item_with_a_place_still_says_role_and_place() {
+        let c = at_place("", Role::ListItem, 1, 4);
+        assert_eq!(say(&c), "list item, 1 of 4");
+    }
+
+    #[test]
+    fn a_checked_menu_item_says_checked_and_its_place() {
+        let mut c = at_place("Word wrap", Role::MenuItem, 2, 5);
+        c.states.checked = Some(Checked::On);
+        assert_eq!(say(&c), "Word wrap, menu item, checked, 2 of 5");
+    }
+
+    #[test]
+    fn a_radio_button_with_a_toggle_state_says_it() {
+        let mut c = at_place("Large", Role::RadioButton, 2, 3);
+        c.states.checked = Some(Checked::Off);
+        assert_eq!(say(&c), "Large, radio button, not checked, 2 of 3");
+    }
+
+    #[test]
+    fn a_radio_button_with_only_a_selection_says_checked_or_not_checked() {
+        let mut on = control("Medium", Role::RadioButton);
+        on.states.selected = Some(true);
+        let mut off = control("Large", Role::RadioButton);
+        off.states.selected = Some(false);
+        for v in Verbosity::ALL {
+            assert!(at(&on, v).ends_with("checked") && !at(&on, v).ends_with("not checked"), "{v:?}");
+            assert!(at(&off, v).ends_with("not checked"), "{v:?}");
+        }
+        assert_eq!(at(&on, Verbosity::Full), "Medium, radio button, checked");
+        assert_eq!(at(&off, Verbosity::Brief), "Large, not checked");
+    }
+
+    #[test]
+    fn a_selected_uia_radio_button_merged_with_msaa_is_checked_not_unchecked() {
+        // UIA gives a radio button SelectionItem but no Toggle, and MSAA never says unchecked
+        // (ADR 0015), so the merged control has selected = true and checked = None.
+        use crate::ScreenRect;
+        use crate::focus::{FocusSource, merge};
+        let area = Some(ScreenRect { left: 0, top: 0, width: 10, height: 10 });
+        let mut u = control("Medium", Role::RadioButton);
+        u.states.selected = Some(true);
+        u.rect = area;
+        let mut m = Control::new("Medium", Role::RadioButton, FocusSource::Msaa);
+        m.states.password = Password::No;
+        m.rect = area;
+        let merged = merge(Some(u), Some(m)).unwrap();
+        assert_eq!(merged.states.checked, None);
+        for v in Verbosity::ALL {
+            let said = at(&merged, v);
+            assert!(said.ends_with("checked") && !said.contains("not checked"), "{v:?}: {said}");
+        }
+    }
+
+    #[test]
+    fn a_radio_button_with_both_says_the_toggle_state_once_and_no_selected() {
+        let mut c = control("Medium", Role::RadioButton);
+        c.states.checked = Some(Checked::On);
+        c.states.selected = Some(true);
+        assert_eq!(at(&c, Verbosity::Full), "Medium, radio button, checked");
+    }
+
+    #[test]
+    fn a_radio_button_that_says_neither_says_neither() {
+        assert_eq!(say(&control("Medium", Role::RadioButton)), "Medium, radio button");
+    }
+
+    #[test]
+    fn a_tab_says_whether_it_is_selected_at_every_level() {
+        let mut on = control("Settings", Role::TabItem);
+        on.states.selected = Some(true);
+        let mut off = control("History", Role::TabItem);
+        off.states.selected = Some(false);
+        assert_eq!(at(&on, Verbosity::Brief), "Settings, selected");
+        assert_eq!(at(&on, Verbosity::Normal), "Settings, tab, selected");
+        assert_eq!(at(&on, Verbosity::Full), "Settings, tab, selected");
+        assert_eq!(at(&off, Verbosity::Normal), "History, tab, not selected");
+    }
+
+    #[test]
+    fn a_tab_with_a_place_says_selected_then_place() {
+        let mut c = at_place("Settings", Role::TabItem, 2, 5);
+        c.states.selected = Some(true);
+        assert_eq!(say(&c), "Settings, tab, selected, 2 of 5");
+    }
+
+    #[test]
+    fn selected_stays_a_full_only_word_for_other_roles() {
+        let mut c = control("Downloads", Role::ListItem);
+        c.states.selected = Some(true);
+        assert_eq!(at(&c, Verbosity::Normal), "Downloads");
+        assert_eq!(at(&c, Verbosity::Full), "Downloads, list item, selected");
+    }
+
+    #[test]
+    fn a_tree_item_says_expanded_or_collapsed_at_normal_and_full() {
+        let mut c = control("Documents", Role::TreeItem);
+        c.states.expanded = Some(true);
+        assert_eq!(at(&c, Verbosity::Normal), "Documents, tree item, expanded");
+        c.states.expanded = Some(false);
+        assert_eq!(at(&c, Verbosity::Full), "Documents, tree item, collapsed");
+        assert_eq!(at(&c, Verbosity::Brief), "Documents");
+    }
+
+    #[test]
+    fn a_password_item_still_hides_its_value() {
+        let mut c = at_place("Secret", Role::ListItem, 1, 2);
+        c.states.password = Password::Yes;
+        c.value = Value::Text("hunter2".into());
+        assert!(!say(&c).contains("hunter2"));
     }
 }

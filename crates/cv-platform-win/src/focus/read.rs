@@ -7,7 +7,7 @@
 //! no value property, and a value is fetched (UI Automation) or read (MSAA) only after
 //! `cv_core::focus::value_allowed` says so.
 
-use cv_core::{Control, FocusSource, ScreenRect, Value};
+use cv_core::{Control, FocusSource, Position, ScreenRect, Value};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -15,7 +15,8 @@ use windows::{
         UI::{
             Accessibility::{
                 AccessibleObjectFromEvent, IAccessible, IUIAutomation, IUIAutomationCacheRequest,
-                IUIAutomationCondition, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
+                IUIAutomationCondition, IUIAutomationElement, IUIAutomationElement4,
+                IUIAutomationExpandCollapsePattern,
                 IUIAutomationRangeValuePattern, IUIAutomationSelectionItemPattern,
                 IUIAutomationTogglePattern, IUIAutomationTreeWalker, IUIAutomationValuePattern,
                 UIA_BoundingRectanglePropertyId, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
@@ -23,16 +24,16 @@ use windows::{
                 UIA_FrameworkIdPropertyId, UIA_IsDialogPropertyId,
                 UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
                 UIA_IsPasswordPropertyId, UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId,
-                UIA_PATTERN_ID, UIA_PROPERTY_ID, UIA_RangeValuePatternId,
+                UIA_PATTERN_ID, UIA_PROPERTY_ID, UIA_PositionInSetPropertyId, UIA_RangeValuePatternId,
                 UIA_RangeValueValuePropertyId, UIA_RuntimeIdPropertyId,
-                UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId,
+                UIA_SelectionItemIsSelectedPropertyId, UIA_SelectionItemPatternId, UIA_SizeOfSetPropertyId,
                 UIA_ToggleToggleStatePropertyId, UIA_TogglePatternId, UIA_ValuePatternId,
                 UIA_ValueValuePropertyId,
             },
             WindowsAndMessaging::GetWindowTextW,
         },
     },
-    core::Result,
+    core::{Interface, Result},
 };
 
 use super::map;
@@ -65,22 +66,33 @@ pub(super) struct Requests {
 
 impl Requests {
     pub fn new(uia: &IUIAutomation) -> Result<Self> {
+        let state_properties = [
+            UIA_NamePropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_ClassNamePropertyId,
+            UIA_IsPasswordPropertyId,
+            UIA_IsEnabledPropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_FrameworkIdPropertyId,
+            UIA_ToggleToggleStatePropertyId,
+            UIA_ExpandCollapseExpandCollapseStatePropertyId,
+            UIA_SelectionItemIsSelectedPropertyId,
+        ];
+        let state_patterns =
+            [UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId];
+        // The position properties (roadmap 9.7) may be unknown to an older Windows build. If the
+        // request that includes them cannot be made, fall back to the one without, so only the
+        // "3 of 7" is lost and not every focus read.
         let state = request(
             uia,
-            &[
-                UIA_NamePropertyId,
-                UIA_ControlTypePropertyId,
-                UIA_ClassNamePropertyId,
-                UIA_IsPasswordPropertyId,
-                UIA_IsEnabledPropertyId,
-                UIA_BoundingRectanglePropertyId,
-                UIA_FrameworkIdPropertyId,
-                UIA_ToggleToggleStatePropertyId,
-                UIA_ExpandCollapseExpandCollapseStatePropertyId,
-                UIA_SelectionItemIsSelectedPropertyId,
-            ],
-            &[UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId],
-        )?;
+            &[&state_properties[..], &[UIA_PositionInSetPropertyId, UIA_SizeOfSetPropertyId]]
+                .concat(),
+            &state_patterns,
+        )
+        .or_else(|e| {
+            eprintln!("[focus] position properties off: {e}");
+            request(uia, &state_properties, &state_patterns)
+        })?;
         let value = request(
             uia,
             &[UIA_ValueValuePropertyId, UIA_RangeValueValuePropertyId],
@@ -207,6 +219,13 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
     } && let Ok(selected) = unsafe { p.CachedIsSelected() }
     {
         control.states.selected = Some(selected.as_bool());
+    }
+    // Item n of m (roadmap 9.7). Both are in the same cache request, so no further cross-process
+    // call; 0 means the provider does not say, and a provider without the interface says nothing.
+    if let Ok(e4) = element.cast::<IUIAutomationElement4>() {
+        let index = unsafe { e4.CachedPositionInSet() }.unwrap_or(0);
+        let size = unsafe { e4.CachedSizeOfSet() }.unwrap_or(0);
+        control.position = Position::from_raw(index, size);
     }
     Ok(UiaReading { control, password, framework, class, element })
 }
