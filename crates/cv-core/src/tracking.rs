@@ -207,8 +207,9 @@ impl Tracker {
             // Hold: the view stays where the caret was until the pointer moves or a caret
             // comes back.
             CoreEvent::CaretLost { .. } => self.pending = None,
-            // The view does not follow focus until 9.9 (ADR 0015).
-            CoreEvent::FocusChanged { .. } => {}
+            // The view does not follow focus until 9.9 (ADR 0015), and a window read is for
+            // speech only (ADR 0019).
+            CoreEvent::FocusChanged { .. } | CoreEvent::WindowRead { .. } => {}
         }
     }
 }
@@ -382,6 +383,31 @@ mod tests {
         let mut rig = Rig::new();
         rig.on_far_caret();
         let t = rig.tick(300, p(1000, 500), [focus_changed()]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1500.0, 500.0)), "{t:?}");
+    }
+
+    fn window_read() -> CoreEvent {
+        use crate::focus::{DialogNode, ReadOutcome, Role, WindowInfo};
+        CoreEvent::WindowRead {
+            at: Instant::now(),
+            app: Some(app()),
+            window: WindowInfo::new("Untitled"),
+            nodes: vec![DialogNode::new("OK", Role::Button, 0)],
+            outcome: ReadOutcome::Complete,
+        }
+    }
+
+    #[test]
+    fn a_window_read_changes_neither_the_mode_nor_the_target() {
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [window_read()]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+
+        let mut rig = Rig::new();
+        rig.on_far_caret();
+        let t = rig.tick(300, p(1000, 500), [window_read()]);
         assert_eq!(rig.following(), Following::Caret);
         assert!(approx(t, (1500.0, 500.0)), "{t:?}");
     }

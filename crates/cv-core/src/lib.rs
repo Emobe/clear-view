@@ -9,8 +9,8 @@ pub mod wording;
 
 pub use events::{AppId, CaretSource, CoreEvent, EventHub};
 pub use focus::{
-    Checked, Control, DialogNode, FocusFilter, FocusSource, Password, Position, Reading, Role,
-    States, Value, WindowInfo,
+    Checked, Control, DialogNode, FocusFilter, FocusSource, Password, Position, ReadOutcome,
+    Reading, Role, States, Value, WindowInfo,
 };
 pub use speech::{
     FocusMemory, Kind, Level, ReadCommand, SpeechOp, SpeechQueue, SpeechSettings, Utterance, utterances_for,

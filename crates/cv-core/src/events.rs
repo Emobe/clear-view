@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
 use crate::ScreenRect;
-use crate::focus::{Control, Value, WindowInfo};
+use crate::focus::{Control, DialogNode, ReadOutcome, Value, WindowInfo};
 
 /// Something the core saw happen. New kinds (element, text) are added as new variants.
 #[non_exhaustive]
@@ -34,6 +34,20 @@ pub enum CoreEvent {
         /// `None`: neither source could read the focused control (Task Manager, a hung window).
         control: Option<Control>,
     },
+    /// The answer to a "read the window" request (ADR 0019): the window's controls in tree order.
+    /// Not a focus change; nothing but speech uses it.
+    WindowRead {
+        /// When the key was pressed, not when the read ended, so a silence pressed after the key
+        /// drops the answer (ADR 0013).
+        at: Instant,
+        /// `None`: our own window, or one with no program name.
+        app: Option<AppId>,
+        /// The title, the inner dialog's name and the dialog's cached text.
+        window: WindowInfo,
+        /// Depth first: a container, then its children. Empty when `outcome` is `Unreadable`.
+        nodes: Vec<DialogNode>,
+        outcome: ReadOutcome,
+    },
 }
 
 impl CoreEvent {
@@ -42,7 +56,8 @@ impl CoreEvent {
         match self {
             Self::CaretMoved { at, .. }
             | Self::CaretLost { at, .. }
-            | Self::FocusChanged { at, .. } => *at,
+            | Self::FocusChanged { at, .. }
+            | Self::WindowRead { at, .. } => *at,
         }
     }
 
@@ -77,6 +92,11 @@ impl CoreEvent {
                     None => format!("focus no control in {}{new_window}", app.exe),
                 }
             }
+            Self::WindowRead { app, nodes, outcome, .. } => format!(
+                "window read {outcome:?}, {} nodes in {}",
+                nodes.len(),
+                app.as_ref().map_or("no program", |a| a.exe.as_str())
+            ),
         }
     }
 }
@@ -341,6 +361,29 @@ mod tests {
         assert_eq!(moved(5).describe(), "msaa (5, 10) 2x20 in notepad.exe");
         let lost = CoreEvent::CaretLost { at: Instant::now(), app: app() };
         assert_eq!(lost.describe(), "lost in notepad.exe");
+    }
+
+    #[test]
+    fn a_window_read_has_the_press_time_and_a_description_without_names() {
+        use crate::focus::{DialogNode, ReadOutcome, Role, WindowInfo};
+        let at = Instant::now();
+        let e = CoreEvent::WindowRead {
+            at,
+            app: Some(app()),
+            window: WindowInfo::new("Secret title"),
+            nodes: vec![DialogNode::new("Secret", Role::Button, 0)],
+            outcome: ReadOutcome::Cut,
+        };
+        assert_eq!(e.at(), at);
+        assert_eq!(e.describe(), "window read Cut, 1 nodes in notepad.exe");
+        let none = CoreEvent::WindowRead {
+            at,
+            app: None,
+            window: WindowInfo::new(""),
+            nodes: Vec::new(),
+            outcome: ReadOutcome::Unreadable,
+        };
+        assert_eq!(none.describe(), "window read Unreadable, 0 nodes in no program");
     }
 
     #[test]
