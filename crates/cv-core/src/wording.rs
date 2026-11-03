@@ -175,7 +175,8 @@ pub fn window_read_utterances(
     }
     pieces.retain(|p| !p.is_empty());
     if pieces.is_empty() {
-        return vec![say(NOTHING_TO_READ)];
+        // A budget that ran out before anything speakable is not an empty window.
+        return vec![say(if more { MORE_NOT_READ } else { NOTHING_TO_READ })];
     }
     let mut packed = pack(pieces);
     // The cap leaves room for the closing phrase, so the start of the batch is never dropped.
@@ -1518,6 +1519,12 @@ mod window_read_tests {
     fn a_cut_read_ends_with_more_not_read() {
         let out = read("T", &[focusable("OK", Role::Button, 0)], ReadOutcome::Cut, Verbosity::Normal);
         assert_eq!(out, ["T. OK, button", "More not read"]);
+    }
+
+    #[test]
+    fn a_cut_read_with_nothing_speakable_says_more_not_read_not_nothing_to_read() {
+        let out = read("", &[node("", Role::Pane, 0)], ReadOutcome::Cut, Verbosity::Normal);
+        assert_eq!(out, ["More not read"]);
     }
 
     #[test]
