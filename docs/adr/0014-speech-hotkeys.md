@@ -1,6 +1,6 @@
 # 0014: Speech hotkeys
 
-Status: Accepted (you, 2026-10-12; set by the agent on your instruction)
+Status: Accepted (you, 2026-10-12; set by the agent on your instruction); partly superseded by 0020 (the raw input lines "reads the virtual key and the up/down flag from each `WM_INPUT`, throws the rest away" and "we read only the key code": the hotkey thread now also keeps a key state and translates keys for typing echo). Everything else here stands.
 Date: 2026-10-12
 
 ## Context

@@ -1,6 +1,6 @@
 # 0020: Typing echo
 
-Status: Proposed
+Status: Accepted (you, 2026-11-03, "I Accept it"; set by the agent on your instruction)
 Date: 2026-11-03
 
 ## Context
