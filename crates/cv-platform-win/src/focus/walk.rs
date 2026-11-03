@@ -1,4 +1,5 @@
-//! The bounded walk of a dialog's tree (ADR 0016, 0018), as pure logic. A `Source` fetches one
+//! The bounded walk of a dialog's tree (ADR 0016, 0018) and of a whole window (ADR 0019), as pure
+//! logic. A `Source` fetches one
 //! level of children (UI Automation or MSAA, in dialog.rs); `walk` decides what to enter and when
 //! to stop. Tested here with a fake tree, because the real ones need a dialog on screen.
 
@@ -6,7 +7,9 @@ use std::time::Instant;
 
 use cv_core::{
     DialogNode, Role,
-    focus::{DIALOG_CALLS, DIALOG_DEPTH, DIALOG_NODES},
+    focus::{
+        DIALOG_CALLS, DIALOG_DEPTH, DIALOG_NODES, WINDOW_CALLS, WINDOW_DEPTH, WINDOW_NODES,
+    },
 };
 
 /// A call into the dialog's program timed out; the walk ends and the window counts as hung.
@@ -35,8 +38,9 @@ pub(super) trait Source {
     }
 }
 
-/// What bounds a walk besides the call, depth and node budgets.
-#[derive(Debug, Clone, Copy, Default)]
+/// What bounds a walk and what it enters: the dialog walk (ADR 0016, the default) or the window
+/// walk (ADR 0019, [`Limits::window`]).
+#[derive(Debug, Clone, Copy)]
 pub(super) struct Limits {
     /// `DIALOG_MS` after the dialog read started: no further call is made past it and the walk is
     /// incomplete (ADR 0018). `None` for no time limit.
@@ -45,6 +49,44 @@ pub(super) struct Limits {
     /// proxy answers `Pane` for everything): the rest of this source's walk would find nothing, and
     /// MSAA takes over (ADR 0017 T2).
     pub panes_stop: bool,
+    /// The most `children` calls.
+    pub calls: usize,
+    /// How deep the walk goes below the root.
+    pub depth: usize,
+    /// The most nodes collected.
+    pub nodes: usize,
+    /// A window read: the controls of a window are the point, so a focusable container is entered
+    /// and toolbars, menu bars, status bars and tab lists are too (ADR 0019).
+    pub window: bool,
+}
+
+impl Default for Limits {
+    /// The dialog walk: ADR 0016's budgets, no time limit.
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            panes_stop: false,
+            calls: DIALOG_CALLS,
+            depth: DIALOG_DEPTH,
+            nodes: DIALOG_NODES,
+            window: false,
+        }
+    }
+}
+
+impl Limits {
+    /// The window walk: ADR 0019's budgets and enter rule, stopping at `deadline` (`WINDOW_MS`
+    /// after the read started).
+    pub fn window(deadline: Instant, panes_stop: bool) -> Self {
+        Self {
+            deadline: Some(deadline),
+            panes_stop,
+            calls: WINDOW_CALLS,
+            depth: WINDOW_DEPTH,
+            nodes: WINDOW_NODES,
+            window: true,
+        }
+    }
 }
 
 /// What a walk found.
@@ -67,13 +109,25 @@ pub(super) fn is_container(role: Role) -> bool {
     matches!(role, Role::Pane | Role::Group | Role::Custom | Role::Unknown | Role::Window)
 }
 
-/// Whether the walk goes into a node. A focusable node is a control, never a container.
-fn enters(node: &DialogNode) -> bool {
-    is_container(node.role) && !node.focusable && !node.offscreen
+/// A role the window walk goes into (ADR 0019): the dialog walk's containers, and the bars and tab
+/// lists whose children are controls. Lists, trees, tables, documents, text boxes, combo boxes and
+/// menus are not in this list, so a file view or a page is never walked.
+pub(super) fn is_window_container(role: Role) -> bool {
+    is_container(role)
+        || matches!(role, Role::ToolBar | Role::MenuBar | Role::StatusBar | Role::Tab | Role::AppBar)
 }
 
-/// Walks below `root` with the budget `DIALOG_CALLS`, `DIALOG_DEPTH` and `DIALOG_NODES`, and the
-/// time and early-stop rules in `limits`.
+/// Whether the walk goes into a node. In a dialog a focusable node is a control, never a
+/// container; in a window it may be both. An offscreen node is never entered.
+fn enters(node: &DialogNode, window: bool) -> bool {
+    if node.offscreen {
+        return false;
+    }
+    if window { is_window_container(node.role) } else { is_container(node.role) && !node.focusable }
+}
+
+/// Walks below `root` with the call, depth and node budgets and the time and early-stop rules in
+/// `limits`.
 pub(super) fn walk<S: Source>(source: &mut S, root: &S::Handle, limits: &Limits) -> Result<Walk, Hung> {
     let mut out = Walk { nodes: Vec::new(), complete: true, calls: 0, panes_only: false };
     visit(source, root, 0, limits, &mut out)?;
@@ -87,7 +141,7 @@ fn visit<S: Source>(
     limits: &Limits,
     out: &mut Walk,
 ) -> Result<(), Hung> {
-    if out.calls >= DIALOG_CALLS || limits.deadline.is_some_and(|d| Instant::now() >= d) {
+    if out.calls >= limits.calls || limits.deadline.is_some_and(|d| Instant::now() >= d) {
         out.complete = false;
         return Ok(());
     }
@@ -110,15 +164,20 @@ fn visit<S: Source>(
         return Ok(());
     }
     for (mut node, handle) in children {
-        if out.nodes.len() >= DIALOG_NODES {
+        // The title is already said, so a window read leaves the title bar out, and with it its
+        // buttons (it is not entered either) (ADR 0019).
+        if limits.window && node.role == Role::TitleBar {
+            continue;
+        }
+        if out.nodes.len() >= limits.nodes {
             out.complete = false;
             return Ok(());
         }
         node.depth = depth;
-        let enter = enters(&node);
+        let enter = enters(&node, limits.window);
         out.nodes.push(node);
         if let (true, Some(handle)) = (enter, handle) {
-            if depth + 1 >= DIALOG_DEPTH {
+            if depth + 1 >= limits.depth {
                 out.complete = false;
             } else {
                 visit(source, &handle, depth + 1, limits, out)?;
@@ -327,7 +386,7 @@ mod tests {
     #[test]
     fn a_walk_past_its_deadline_makes_no_call_and_is_incomplete() {
         let mut f = fake(vec![vec![node("t", Role::Text)]], vec![vec![0]]);
-        let limits = Limits { deadline: Some(Instant::now()), panes_stop: false };
+        let limits = Limits { deadline: Some(Instant::now()), ..Limits::default() };
         let walk = walk(&mut f, &0, &limits).unwrap();
         assert!(f.calls.is_empty());
         assert!(walk.nodes.is_empty());
@@ -339,7 +398,7 @@ mod tests {
         let mut f = fake(vec![vec![node("t", Role::Text)]], vec![vec![0]]);
         let limits = Limits {
             deadline: Some(Instant::now() + std::time::Duration::from_secs(3600)),
-            panes_stop: false,
+            ..Limits::default()
         };
         let walk = walk(&mut f, &0, &limits).unwrap();
         assert!(walk.complete);
@@ -403,5 +462,157 @@ mod tests {
         assert_eq!(f.calls, [0]);
         assert_eq!(names(&walk), [("General", 0), ("ok", 0)]);
         assert!(walk.complete);
+    }
+
+    fn window_limits() -> Limits {
+        Limits::window(Instant::now() + std::time::Duration::from_secs(3600), false)
+    }
+
+    #[test]
+    fn a_window_walk_enters_bars_tab_lists_and_focusable_containers() {
+        let mut focusable_group = node("g", Role::Group);
+        focusable_group.focusable = true;
+        let entered = vec![
+            node("tools", Role::ToolBar),
+            node("menus", Role::MenuBar),
+            node("status", Role::StatusBar),
+            node("tabs", Role::Tab),
+            node("apps", Role::AppBar),
+            focusable_group,
+        ];
+        let n = entered.len();
+        let mut kids = vec![entered];
+        let mut next = vec![(1..=n).collect::<Vec<_>>()];
+        for i in 0..n {
+            kids.push(vec![node(&format!("inside{i}"), Role::Button)]);
+            next.push(vec![0]);
+        }
+        let mut f = fake(kids, next);
+        let walk = walk(&mut f, &0, &window_limits()).unwrap();
+        assert_eq!(f.calls, (0..=n).collect::<Vec<_>>());
+        assert_eq!(walk.nodes.len(), 2 * n);
+        assert!(walk.complete);
+    }
+
+    #[test]
+    fn the_dialog_walk_enters_neither_those_bars_nor_a_focusable_container() {
+        let mut focusable_group = node("g", Role::Group);
+        focusable_group.focusable = true;
+        let mut f = fake(
+            vec![
+                vec![node("tools", Role::ToolBar), node("tabs", Role::Tab), focusable_group],
+                vec![node("t", Role::Text)],
+            ],
+            vec![vec![1, 1, 1], vec![0]],
+        );
+        walk(&mut f, &0, &Limits::default()).unwrap();
+        assert_eq!(f.calls, [0]);
+    }
+
+    #[test]
+    fn a_window_walk_never_enters_lists_trees_tables_documents_text_boxes_menus_or_offscreen() {
+        let mut hidden = node("hidden", Role::Group);
+        hidden.offscreen = true;
+        let mut f = fake(
+            vec![
+                vec![
+                    node("files", Role::List),
+                    node("nav", Role::Tree),
+                    node("grid", Role::Table),
+                    node("page", Role::Document),
+                    node("name", Role::Edit),
+                    node("kind", Role::ComboBox),
+                    node("menu", Role::Menu),
+                    hidden,
+                ],
+                vec![node("never read", Role::Text)],
+            ],
+            vec![vec![1; 8], vec![0]],
+        );
+        let walk = walk(&mut f, &0, &window_limits()).unwrap();
+        assert_eq!(f.calls, [0]);
+        assert_eq!(walk.nodes.len(), 8);
+        assert!(walk.complete);
+    }
+
+    #[test]
+    fn a_window_walk_does_not_enter_a_nested_dialog_without_a_handle() {
+        let mut f = fake(
+            vec![vec![node("General", Role::Pane)], vec![node("page text", Role::Text)]],
+            vec![vec![0], vec![0]],
+        );
+        let walk = walk(&mut f, &0, &window_limits()).unwrap();
+        assert_eq!(f.calls, [0]);
+        assert!(walk.complete);
+    }
+
+    #[test]
+    fn a_window_walk_has_its_own_budgets() {
+        // Deeper than the dialog walk goes, within the window walk's depth.
+        let n = DIALOG_DEPTH + 2;
+        assert!(n < WINDOW_DEPTH);
+        let mut kids: Vec<Vec<DialogNode>> =
+            (0..n).map(|i| vec![node(&format!("p{i}"), Role::Pane)]).collect();
+        let mut next: Vec<Vec<usize>> = (0..n).map(|i| vec![i + 1]).collect();
+        // The last pane holds a leaf.
+        kids.push(vec![node("end", Role::Text)]);
+        next.push(vec![0]);
+        let w = walk(&mut fake(kids, next), &0, &window_limits()).unwrap();
+        assert_eq!(w.nodes.len(), n + 1);
+        assert!(w.complete);
+
+        // Past the window walk's depth.
+        let n = WINDOW_DEPTH + 2;
+        let kids = (0..n).map(|i| vec![node(&format!("p{i}"), Role::Pane)]).collect();
+        let next = (0..n).map(|i| vec![i + 1]).collect();
+        let w = walk(&mut fake(kids, next), &0, &window_limits()).unwrap();
+        assert_eq!(w.nodes.len(), WINDOW_DEPTH);
+        assert!(!w.complete);
+
+        // More nodes than a dialog keeps, up to the window's limit.
+        let count = DIALOG_NODES + 20;
+        assert!(count <= WINDOW_NODES);
+        let many = (0..count).map(|i| node(&format!("t{i}"), Role::Text)).collect();
+        let w = walk(&mut fake(vec![many], vec![vec![0; count]]), &0, &window_limits()).unwrap();
+        assert_eq!(w.nodes.len(), count);
+        assert!(w.complete);
+        let many = (0..WINDOW_NODES + 5).map(|i| node(&format!("t{i}"), Role::Text)).collect();
+        let w = walk(&mut fake(vec![many], vec![vec![0; WINDOW_NODES + 5]]), &0, &window_limits())
+            .unwrap();
+        assert_eq!(w.nodes.len(), WINDOW_NODES);
+        assert!(!w.complete);
+
+        // The call budget.
+        let panes = WINDOW_CALLS + 3;
+        let mut kids = vec![(0..panes).map(|i| node(&format!("p{i}"), Role::Pane)).collect()];
+        let mut next = vec![(1..=panes).collect()];
+        for i in 0..panes {
+            kids.push(vec![node(&format!("t{i}"), Role::Text)]);
+            next.push(vec![0]);
+        }
+        let w = walk(&mut fake(kids, next), &0, &window_limits()).unwrap();
+        assert_eq!(w.calls, WINDOW_CALLS);
+        assert!(!w.complete);
+    }
+
+    #[test]
+    fn a_window_walk_leaves_the_title_bar_out_but_a_dialog_walk_does_not() {
+        let kids = || {
+            fake(
+                vec![
+                    vec![node("Untitled - Notepad", Role::TitleBar), node("File", Role::MenuItem)],
+                    vec![node("Close", Role::Button)],
+                ],
+                vec![vec![1, 0], vec![0]],
+            )
+        };
+        let mut f = kids();
+        let w = walk(&mut f, &0, &window_limits()).unwrap();
+        assert_eq!(names(&w), [("File", 0)]);
+        assert_eq!(f.calls, [0]);
+        assert!(w.complete);
+
+        let w = walk(&mut kids(), &0, &Limits::default()).unwrap();
+        assert_eq!(names(&w), [("Untitled - Notepad", 0), ("File", 0)]);
     }
 }

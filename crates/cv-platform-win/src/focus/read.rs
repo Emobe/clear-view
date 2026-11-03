@@ -7,7 +7,7 @@
 //! no value property, and a value is fetched (UI Automation) or read (MSAA) only after
 //! `cv_core::focus::value_allowed` says so.
 
-use cv_core::{Control, FocusSource, Position, ScreenRect, Value};
+use cv_core::{Control, FocusSource, Position, ScreenRect, States, Value};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -54,6 +54,9 @@ pub(super) struct Requests {
     /// A dialog walk's node: name, type, focusable, offscreen, password, and the class and
     /// `IsDialog` that tell a nested dialog (ADR 0016, 0018). No value, no pattern.
     pub dialog_node: IUIAutomationCacheRequest,
+    /// A window read's node (ADR 0019): the dialog node's properties plus the enabled, toggle,
+    /// expand and selection state. No value, no pattern method, no Text pattern.
+    pub window_node: IUIAutomationCacheRequest,
     /// The window element's `IsDialog`, for a window whose class is not a dialog class.
     pub dialog_check: IUIAutomationCacheRequest,
     /// The nearest ancestor that says `IsDialog` (ADR 0018, the XAML lookup): the walker and the
@@ -111,12 +114,29 @@ impl Requests {
             ],
             &[],
         )?;
+        let window_node = request(
+            uia,
+            &[
+                UIA_NamePropertyId,
+                UIA_ControlTypePropertyId,
+                UIA_IsKeyboardFocusablePropertyId,
+                UIA_IsOffscreenPropertyId,
+                UIA_IsPasswordPropertyId,
+                UIA_ClassNamePropertyId,
+                UIA_IsDialogPropertyId,
+                UIA_IsEnabledPropertyId,
+                UIA_ToggleToggleStatePropertyId,
+                UIA_ExpandCollapseExpandCollapseStatePropertyId,
+                UIA_SelectionItemIsSelectedPropertyId,
+            ],
+            &[UIA_TogglePatternId, UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId],
+        )?;
         let dialog_check = request(uia, &[UIA_IsDialogPropertyId], &[])?;
         let dialog_ancestor = dialog_ancestor(uia)
             .map_err(|e| eprintln!("[focus] dialog ancestor lookup off: {e}"))
             .ok();
         let any = unsafe { uia.CreateTrueCondition() }?;
-        Ok(Self { state, value, dialog_node, dialog_check, dialog_ancestor, any })
+        Ok(Self { state, value, dialog_node, window_node, dialog_check, dialog_ancestor, any })
     }
 }
 
@@ -198,28 +218,10 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
 
     let mut control = Control::new(name, role, FocusSource::Uia);
     control.states.password = map::uia_password(password);
-    control.states.enabled = unsafe { element.CachedIsEnabled() }.ok().map(|b| b.as_bool());
     control.rect = unsafe { element.CachedBoundingRectangle() }
         .ok()
         .and_then(|rc| screen_rect(rc.left, rc.top, rc.right, rc.bottom));
-    if let Ok(p) =
-        unsafe { element.GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId) }
-        && let Ok(state) = unsafe { p.CachedToggleState() }
-    {
-        control.states.checked = map::checked_from_toggle(state.0);
-    }
-    if let Ok(p) = unsafe {
-        element.GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
-    } && let Ok(state) = unsafe { p.CachedExpandCollapseState() }
-    {
-        control.states.expanded = map::expanded_from_state(state.0);
-    }
-    if let Ok(p) = unsafe {
-        element.GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
-    } && let Ok(selected) = unsafe { p.CachedIsSelected() }
-    {
-        control.states.selected = Some(selected.as_bool());
-    }
+    cached_states(&element, &mut control.states);
     // Item n of m (roadmap 9.7). Both are in the same cache request, so no further cross-process
     // call; 0 means the provider does not say, and a provider without the interface says nothing.
     if let Ok(e4) = element.cast::<IUIAutomationElement4>() {
@@ -228,6 +230,31 @@ pub(super) fn uia_read(uia: &IUIAutomation, requests: &Requests) -> Result<UiaRe
         control.position = Position::from_raw(index, size);
     }
     Ok(UiaReading { control, password, framework, class, element })
+}
+
+/// The enabled, checked, expanded and selected state of a cached element, from its cached
+/// properties and patterns (no cross-process call). A field the element does not say stays as it
+/// was. The password flag is the caller's.
+pub(super) fn cached_states(element: &IUIAutomationElement, states: &mut States) {
+    states.enabled = unsafe { element.CachedIsEnabled() }.ok().map(|b| b.as_bool());
+    if let Ok(p) =
+        unsafe { element.GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId) }
+        && let Ok(state) = unsafe { p.CachedToggleState() }
+    {
+        states.checked = map::checked_from_toggle(state.0);
+    }
+    if let Ok(p) = unsafe {
+        element.GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
+    } && let Ok(state) = unsafe { p.CachedExpandCollapseState() }
+    {
+        states.expanded = map::expanded_from_state(state.0);
+    }
+    if let Ok(p) = unsafe {
+        element.GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+    } && let Ok(selected) = unsafe { p.CachedIsSelected() }
+    {
+        states.selected = Some(selected.as_bool());
+    }
 }
 
 /// The Value pattern's string, else the RangeValue pattern's number, from a fresh cache. Never

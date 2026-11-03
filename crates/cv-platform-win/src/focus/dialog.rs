@@ -1,4 +1,5 @@
-//! A dialog's text (ADR 0016, 0018, roadmap 9.6b2 and 9.6c3). This decides whether a window is a
+//! A dialog's text (ADR 0016, 0018, roadmap 9.6b2 and 9.6c3) and a window's controls (ADR 0019,
+//! roadmap 9.8b2, [`read_tree`]). This decides whether a window is a
 //! dialog and, if so, walks its tree once with a budget and maps what it finds into plain
 //! `DialogNode`s. The choice of text is `cv_core::focus::dialog_text`; the walk's rules are in
 //! walk.rs and map.rs. Everything here runs on the focus thread.
@@ -20,8 +21,8 @@
 use std::time::{Duration, Instant};
 
 use cv_core::{
-    DialogNode, Role,
-    focus::{DIALOG_MS, DIALOG_NODES, dialog_text},
+    DialogNode, ReadOutcome, Role,
+    focus::{DIALOG_MS, DIALOG_NODES, WINDOW_MS, WINDOW_NODES, dialog_text},
 };
 use windows::{
     Win32::{
@@ -40,7 +41,7 @@ use windows::{
 
 use super::{
     log_names, map,
-    read::{Requests, variant_i4},
+    read::{Requests, cached_states, variant_i4},
     walk::{Hung, Limits, Source, Walk, needs_msaa, walk},
 };
 use crate::caret::UIA_TIMEOUT_MS;
@@ -82,7 +83,7 @@ pub(super) fn window_class(hwnd: HWND) -> String {
 pub(super) fn read_dialog(uia: Option<(&IUIAutomation, &Requests)>, target: &Target, title: &str) -> Outcome {
     let started = Instant::now();
     let deadline = started + Duration::from_millis(DIALOG_MS);
-    let limits = |panes_stop| Limits { deadline: Some(deadline), panes_stop };
+    let limits = |panes_stop| Limits { deadline: Some(deadline), panes_stop, ..Limits::default() };
     let (class, hwnd) = match target {
         Target::Window(hwnd) => (window_class(*hwnd), Some(*hwnd)),
         Target::Element(_) => (String::new(), None),
@@ -98,7 +99,8 @@ pub(super) fn read_dialog(uia: Option<(&IUIAutomation, &Requests)>, target: &Tar
         match root {
             Ok(Some(root)) => {
                 let walk_started = Instant::now();
-                let result = walk(&mut UiaSource { requests }, &root, &limits(class == "#32770"));
+                let result =
+                    walk(&mut UiaSource { requests, window: false }, &root, &limits(class == "#32770"));
                 timing.uia_walk = walk_started.elapsed();
                 match result {
                     Ok(w) => {
@@ -130,7 +132,7 @@ pub(super) fn read_dialog(uia: Option<(&IUIAutomation, &Requests)>, target: &Tar
         && let Some(root) = msaa_root(hwnd)
     {
         let msaa_started = Instant::now();
-        let mut source = MsaaSource { deadline, late: false };
+        let mut source = MsaaSource { deadline, late: false, window: false };
         let result = walk(&mut source, &root, &limits(false));
         timing.msaa_walk = msaa_started.elapsed();
         // MSAA has no timeout of ours to hit: a walk this slow is a program that is not answering.
@@ -175,6 +177,104 @@ fn hung(class: &str, started: Instant) -> Outcome {
     Outcome { text: Vec::new(), hung: true }
 }
 
+/// What reading a window's controls gave (ADR 0019).
+pub(super) struct Tree {
+    /// Depth first; empty when the outcome is `Unreadable`.
+    pub nodes: Vec<DialogNode>,
+    pub outcome: ReadOutcome,
+    /// A call timed out: the window counts as hung until the foreground changes.
+    pub hung: bool,
+}
+
+/// Walks the controls of `target` (the inner dialog, else the foreground window) with the window
+/// budgets and `WINDOW_MS` (ADR 0019): UI Automation first, then MSAA for a `#32770` where UI
+/// Automation found no text. Names of password nodes are emptied here, and their `states.password`
+/// says so. No value or text pattern is read for any node. `started` is when the whole window read
+/// began, so `WINDOW_MS` covers the lookups before the walk too.
+pub(super) fn read_tree(
+    uia: Option<(&IUIAutomation, &Requests)>,
+    target: &Target,
+    started: Instant,
+) -> Tree {
+    let deadline = started + Duration::from_millis(WINDOW_MS);
+    let (class, hwnd) = match target {
+        Target::Window(hwnd) => (window_class(*hwnd), Some(*hwnd)),
+        Target::Element(_) => (String::new(), None),
+    };
+    let unreadable = |hung| Tree { nodes: Vec::new(), outcome: ReadOutcome::Unreadable, hung };
+    let hung_tree = |what: &str| {
+        eprintln!(
+            "[focus] window read {what} timed out after {} ms; skipped until the foreground changes",
+            started.elapsed().as_millis(),
+        );
+        unreadable(true)
+    };
+
+    let mut walked: Option<(Walk, &str)> = None;
+    if let Some((uia, requests)) = uia {
+        match window_root(uia, requests, target) {
+            Ok(root) => {
+                let limits = Limits::window(deadline, class == "#32770");
+                match walk(&mut UiaSource { requests, window: true }, &root, &limits) {
+                    Ok(w) => walked = Some((w, "uia")),
+                    Err(Hung) => return hung_tree(&class),
+                }
+            }
+            Err(e) => {
+                if map::is_hung(e.code().0, started.elapsed().as_millis() as u64, UIA_TIMEOUT_MS) {
+                    return hung_tree(&class);
+                }
+            }
+        }
+    }
+    let uia_nodes = walked.as_ref().map_or(&[][..], |(w, _)| &w.nodes[..]);
+    if needs_msaa(&class, uia_nodes)
+        && let Some(hwnd) = hwnd
+        && let Some(root) = msaa_root(hwnd)
+    {
+        let msaa_started = Instant::now();
+        let mut source = MsaaSource { deadline, late: false, window: true };
+        let result = walk(&mut source, &root, &Limits::window(deadline, false));
+        // A walk the deadline cut is a `Cut`, not a hung program: `WINDOW_MS` is as long as the
+        // hung heuristic (two timeouts), so the elapsed time alone cannot tell them apart.
+        if result.is_err()
+            || (!source.late && map::is_hung(0, msaa_started.elapsed().as_millis() as u64, UIA_TIMEOUT_MS))
+        {
+            return hung_tree(&class);
+        }
+        if let Ok(w) = result {
+            walked = Some((w, "msaa"));
+        }
+    }
+
+    let Some((found, source)) = walked else {
+        return unreadable(false);
+    };
+    let outcome = if found.complete { ReadOutcome::Complete } else { ReadOutcome::Cut };
+    if log_names() {
+        eprintln!(
+            "[focus] window read via {source}: {:?}, {} calls, {} nodes, {:.0} ms",
+            if class.is_empty() { "(element)" } else { &class },
+            found.calls,
+            found.nodes.len(),
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+    Tree { nodes: found.nodes, outcome, hung: false }
+}
+
+/// The element the window walk starts from: an inner dialog's own, or the window's.
+fn window_root(
+    uia: &IUIAutomation,
+    requests: &Requests,
+    target: &Target,
+) -> windows::core::Result<IUIAutomationElement> {
+    match target {
+        Target::Element(element) => Ok(element.clone()),
+        Target::Window(hwnd) => unsafe { uia.ElementFromHandleBuildCache(*hwnd, &requests.dialog_check) },
+    }
+}
+
 // ── UI Automation ────────────────────────────────────────────────────────────
 
 /// The target's element, when it is a dialog: an inner dialog's own; a window's by class, else by
@@ -208,6 +308,8 @@ fn cached_is_dialog(element: &IUIAutomationElement) -> Option<bool> {
 
 struct UiaSource<'a> {
     requests: &'a Requests,
+    /// A window read (ADR 0019): the request that also caches the states, and the larger node cap.
+    window: bool,
 }
 
 impl Source for UiaSource<'_> {
@@ -218,9 +320,9 @@ impl Source for UiaSource<'_> {
         parent: &IUIAutomationElement,
     ) -> Result<Vec<(DialogNode, Option<IUIAutomationElement>)>, Hung> {
         let started = Instant::now();
-        let found = unsafe {
-            parent.FindAllBuildCache(TreeScope_Children, &self.requests.any, &self.requests.dialog_node)
-        };
+        let request = if self.window { &self.requests.window_node } else { &self.requests.dialog_node };
+        let found =
+            unsafe { parent.FindAllBuildCache(TreeScope_Children, &self.requests.any, request) };
         let array = match found {
             Ok(array) => array,
             // No match comes back as an empty result; a refusal is no children; a timeout ends the
@@ -230,11 +332,12 @@ impl Source for UiaSource<'_> {
             }
             Err(_) => return Ok(Vec::new()),
         };
-        let len = unsafe { array.Length() }.unwrap_or(0).clamp(0, DIALOG_NODES as i32);
+        let cap = if self.window { WINDOW_NODES } else { DIALOG_NODES };
+        let len = unsafe { array.Length() }.unwrap_or(0).clamp(0, cap as i32);
         let mut out = Vec::new();
         for i in 0..len {
             if let Ok(element) = unsafe { array.GetElement(i) } {
-                let (node, nested) = uia_node(&element);
+                let (node, nested) = uia_node(&element, self.window);
                 // A dialog inside the dialog (a property page) is kept, not entered.
                 out.push((node, (!nested).then_some(element)));
             }
@@ -245,8 +348,9 @@ impl Source for UiaSource<'_> {
 
 /// One cached element as a node, and whether it is itself a dialog. The name is not even read for
 /// a password or when "can't tell"; an unreadable focusable flag counts as focusable, so a name is
-/// never spoken by mistake.
-fn uia_node(element: &IUIAutomationElement) -> (DialogNode, bool) {
+/// never spoken by mistake. The node's password flag says which it was, so a window read speaks
+/// the role only (ADR 0019); a window read also takes the cached states.
+fn uia_node(element: &IUIAutomationElement, window: bool) -> (DialogNode, bool) {
     let password = unsafe { element.CachedIsPassword() }.ok().map(|b| b.as_bool());
     let name = if map::uia_name_withheld(password) {
         String::new()
@@ -255,6 +359,10 @@ fn uia_node(element: &IUIAutomationElement) -> (DialogNode, bool) {
     };
     let role = unsafe { element.CachedControlType() }.map(|t| map::uia_role(t.0)).unwrap_or(Role::Unknown);
     let mut node = DialogNode::new(name, role, 0);
+    node.states.password = map::uia_password(password);
+    if window {
+        cached_states(element, &mut node.states);
+    }
     node.focusable = unsafe { element.CachedIsKeyboardFocusable() }.map(|b| b.as_bool()).unwrap_or(true);
     node.offscreen = unsafe { element.CachedIsOffscreen() }.map(|b| b.as_bool()).unwrap_or(false);
     let class = unsafe { element.CachedClassName() }.map(|c| c.to_string()).unwrap_or_default();
@@ -273,16 +381,20 @@ fn msaa_root(hwnd: HWND) -> Option<IAccessible> {
 }
 
 struct MsaaSource {
-    /// `DIALOG_MS` after the dialog read started; the children after it are not read.
+    /// `DIALOG_MS` (`WINDOW_MS` for a window read) after the read started; the children after it
+    /// are not read.
     deadline: Instant,
     late: bool,
+    /// A window read (ADR 0019): an unavailable element is kept, and the node cap is larger.
+    window: bool,
 }
 
 impl Source for MsaaSource {
     type Handle = IAccessible;
 
     fn children(&mut self, parent: &IAccessible) -> Result<Vec<(DialogNode, Option<IAccessible>)>, Hung> {
-        let count = unsafe { parent.accChildCount() }.unwrap_or(0).clamp(0, DIALOG_NODES as i32);
+        let cap = if self.window { WINDOW_NODES } else { DIALOG_NODES };
+        let count = unsafe { parent.accChildCount() }.unwrap_or(0).clamp(0, cap as i32);
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -300,7 +412,7 @@ impl Source for MsaaSource {
                 self.late = true;
                 break;
             }
-            if let Some(child) = msaa_child(parent, variant) {
+            if let Some(child) = msaa_child(parent, variant, self.window) {
                 out.push(child);
             }
         }
@@ -314,7 +426,11 @@ impl Source for MsaaSource {
 
 /// One child as a node, with its object when it has one and is not itself a dialog (a child id is
 /// a simple element that cannot have children). `None` when it is invisible or unavailable.
-fn msaa_child(parent: &IAccessible, variant: &VARIANT) -> Option<(DialogNode, Option<IAccessible>)> {
+fn msaa_child(
+    parent: &IAccessible,
+    variant: &VARIANT,
+    window: bool,
+) -> Option<(DialogNode, Option<IAccessible>)> {
     // SAFETY: the union field read is the one `vt` says is set.
     let inner = unsafe { &*variant.Anonymous.Anonymous };
     let (acc, id, object) = if inner.vt == VT_DISPATCH {
@@ -327,7 +443,7 @@ fn msaa_child(parent: &IAccessible, variant: &VARIANT) -> Option<(DialogNode, Op
     };
 
     let state = unsafe { acc.get_accState(&id) }.ok().and_then(|v| variant_i4(&v)).map(|s| s as u32);
-    if map::msaa_dialog_skipped(state) {
+    if if window { map::msaa_window_skipped(state) } else { map::msaa_dialog_skipped(state) } {
         return None;
     }
     let raw_role = unsafe { acc.get_accRole(&id) }.ok().and_then(|v| variant_i4(&v)).map(|r| r as u32);
@@ -338,6 +454,8 @@ fn msaa_child(parent: &IAccessible, variant: &VARIANT) -> Option<(DialogNode, Op
         unsafe { acc.get_accName(&id) }.map(|n| n.to_string()).unwrap_or_default()
     };
     let mut node = DialogNode::new(name, role, 0);
+    // "Can't tell" stays a password for the window read, whose name was emptied above.
+    node.states = map::msaa_states(state);
     node.focusable = state.is_none_or(map::msaa_focusable);
     node.offscreen = state.is_some_and(map::msaa_offscreen);
     let nested = raw_role.is_some_and(map::msaa_nested_dialog);

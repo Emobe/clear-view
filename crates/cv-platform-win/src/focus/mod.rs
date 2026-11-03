@@ -17,6 +17,10 @@
 //! - The dialog inside the foreground window that holds the focus (a property page, a XAML prompt)
 //!   is found by inner.rs (ADR 0018). `Reading` carries the window and dialog keys so the filter
 //!   sees a new window or dialog even when its WinEvent did not come.
+//! - A window read (ADR 0019, window.rs) is asked for with [`FocusWaker::read_window`]: the press
+//!   time goes into a slot and a `WM_APP` wakes the thread, which reads the foreground window's
+//!   controls when no focus read is due and publishes `CoreEvent::WindowRead`. It is dropped when
+//!   speech is off, and when a foreground WinEvent arrived while it ran.
 //! - It changes nothing system-wide; its hooks are removed when it ends.
 
 mod cache;
@@ -25,10 +29,11 @@ mod inner;
 mod map;
 mod read;
 mod walk;
+mod window;
 
 use std::{
     cell::RefCell,
-    sync::{Arc, OnceLock, mpsc},
+    sync::{Arc, Mutex, OnceLock, PoisonError, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -49,7 +54,7 @@ use windows::Win32::{
             DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GetAncestor,
             GetWindowThreadProcessId, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_NOREMOVE, PM_REMOVE,
             PeekMessageW, PostThreadMessageW, QS_ALLINPUT, TranslateMessage,
-            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_QUIT, WM_USER,
+            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_QUIT, WM_USER,
         },
     },
 };
@@ -78,6 +83,18 @@ struct Event {
     stored: Stored,
 }
 
+/// When the window-read key was pressed, until the thread takes it (ADR 0019). A newer press
+/// overwrites an older one that has not been taken. One focus thread per process, so one slot.
+static WINDOW_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn put_window_request(at: Instant) {
+    *WINDOW_REQUEST.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
+}
+
+fn take_window_request() -> Option<Instant> {
+    WINDOW_REQUEST.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
 thread_local! {
     /// Filled by `on_win_event`, drained by the loop. Out-of-context events arrive on the thread
     /// that set the hook, inside its message retrieval, so the two never overlap.
@@ -102,6 +119,16 @@ impl FocusWaker {
     pub fn wake(&self) {
         if self.tid != 0 {
             let _ = unsafe { PostThreadMessageW(self.tid, WM_USER, WPARAM(0), LPARAM(0)) };
+        }
+    }
+
+    /// Asks the thread to read the foreground window's controls (ADR 0019, Ctrl+Alt+Shift+W). The
+    /// answer is a `CoreEvent::WindowRead` on the hub, stamped with the time of this call. Does
+    /// nothing while speech is off: the thread drops the request.
+    pub fn read_window(&self) {
+        put_window_request(Instant::now());
+        if self.tid != 0 {
+            let _ = unsafe { PostThreadMessageW(self.tid, WM_APP, WPARAM(0), LPARAM(0)) };
         }
     }
 }
@@ -221,6 +248,9 @@ struct Session {
     /// The foreground window a UI Automation call timed out in; skipped until the foreground
     /// window changes.
     hung: Option<isize>,
+    /// Foreground WinEvents taken while speech was on: a window read that sees this change while
+    /// it runs belongs to a window that is no longer in front (ADR 0019).
+    foreground_events: u64,
     /// The text the dialog check gave for each (foreground window, inner dialog) pair, empty for a
     /// window that is not a dialog, so the walk runs once per pair (ADR 0016, 0018).
     dialog: DialogCache,
@@ -242,6 +272,9 @@ fn pump(session: &mut Session, wanted: bool) -> bool {
     for event in QUEUE.take() {
         if wanted {
             session.filter.winevent(event.at, event.foreground);
+            if event.foreground {
+                session.foreground_events += 1;
+            }
             if event.foreground && log_names() {
                 eprintln!("[focus] foreground event: class {:?}", window_class(event.stored.hwnd));
             }
@@ -281,6 +314,30 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
             if let Some(event) = session.filter.finish_read(Instant::now(), reading) {
                 log_event(&event);
                 hub.publish(event);
+            }
+            continue;
+        }
+
+        // A key press asking for the window read. Taken every time round while speech is off, so
+        // a press made then is not answered later. With speech on it waits for the focus read
+        // that is due or still settling (at most `SETTLE_MAX`), so the answer and the last focus
+        // event describe the same window and the focus announcement does not cut the answer off.
+        if !wanted {
+            let _ = take_window_request();
+        } else if session.filter.next_deadline().is_none()
+            && let Some(at) = take_window_request()
+        {
+            let before = session.foreground_events;
+            let event = window::read(uia, own_pid, &mut session.hung, &session.dialog, at);
+            // Events that arrived while the read ran are counted here.
+            if !pump(&mut session, wanted) {
+                return;
+            }
+            if session.foreground_events == before {
+                log_event(&event);
+                hub.publish(event);
+            } else {
+                eprintln!("[focus] window read dropped: the foreground window changed while it ran");
             }
             continue;
         }
