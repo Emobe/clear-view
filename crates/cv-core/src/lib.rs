@@ -162,6 +162,11 @@ pub struct AppState {
     pub tts_voice: Option<VoiceId>,
     /// How much is said about a focused control (roadmap 9.5). Old files load the default.
     pub tts_verbosity: Verbosity,
+    /// The view follows keyboard focus (roadmap 9.9): when focus moves to a control, the view
+    /// goes to it, by the same rules as a focus rectangle from the caret thread (ADR 0015). Off
+    /// by default, so the magnifier behaves as before until it is switched on. Needs the `tts`
+    /// build, whose focus thread reads focus, but not speech: it also reads while this is on.
+    pub follow_focus: bool,
 }
 
 impl Default for AppState {
@@ -186,6 +191,7 @@ impl Default for AppState {
             tts_rate_neutral: NEUTRAL_RATE_NORMAL,
             tts_voice: None,
             tts_verbosity: Verbosity::default(),
+            follow_focus: false,
         }
     }
 }
@@ -401,7 +407,17 @@ mod tests {
             tts_rate_neutral: 35,
             tts_voice: Some(VoiceId { engine: Engine::Sapi, id: "token".into() }),
             tts_verbosity: Verbosity::Full,
+            follow_focus: true,
         }
+    }
+
+    #[test]
+    fn following_keyboard_focus_is_off_by_default_and_old_files_load_it_off() {
+        assert!(!AppState::default().follow_focus);
+        let s: AppState = serde_json::from_str(r#"{"zoom": 3.0}"#).unwrap();
+        assert!(!s.follow_focus);
+        let s: AppState = serde_json::from_str(r#"{"follow_focus": true}"#).unwrap();
+        assert!(s.follow_focus);
     }
 
     #[test]

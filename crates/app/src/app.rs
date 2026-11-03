@@ -230,6 +230,17 @@ impl eframe::App for ClearViewApp {
                     });
                 });
 
+                // Keyboard focus is read by the focus thread, which is built with `tts`.
+                #[cfg(feature = "tts")]
+                {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.heading("Keyboard focus");
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut s.follow_focus, "Follow keyboard focus")
+                        .on_hover_text("When focus moves to a control (Tab, arrows, menus), the view goes to it.");
+                }
+
                 #[cfg(feature = "tts")]
                 {
                     ui.add_space(8.0);
@@ -295,8 +306,9 @@ impl eframe::App for ClearViewApp {
                     {
                         self.speech.wake();
                     }
+                    // The focus thread reads while speech or following focus is on.
                     #[cfg(feature = "tts")]
-                    if s.tts_enabled != before.tts_enabled {
+                    if s.tts_enabled != before.tts_enabled || s.follow_focus != before.follow_focus {
                         self.focus.wake();
                     }
                 }
@@ -332,6 +344,7 @@ fn apply_changes(live: &mut AppState, before: &AppState, after: &AppState) {
         tts_volume,
         tts_rate_neutral,
         tts_verbosity,
+        follow_focus,
     );
     // Not `Copy`, so outside the macro.
     if after.tts_voice != before.tts_voice {
@@ -381,6 +394,15 @@ mod tests {
         let mut live = before.clone();
         apply_changes(&mut live, &before, &after);
         assert_eq!(live, after);
+    }
+
+    #[test]
+    fn follow_focus_is_copied_and_leaves_other_live_fields_alone() {
+        let before = AppState::default();
+        let after = AppState { follow_focus: true, ..before.clone() };
+        let mut live = AppState { enabled: true, ..before.clone() };
+        apply_changes(&mut live, &before, &after);
+        assert_eq!(live, AppState { enabled: true, ..after });
     }
 
     #[test]

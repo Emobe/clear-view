@@ -446,6 +446,9 @@ impl<R: Renderer> View<R> {
     fn track(&mut self, state: &AppState, now: Instant, events: Vec<CoreEvent>) -> (f32, f32) {
         let (win_w, win_h) = self.window_size(state);
         let view = (win_w as f32 / state.zoom, win_h as f32 / state.zoom);
+        // Keyboard focus moves the view only while the setting is on (roadmap 9.9). Set every
+        // tick: the tracker is rebuilt when the target is lost.
+        self.tracker.set_follow_focus(state.follow_focus);
         if !tracking::log_enabled() {
             return self.tracker.update(now, self.pointer, events, view);
         }

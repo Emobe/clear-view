@@ -7,8 +7,10 @@
 //! - It hooks foreground and focus WinEvents out of context. The callback only queues the event;
 //!   a pure `FocusFilter` in cv-core decides when to read (after the burst settles) and what to
 //!   publish.
-//! - It reads only while `tts_enabled` is true, and never when the foreground window is ours.
-//!   With speech off it takes the WinEvents and drops them.
+//! - It reads only while `tts_enabled` or `follow_focus` is true (roadmap 9.9), and never when the
+//!   foreground window is ours. With both off it takes the WinEvents and drops them. With only
+//!   `follow_focus` on it reads the control and no more: no dialog text, no value (nothing is
+//!   spoken, and the magnifier needs only the rectangle).
 //! - One read: UI Automation for the control that has focus now (one cached call, no value), MSAA
 //!   for the newest event's object, values only after `value_allowed`, then `focus::merge`.
 //! - A window that comes to the front is also read as a dialog, once (ADR 0016, dialog.rs): its
@@ -288,11 +290,18 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
     let own_pid = unsafe { GetCurrentProcessId() };
     let mut session = Session::default();
     let mut was_wanted = false;
+    let mut was_speech = false;
 
     loop {
-        let wanted = state.read().tts_enabled;
-        if wanted != was_wanted {
+        let (speech, follow) = {
+            let s = state.read();
+            (s.tts_enabled, s.follow_focus)
+        };
+        let wanted = speech || follow;
+        // Either switch changes what a read does, so the session starts over.
+        if wanted != was_wanted || speech != was_speech {
             was_wanted = wanted;
+            was_speech = speech;
             session = Session::default();
             if wanted {
                 // Read once, as if the foreground window had just changed.
@@ -306,7 +315,7 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
         if wanted && session.filter.due(Instant::now()) {
             session.filter.begin_read();
             let newest = session.newest.take();
-            let reading = read_focus(uia, own_pid, &mut session.hung, &mut session.dialog, newest);
+            let reading = read_focus(uia, own_pid, &mut session.hung, &mut session.dialog, newest, speech);
             // Events that arrived while the read ran make it stale (the filter drops it).
             if !pump(&mut session, wanted) {
                 return;
@@ -322,7 +331,7 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
         // a press made then is not answered later. With speech on it waits for the focus read
         // that is due or still settling (at most `SETTLE_MAX`), so the answer and the last focus
         // event describe the same window and the focus announcement does not cut the answer off.
-        if !wanted {
+        if !speech {
             let _ = take_window_request();
         } else if session.filter.next_deadline().is_none()
             && let Some(at) = take_window_request()
@@ -373,6 +382,7 @@ fn read_focus(
     hung: &mut Option<isize>,
     cache: &mut DialogCache,
     newest: Option<Stored>,
+    speech: bool,
 ) -> Reading {
     let nothing =
         || Reading { app: None, window: WindowInfo::new(""), control: None, window_key: 0, dialog_key: None };
@@ -401,12 +411,13 @@ fn read_focus(
     let (control, focused) = if app.is_none() || *hung == Some(key) {
         (None, None)
     } else {
-        read_control(uia, &fg, hung, newest)
+        read_control(uia, &fg, hung, newest, speech)
     };
 
     // The control is kept if the dialog read hangs (ADR 0016); a hung control read skips it.
     let mut dialog_key = None;
-    if app.is_some() && *hung != Some(key) {
+    // Dialog text is for speech only.
+    if speech && app.is_some() && *hung != Some(key) {
         // A handle can be reused by another dialog later, so another window's pairs go.
         cache.keep_window(window_key);
         let lookup = inner::find(uia, fg.hwnd, focused.as_ref());
@@ -475,6 +486,7 @@ fn read_control(
     fg: &crate::caret::Foreground,
     hung: &mut Option<isize>,
     newest: Option<Stored>,
+    speech: bool,
 ) -> (Option<Control>, Option<UiaReading>) {
     let started = Instant::now();
     let mut uia_reading = None;
@@ -518,7 +530,10 @@ fn read_control(
 
     let uia_control = uia_reading.as_ref().map(|u| {
         let mut control = u.control.clone();
-        control.value = if value_allowed(uia_password, msaa_protected) {
+        // A value is read for speech only; following focus needs the rectangle.
+        control.value = if !speech {
+            Value::None
+        } else if value_allowed(uia_password, msaa_protected) {
             match uia.map(|(_, requests)| read::uia_value(u, requests)) {
                 Some(Ok(text)) => read::value_of(text),
                 Some(Err(e)) => {
@@ -536,7 +551,9 @@ fn read_control(
     });
     let msaa_control = msaa_reading.as_ref().map(|m| {
         let mut control = m.control.clone();
-        control.value = if value_allowed(msaa_protected, uia_password) {
+        control.value = if !speech {
+            Value::None
+        } else if value_allowed(msaa_protected, uia_password) {
             read::value_of(read::msaa_value(m))
         } else {
             Value::Withheld

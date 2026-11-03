@@ -318,6 +318,15 @@ mod tests {
     }
 
     #[test]
+    fn following_keyboard_focus_is_kept_across_a_save_and_load() {
+        let dir = TempDir::new("follow-focus");
+        let state = AppState { follow_focus: true, ..AppState::default() };
+        save_to(&dir.file(), &state).unwrap();
+        assert!(load_from(&dir.file()).follow_focus);
+        assert!(!load_text("nofollow", r#"{"zoom": 3.0}"#).follow_focus);
+    }
+
+    #[test]
     fn a_file_without_the_speech_detail_loads_the_default() {
         let s = load_text("noverbosity", r#"{"zoom": 3.0, "tts_enabled": true}"#);
         assert_eq!(s.tts_verbosity, cv_core::Verbosity::Normal);

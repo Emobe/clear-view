@@ -11,6 +11,10 @@
 //! - The view holds while the caret stays inside the middle of the view ([`CARET_MARGIN`] off
 //!   each side) and re-centres on it when it leaves, per axis.
 //! - `CaretLost` holds the view where it is until the pointer moves or a new caret arrives.
+//! - With [`Tracker::set_follow_focus`] on (roadmap 9.9), a `FocusChanged` whose control has a
+//!   rectangle is handled as a `FocusRect` event for that rectangle, by every rule below and
+//!   above, unless the control is bigger than the view in both directions (a page or a pane is a
+//!   surface, not a control). With it off a `FocusChanged` changes nothing.
 //! - A `FocusRect` event that comes while the pointer is still moving, as when clicking into a
 //!   box, is kept for [`PENDING_FOR`] and takes the view once the pointer has been still for
 //!   [`POINTER_QUIET`]. The source sends it once and never repeats it, so dropping it would lose
@@ -87,6 +91,9 @@ pub struct Tracker {
     /// When the pointer last moved more than [`POINTER_JITTER_PX`] from `rest`. `None`: never.
     moved_at: Option<Instant>,
     pending: Option<Pending>,
+    /// Whether a `FocusChanged` moves the view (roadmap 9.9). Set by the caller each tick from
+    /// the setting.
+    follow_focus: bool,
 }
 
 impl Tracker {
@@ -121,6 +128,15 @@ impl Tracker {
             Mode::Pointer => point(pointer),
             Mode::Caret { target, .. } => target,
         }
+    }
+
+    /// Whether keyboard focus moves the view (roadmap 9.9). Call it before each
+    /// [`update`](Self::update); turning it off forgets a focus rectangle that was held back.
+    pub fn set_follow_focus(&mut self, on: bool) {
+        if self.follow_focus && !on {
+            self.pending = None;
+        }
+        self.follow_focus = on;
     }
 
     pub fn following(&self) -> Following {
@@ -207,8 +223,24 @@ impl Tracker {
             // Hold: the view stays where the caret was until the pointer moves or a caret
             // comes back.
             CoreEvent::CaretLost { .. } => self.pending = None,
-            // The view does not follow focus until 9.9 (ADR 0015), and a window read is for
-            // speech only (ADR 0019).
+            // Keyboard focus (roadmap 9.9): the focused control's rectangle, handled like the focus
+            // rectangle the caret thread sends for a control with a caret. One too big for the
+            // view in both directions is a page or a pane, not something to go to.
+            CoreEvent::FocusChanged { at, app, control: Some(control), .. } if self.follow_focus => {
+                if let Some(rect) = control.rect
+                    && !(rect.width as f32 > view.0 && rect.height as f32 > view.1)
+                {
+                    let as_caret = CoreEvent::CaretMoved {
+                        at: *at,
+                        rect,
+                        source: CaretSource::FocusRect,
+                        app: app.clone(),
+                    };
+                    self.handle(&as_caret, now, pointer, view);
+                }
+            }
+            // Without the setting the view does not follow focus (ADR 0015), and a window read is
+            // for speech only (ADR 0019).
             CoreEvent::FocusChanged { .. } | CoreEvent::WindowRead { .. } => {}
         }
     }
@@ -754,5 +786,133 @@ mod tests {
         tracker.update(now, p(-1000, -200), [caret(-1500, 300)], VIEW);
         tracker.update(now, p(-1000 - POINTER_RETURN_PX - 1, -200), [], VIEW);
         assert_eq!(tracker.following(), Following::Pointer);
+    }
+
+    /// A keyboard focus move to a control with this rectangle.
+    fn focus_moved(left: i32, top: i32, width: u32, height: u32) -> CoreEvent {
+        use crate::focus::{Control, FocusSource, Role, WindowInfo};
+        let mut control = Control::new("OK", Role::Button, FocusSource::Both);
+        control.rect = Some(ScreenRect { left, top, width, height });
+        CoreEvent::FocusChanged {
+            at: Instant::now(),
+            app: app(),
+            window: WindowInfo::new("Untitled"),
+            window_changed: false,
+            dialog_changed: false,
+            control: Some(control),
+        }
+    }
+
+    fn following_focus() -> Rig {
+        let mut rig = Rig::new();
+        rig.tracker.set_follow_focus(true);
+        rig
+    }
+
+    #[test]
+    fn with_the_setting_off_a_focus_move_does_nothing() {
+        let mut rig = Rig::new();
+        let t = rig.tick(300, p(1000, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+    }
+
+    #[test]
+    fn with_the_setting_on_a_focus_move_takes_the_view_to_the_control_once_the_pointer_is_still() {
+        let mut rig = following_focus();
+        // A button 80x24 at (1500, 480) fits the middle area: the view centres on it.
+        let t = rig.tick(300, p(1000, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1540.0, 492.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_focus_move_is_handled_exactly_like_a_focus_rect_from_the_caret_thread() {
+        let mut a = following_focus();
+        let mut b = Rig::new();
+        let ta = a.tick(300, p(1000, 500), [focus_moved(1500, 480, 400, 24)]);
+        let tb = b.tick(300, p(1000, 500), [focus(1500, 480, 400, 24)]);
+        assert_eq!(a.following(), b.following());
+        assert!(approx(ta, tb), "{ta:?} {tb:?}");
+    }
+
+    #[test]
+    fn a_focus_move_while_the_pointer_moves_waits_for_it_to_settle() {
+        let mut rig = following_focus();
+        let t = rig.tick(100, p(1100, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1100.0, 500.0)), "{t:?}");
+        let t = rig.tick(300, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1540.0, 492.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_click_that_moves_focus_leaves_the_view_on_the_pointer() {
+        let mut rig = following_focus();
+        // The pointer is inside the control it clicked.
+        let t = rig.tick(300, p(1000, 500), [focus_moved(960, 488, 80, 24)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_surface_bigger_than_the_view_both_ways_is_not_gone_to() {
+        let mut rig = following_focus();
+        // A page: wider and taller than the 256x144 view.
+        let t = rig.tick(300, p(1000, 500), [focus_moved(0, 0, 2000, 1000)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+        // A wide text box (wider only) is.
+        let t = rig.tick(300, p(1000, 500), [focus_moved(1400, 480, 600, 24)]);
+        assert_eq!(rig.following(), Following::Caret);
+        assert!(approx(t, (1400.0 + 256.0 * 0.3, 492.0)), "{t:?}");
+    }
+
+    #[test]
+    fn a_focus_move_with_no_control_or_no_rect_changes_nothing() {
+        use crate::focus::{Control, FocusSource, Role, WindowInfo};
+        let mut rig = following_focus();
+        let no_control = CoreEvent::FocusChanged {
+            at: Instant::now(),
+            app: app(),
+            window: WindowInfo::new("Task Manager"),
+            window_changed: true,
+            dialog_changed: false,
+            control: None,
+        };
+        let no_rect = CoreEvent::FocusChanged {
+            at: Instant::now(),
+            app: app(),
+            window: WindowInfo::new("x"),
+            window_changed: false,
+            dialog_changed: false,
+            control: Some(Control::new("OK", Role::Button, FocusSource::Msaa)),
+        };
+        let t = rig.tick(300, p(1000, 500), [no_control, no_rect]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1000.0, 500.0)), "{t:?}");
+    }
+
+    #[test]
+    fn the_pointer_moving_away_returns_the_view_to_it_after_a_focus_move() {
+        let mut rig = following_focus();
+        rig.tick(300, p(1000, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert_eq!(rig.following(), Following::Caret);
+        let t = rig.tick(16, p(1100, 500), []);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1100.0, 500.0)), "{t:?}");
+    }
+
+    #[test]
+    fn turning_the_setting_off_forgets_a_held_focus_rect_and_stops_following() {
+        let mut rig = following_focus();
+        rig.tick(100, p(1100, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert!(rig.tracker.pending_since().is_some());
+        rig.tracker.set_follow_focus(false);
+        assert!(rig.tracker.pending_since().is_none());
+        let t = rig.tick(300, p(1100, 500), [focus_moved(1500, 480, 80, 24)]);
+        assert_eq!(rig.following(), Following::Pointer);
+        assert!(approx(t, (1100.0, 500.0)), "{t:?}");
     }
 }
