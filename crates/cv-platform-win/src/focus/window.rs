@@ -63,6 +63,7 @@ pub(super) fn read(
     let app = Some(AppId { pid: fg.pid, exe });
     let window_key = key as usize as u64;
     let mut window = WindowInfo::new(read::window_title(fg.hwnd));
+    let started = Instant::now();
     let answer = |window: WindowInfo, nodes, outcome| CoreEvent::WindowRead {
         at,
         app: app.clone(),
@@ -71,14 +72,15 @@ pub(super) fn read(
         outcome,
     };
 
+    // The text a focus read cached for the window itself: what an `Unreadable` answer still says.
+    // It is replaced below by the inner dialog's when there is one.
+    window.dialog_text = cache.get(window_key, None).map(<[String]>::to_vec).unwrap_or_default();
     if plan == Plan::Hung {
-        window.dialog_text = cache.get(window_key, None).map(<[String]>::to_vec).unwrap_or_default();
         return answer(window, Vec::new(), ReadOutcome::Unreadable);
     }
 
     // The focused element tells whether the focus is in XAML content, where an inner dialog is
     // found by UI Automation (ADR 0018). A timeout here is a hung window like any other.
-    let started = Instant::now();
     let mut focused = None;
     if let Some((uia, requests)) = uia {
         match read::uia_read(uia, requests) {
@@ -106,7 +108,7 @@ pub(super) fn read(
 
     let fg_target = Target::Window(fg.hwnd);
     let target = lookup.inner.as_ref().map_or(&fg_target, |inner| &inner.target);
-    let tree = dialog::read_tree(uia, target);
+    let tree = dialog::read_tree(uia, target, started);
     if tree.hung {
         *hung = Some(key);
     }

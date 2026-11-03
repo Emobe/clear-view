@@ -360,6 +360,12 @@ pub(super) fn read_plan(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use windows::Win32::UI::Accessibility::{
+        UIA_AppBarControlTypeId, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
+        UIA_PaneControlTypeId,
+    };
+
     #[test]
     fn a_window_read_keeps_an_unavailable_msaa_element_but_not_an_invisible_one() {
         assert!(!msaa_window_skipped(Some(STATE_UNAVAILABLE)));
@@ -370,12 +376,6 @@ mod tests {
         // The dialog walk drops both.
         assert!(msaa_dialog_skipped(Some(STATE_UNAVAILABLE)));
     }
-
-    use super::*;
-    use windows::Win32::UI::Accessibility::{
-        UIA_AppBarControlTypeId, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
-        UIA_PaneControlTypeId,
-    };
 
     #[test]
     fn uia_control_type_literals_match_the_windows_ids() {

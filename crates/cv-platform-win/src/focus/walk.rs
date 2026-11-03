@@ -164,6 +164,11 @@ fn visit<S: Source>(
         return Ok(());
     }
     for (mut node, handle) in children {
+        // The title is already said, so a window read leaves the title bar out, and with it its
+        // buttons (it is not entered either) (ADR 0019).
+        if limits.window && node.role == Role::TitleBar {
+            continue;
+        }
         if out.nodes.len() >= limits.nodes {
             out.complete = false;
             return Ok(());
@@ -588,5 +593,26 @@ mod tests {
         let w = walk(&mut fake(kids, next), &0, &window_limits()).unwrap();
         assert_eq!(w.calls, WINDOW_CALLS);
         assert!(!w.complete);
+    }
+
+    #[test]
+    fn a_window_walk_leaves_the_title_bar_out_but_a_dialog_walk_does_not() {
+        let kids = || {
+            fake(
+                vec![
+                    vec![node("Untitled - Notepad", Role::TitleBar), node("File", Role::MenuItem)],
+                    vec![node("Close", Role::Button)],
+                ],
+                vec![vec![1, 0], vec![0]],
+            )
+        };
+        let mut f = kids();
+        let w = walk(&mut f, &0, &window_limits()).unwrap();
+        assert_eq!(names(&w), [("File", 0)]);
+        assert_eq!(f.calls, [0]);
+        assert!(w.complete);
+
+        let w = walk(&mut kids(), &0, &Limits::default()).unwrap();
+        assert_eq!(names(&w), [("Untitled - Notepad", 0), ("File", 0)]);
     }
 }

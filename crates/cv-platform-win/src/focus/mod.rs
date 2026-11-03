@@ -318,11 +318,14 @@ fn run_loop(hub: &EventHub, state: &SharedState, uia: Option<(&IUIAutomation, &R
             continue;
         }
 
-        // A key press asking for the window read. Taken every time round, so a press made while
-        // speech was off is not answered later. Only after the focus read that is due has run,
-        // so the answer and the last focus event describe the same window.
-        if let Some(at) = take_window_request()
-            && wanted
+        // A key press asking for the window read. Taken every time round while speech is off, so
+        // a press made then is not answered later. With speech on it waits for the focus read
+        // that is due or still settling (at most `SETTLE_MAX`), so the answer and the last focus
+        // event describe the same window and the focus announcement does not cut the answer off.
+        if !wanted {
+            let _ = take_window_request();
+        } else if session.filter.next_deadline().is_none()
+            && let Some(at) = take_window_request()
         {
             let before = session.foreground_events;
             let event = window::read(uia, own_pid, &mut session.hung, &session.dialog, at);

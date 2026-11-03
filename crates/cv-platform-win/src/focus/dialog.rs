@@ -189,9 +189,13 @@ pub(super) struct Tree {
 /// Walks the controls of `target` (the inner dialog, else the foreground window) with the window
 /// budgets and `WINDOW_MS` (ADR 0019): UI Automation first, then MSAA for a `#32770` where UI
 /// Automation found no text. Names of password nodes are emptied here, and their `states.password`
-/// says so. No value or text pattern is read for any node.
-pub(super) fn read_tree(uia: Option<(&IUIAutomation, &Requests)>, target: &Target) -> Tree {
-    let started = Instant::now();
+/// says so. No value or text pattern is read for any node. `started` is when the whole window read
+/// began, so `WINDOW_MS` covers the lookups before the walk too.
+pub(super) fn read_tree(
+    uia: Option<(&IUIAutomation, &Requests)>,
+    target: &Target,
+    started: Instant,
+) -> Tree {
     let deadline = started + Duration::from_millis(WINDOW_MS);
     let (class, hwnd) = match target {
         Target::Window(hwnd) => (window_class(*hwnd), Some(*hwnd)),
@@ -231,7 +235,11 @@ pub(super) fn read_tree(uia: Option<(&IUIAutomation, &Requests)>, target: &Targe
         let msaa_started = Instant::now();
         let mut source = MsaaSource { deadline, late: false, window: true };
         let result = walk(&mut source, &root, &Limits::window(deadline, false));
-        if result.is_err() || map::is_hung(0, msaa_started.elapsed().as_millis() as u64, UIA_TIMEOUT_MS) {
+        // A walk the deadline cut is a `Cut`, not a hung program: `WINDOW_MS` is as long as the
+        // hung heuristic (two timeouts), so the elapsed time alone cannot tell them apart.
+        if result.is_err()
+            || (!source.late && map::is_hung(0, msaa_started.elapsed().as_millis() as u64, UIA_TIMEOUT_MS))
+        {
             return hung_tree(&class);
         }
         if let Ok(w) = result {
