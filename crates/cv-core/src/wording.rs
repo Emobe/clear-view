@@ -26,7 +26,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::focus::{Checked, Control, Password, Role, Value, WindowInfo, clean_name};
+use crate::events::AppId;
+use crate::focus::{
+    Checked, Control, DialogNode, FocusSource, Password, ReadOutcome, Role, Value, WINDOW_UTTERANCES,
+    WindowInfo, clean_name, flat_key, is_label,
+};
 use crate::speech::{Kind, ReadCommand, Utterance};
 
 /// A name longer than this is cut at a word (or, for a text box or document, taken to be the text
@@ -128,6 +132,137 @@ pub fn read_command_utterances(
     };
     let text = if text.is_empty() { nothing.to_string() } else { text };
     vec![Utterance::new(Kind::Command, text)]
+}
+
+/// What the window read says (roadmap 9.8b1, ADR 0019): the title, the inner dialog's name, then
+/// each node in tree order, packed into `Kind::Command` utterances of at most
+/// [`DIALOG_SPOKEN_MAX`] characters, at most [`WINDOW_UTTERANCES`] of them. A key press is always
+/// answered: no program says "No window", nothing to read says so, a read that hung says the title,
+/// the dialog's cached text and that the window can't be read.
+///
+/// A node says:
+/// - a text that is not focusable: its text, unless it labels the next focusable sibling (ADR
+///   0016's label rule), equals the title or repeats an earlier text;
+/// - a password node, or one where the source can't tell: its role only, never its name;
+/// - any other node with a name: [`describe_control`] at `verbosity`, with no value (a document,
+///   a text box or a Terminal says its name and role, a name that long being the text itself);
+/// - nothing when it is offscreen (with its children), a pane, or has no name.
+pub fn window_read_utterances(
+    app: Option<&AppId>,
+    window: &WindowInfo,
+    nodes: &[DialogNode],
+    outcome: ReadOutcome,
+    verbosity: Verbosity,
+) -> Vec<Utterance> {
+    let say = |text: &str| Utterance::new(Kind::Command, text.to_string());
+    if app.is_none() {
+        return vec![say(NO_WINDOW)];
+    }
+    let mut pieces: Vec<String> = vec![
+        describe_window(&window.title),
+        describe_dialog_name(&window.dialog_name, &window.title, None),
+    ];
+    let mut more = false;
+    match outcome {
+        ReadOutcome::Unreadable => {
+            pieces.push(describe_dialog_text(&window.dialog_text, None));
+            pieces.push(WINDOW_UNREADABLE.to_string());
+        }
+        ReadOutcome::Complete | ReadOutcome::Cut => {
+            pieces.extend(window_node_pieces(nodes, &window.title, verbosity));
+            more = outcome == ReadOutcome::Cut;
+        }
+    }
+    pieces.retain(|p| !p.is_empty());
+    if pieces.is_empty() {
+        // A budget that ran out before anything speakable is not an empty window.
+        return vec![say(if more { MORE_NOT_READ } else { NOTHING_TO_READ })];
+    }
+    let mut packed = pack(pieces);
+    // The cap leaves room for the closing phrase, so the start of the batch is never dropped.
+    if more || packed.len() > WINDOW_UTTERANCES {
+        packed.truncate(WINDOW_UTTERANCES - 1);
+        packed.push(MORE_NOT_READ.to_string());
+    }
+    packed.iter().map(|text| say(text)).collect()
+}
+
+/// Said by [`window_read_utterances`] when there is no window to read.
+const NO_WINDOW: &str = "No window";
+/// Said when the window has no title and nothing worth saying in it.
+const NOTHING_TO_READ: &str = "Nothing to read";
+/// Said after the title when the read hung or no source answered.
+const WINDOW_UNREADABLE: &str = "Window can't be read";
+/// Said last when a budget ran out or the utterance cap was reached.
+const MORE_NOT_READ: &str = "More not read";
+
+/// What each node of a window read says, in tree order (see [`window_read_utterances`]).
+fn window_node_pieces(nodes: &[DialogNode], title: &str, verbosity: Verbosity) -> Vec<String> {
+    let title_key = flat_key(title);
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    // Below this depth, nodes belong to an offscreen node.
+    let mut hidden: Option<usize> = None;
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(depth) = hidden {
+            if node.depth > depth {
+                continue;
+            }
+            hidden = None;
+        }
+        if node.offscreen {
+            hidden = Some(node.depth);
+            continue;
+        }
+        if node.states.password != Password::No {
+            // The role only: the name is never used (the platform emptied it, and "can't tell"
+            // counts as a password).
+            let mut c = Control::new("", node.role, FocusSource::Uia);
+            c.states.password = Password::Yes;
+            out.push(describe_control(&c, verbosity));
+            continue;
+        }
+        let name = flatten(&node.name);
+        if name.is_empty() || node.role == Role::Pane {
+            continue;
+        }
+        if node.role == Role::Text && !node.focusable {
+            let key = flat_key(&name);
+            if key == title_key || seen.contains(&key) || is_label(nodes, i) {
+                continue;
+            }
+            seen.push(key);
+            out.push(cut_at_word(&name, DIALOG_SPOKEN_MAX));
+            continue;
+        }
+        // No value, no position: a window read says what a node is, not what is in it.
+        let mut c = Control::new(node.name.clone(), node.role, FocusSource::Uia);
+        c.states = node.states;
+        out.push(describe_control(&c, verbosity));
+    }
+    out
+}
+
+/// Joins pieces with ". " (a plain space after one that already ends in a stop) into utterances
+/// of at most [`DIALOG_SPOKEN_MAX`] characters; a piece longer than that is cut at a word.
+fn pack(pieces: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in pieces {
+        let piece = cut_at_word(&piece, DIALOG_SPOKEN_MAX);
+        if piece.is_empty() {
+            continue;
+        }
+        if let Some(last) = out.last_mut() {
+            let sep = if last.ends_with(['.', '!', '?', ':']) { " " } else { ". " };
+            if last.chars().count() + sep.len() + piece.chars().count() <= DIALOG_SPOKEN_MAX {
+                last.push_str(sep);
+                last.push_str(&piece);
+                continue;
+            }
+        }
+        out.push(piece);
+    }
+    out
 }
 
 /// Said by [`ReadCommand::Item`] when the last focus event had no control worth saying.
@@ -1233,5 +1368,223 @@ mod tests {
         cant_tell.value = Value::Text("secret".into());
         let said = read(ReadCommand::Item, None, Some(&cant_tell), Verbosity::Full).join(" ");
         assert!(!said.contains("secret"), "{said}");
+    }
+}
+
+#[cfg(test)]
+mod window_read_tests {
+    use super::*;
+    use crate::focus::WINDOW_NODES;
+    use crate::speech::QUEUE_MAX;
+
+    // ADR 0019: the cap leaves the queue room, so it never drops the start of the batch.
+    const _: () = assert!(WINDOW_UTTERANCES < QUEUE_MAX);
+
+    fn app() -> AppId {
+        AppId { pid: 1, exe: "notepad.exe".into() }
+    }
+
+    fn node(name: &str, role: Role, depth: usize) -> DialogNode {
+        DialogNode::new(name, role, depth)
+    }
+
+    fn focusable(name: &str, role: Role, depth: usize) -> DialogNode {
+        let mut n = node(name, role, depth);
+        n.focusable = true;
+        n
+    }
+
+    fn read(title: &str, nodes: &[DialogNode], outcome: ReadOutcome, v: Verbosity) -> Vec<String> {
+        let out = window_read_utterances(Some(&app()), &WindowInfo::new(title), nodes, outcome, v);
+        assert!(out.iter().all(|u| u.kind == Kind::Command));
+        out.into_iter().map(|u| u.text).collect()
+    }
+
+    fn complete(title: &str, nodes: &[DialogNode]) -> Vec<String> {
+        read(title, nodes, ReadOutcome::Complete, Verbosity::Normal)
+    }
+
+    #[test]
+    fn the_title_comes_first_then_each_node_in_tree_order() {
+        let nodes = [
+            focusable("File", Role::MenuItem, 0),
+            focusable("Edit", Role::MenuItem, 0),
+            node("Ln 1, Col 1", Role::Text, 1),
+        ];
+        assert_eq!(complete("Untitled - Notepad", &nodes), ["Untitled - Notepad. File, menu item. Edit, menu item. Ln 1, Col 1"]);
+    }
+
+    #[test]
+    fn no_program_says_no_window() {
+        let out = window_read_utterances(None, &WindowInfo::new("x"), &[], ReadOutcome::Complete, Verbosity::Normal);
+        assert_eq!(out, [Utterance::new(Kind::Command, "No window")]);
+    }
+
+    #[test]
+    fn a_window_with_nothing_to_say_still_answers() {
+        assert_eq!(complete("", &[node("", Role::Pane, 0), node("", Role::Button, 0)]), ["Nothing to read"]);
+    }
+
+    #[test]
+    fn the_inner_dialog_name_follows_the_title_unless_the_title_contains_it() {
+        let mut w = WindowInfo::new("CLAUDE.md Properties");
+        w.dialog_name = "General".into();
+        let say = |w: &WindowInfo| {
+            window_read_utterances(Some(&app()), w, &[], ReadOutcome::Complete, Verbosity::Normal)[0].text.clone()
+        };
+        assert_eq!(say(&w), "CLAUDE.md Properties. General");
+        w.dialog_name = "properties".into();
+        assert_eq!(say(&w), "CLAUDE.md Properties");
+    }
+
+    #[test]
+    fn a_label_is_dropped_but_a_message_is_kept_and_a_repeat_is_said_once() {
+        let nodes = [
+            node("Do you want to save?", Role::Text, 0),
+            node("Do you want to save?", Role::Text, 0),
+            node("File name:", Role::Text, 0),
+            focusable("File name:", Role::Edit, 0),
+            node("Window title", Role::Text, 0),
+        ];
+        assert_eq!(
+            complete("Window title", &nodes),
+            ["Window title. Do you want to save? File name:, edit"]
+        );
+    }
+
+    #[test]
+    fn panes_unnamed_nodes_and_offscreen_nodes_with_their_children_say_nothing() {
+        let mut hidden = focusable("Hidden", Role::Group, 0);
+        hidden.offscreen = true;
+        let nodes = [
+            node("Navigation", Role::Pane, 0),
+            node("", Role::Button, 1),
+            hidden,
+            focusable("Inside hidden", Role::Button, 1),
+            focusable("Shown", Role::Button, 0),
+        ];
+        assert_eq!(complete("T", &nodes), ["T. Shown, button"]);
+    }
+
+    #[test]
+    fn a_password_node_says_its_role_only_and_never_its_name() {
+        let mut pw = focusable("hunter2 secret", Role::Edit, 0);
+        pw.states.password = Password::Yes;
+        let mut unsure = focusable("also secret", Role::Edit, 0);
+        unsure.states.password = Password::CantTell;
+        let mut emptied = focusable("", Role::Edit, 0);
+        emptied.states.password = Password::CantTell;
+        for v in Verbosity::ALL {
+            let out = read("Login", &[pw.clone(), unsure.clone(), emptied.clone()], ReadOutcome::Complete, v);
+            assert_eq!(out, ["Login. password edit. password edit. password edit"], "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_document_a_text_box_and_a_terminal_say_name_and_role_never_their_text() {
+        let long = "word ".repeat(40);
+        let mut term = focusable("Command Prompt", Role::Text, 0);
+        term.states.password = Password::No;
+        let nodes = [
+            focusable(&long, Role::Document, 0),
+            focusable(&long, Role::Edit, 0),
+            focusable("Subject", Role::Edit, 0),
+            term,
+        ];
+        let out = complete("T", &nodes);
+        assert_eq!(out, ["T. document. edit. Subject, edit. Command Prompt"]);
+        assert!(!out[0].contains("word"));
+    }
+
+    #[test]
+    fn states_are_spoken_and_a_value_never_is() {
+        let mut check = focusable("Word wrap", Role::CheckBox, 0);
+        check.states.checked = Some(Checked::On);
+        let mut item = focusable("Folder", Role::TreeItem, 0);
+        item.states.expanded = Some(false);
+        let mut off = focusable("Save", Role::Button, 0);
+        off.states.enabled = Some(false);
+        let nodes = [check, item, off];
+        assert_eq!(
+            read("T", &nodes, ReadOutcome::Complete, Verbosity::Normal),
+            ["T. Word wrap, check box, checked. Folder, tree item, collapsed. Save, button, unavailable"]
+        );
+        assert_eq!(
+            read("T", &nodes, ReadOutcome::Complete, Verbosity::Brief),
+            ["T. Word wrap, checked. Folder. Save, unavailable"]
+        );
+    }
+
+    #[test]
+    fn a_cut_read_ends_with_more_not_read() {
+        let out = read("T", &[focusable("OK", Role::Button, 0)], ReadOutcome::Cut, Verbosity::Normal);
+        assert_eq!(out, ["T. OK, button", "More not read"]);
+    }
+
+    #[test]
+    fn a_cut_read_with_nothing_speakable_says_more_not_read_not_nothing_to_read() {
+        let out = read("", &[node("", Role::Pane, 0)], ReadOutcome::Cut, Verbosity::Normal);
+        assert_eq!(out, ["More not read"]);
+    }
+
+    #[test]
+    fn an_unreadable_window_says_the_title_the_cached_dialog_text_and_that_it_cannot_be_read() {
+        let mut w = WindowInfo::new("Replace file? (Not Responding)");
+        w.dialog_text = vec!["A file with this name exists.".into()];
+        let out = window_read_utterances(Some(&app()), &w, &[], ReadOutcome::Unreadable, Verbosity::Normal);
+        assert_eq!(
+            out,
+            [Utterance::new(
+                Kind::Command,
+                "Replace file? (Not Responding). A file with this name exists. Window can't be read"
+            )]
+        );
+        let bare = window_read_utterances(
+            Some(&app()),
+            &WindowInfo::new(""),
+            &[],
+            ReadOutcome::Unreadable,
+            Verbosity::Normal,
+        );
+        assert_eq!(bare, [Utterance::new(Kind::Command, "Window can't be read")]);
+    }
+
+    #[test]
+    fn utterances_are_short_and_a_big_window_is_capped_below_the_queue() {
+        let nodes: Vec<_> = (0..WINDOW_NODES)
+            .map(|i| focusable(&format!("Control number {i} with a longer name"), Role::Button, 0))
+            .collect();
+        let out = complete("Big window", &nodes);
+        assert_eq!(out.len(), WINDOW_UTTERANCES);
+        assert_eq!(out.last().unwrap(), "More not read");
+        assert!(out.iter().all(|t| t.chars().count() <= DIALOG_SPOKEN_MAX));
+        assert!(out[0].starts_with("Big window. Control number 0"));
+    }
+
+    #[test]
+    fn a_cut_read_that_fills_the_cap_still_ends_with_more_not_read_within_the_cap() {
+        let nodes: Vec<_> = (0..WINDOW_NODES)
+            .map(|i| focusable(&format!("Control number {i} with a longer name"), Role::Button, 0))
+            .collect();
+        let out = read("T", &nodes, ReadOutcome::Cut, Verbosity::Normal);
+        assert_eq!(out.len(), WINDOW_UTTERANCES);
+        assert_eq!(out.iter().filter(|t| *t == "More not read").count(), 1);
+    }
+
+    #[test]
+    fn utterances_for_speaks_a_window_read_only_while_speech_is_on() {
+        use crate::events::CoreEvent;
+        use crate::speech::{SpeechSettings, utterances_for};
+        let e = CoreEvent::WindowRead {
+            at: std::time::Instant::now(),
+            app: Some(app()),
+            window: WindowInfo::new("Notepad"),
+            nodes: vec![focusable("OK", Role::Button, 0)],
+            outcome: ReadOutcome::Complete,
+        };
+        let on = SpeechSettings { enabled: true, verbosity: Verbosity::Normal };
+        let off = SpeechSettings { enabled: false, verbosity: Verbosity::Normal };
+        assert_eq!(utterances_for(&e, &on), [Utterance::new(Kind::Command, "Notepad. OK, button")]);
+        assert!(utterances_for(&e, &off).is_empty());
     }
 }

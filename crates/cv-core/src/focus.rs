@@ -33,6 +33,21 @@ pub const DIALOG_TEXTS: usize = 8;
 /// nothing. Starting value (ADR 0018); the focus thread enforces it.
 pub const DIALOG_MS: u64 = 250;
 
+/// The most `FindAll` calls one window read may make (ADR 0019). Starting value; the focus thread
+/// enforces it, and 9.8b2 sets the final value from what it measures.
+pub const WINDOW_CALLS: usize = 32;
+/// How deep a window read may go below its root (ADR 0019). Starting value.
+pub const WINDOW_DEPTH: usize = 8;
+/// The most nodes one window read may collect (ADR 0019). Starting value.
+pub const WINDOW_NODES: usize = 160;
+/// The most milliseconds one window read may take; past it the read stops as cut (ADR 0019).
+/// Starting value; the focus thread enforces it.
+pub const WINDOW_MS: u64 = 1000;
+/// The most utterances a window read speaks, "More not read" included. Below
+/// [`QUEUE_MAX`](crate::speech::QUEUE_MAX), so the queue never drops the start of the batch
+/// (ADR 0019). Starting value.
+pub const WINDOW_UTTERANCES: usize = 24;
+
 /// The foreground window.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,13 +81,32 @@ pub struct DialogNode {
     pub offscreen: bool,
     /// 0 for a child of the dialog itself.
     pub depth: usize,
+    /// Checked, expanded, selected and enabled, from a window read (ADR 0019). The dialog walk
+    /// leaves them empty and [`dialog_text`] ignores them. `states.password` is `No` only for a
+    /// node whose name the platform kept; the platform sets anything else for a password node, or
+    /// one where the source can't tell, and empties its name before it leaves (ADR 0016).
+    pub states: States,
 }
 
 impl DialogNode {
-    /// A node that is not focusable and not offscreen; the fields are public to fill in.
+    /// A node that is not focusable, not offscreen and not a password, with no other state; the
+    /// fields are public to fill in.
     pub fn new(name: impl Into<String>, role: Role, depth: usize) -> Self {
-        Self { name: name.into(), role, focusable: false, offscreen: false, depth }
+        let states = States { password: Password::No, ..States::default() };
+        Self { name: name.into(), role, focusable: false, offscreen: false, depth, states }
     }
+}
+
+/// How a window read ended (ADR 0019).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOutcome {
+    /// Every node was visited.
+    Complete,
+    /// A budget ran out (calls, depth, nodes or time): the nodes are the ones got to.
+    Cut,
+    /// The window hung, or no source answered: there are no nodes.
+    Unreadable,
 }
 
 // ── The dialog text ──────────────────────────────────────────────────────────────────────────
@@ -110,18 +144,21 @@ pub fn dialog_text(nodes: &[DialogNode], complete: bool, title: &str) -> Vec<Str
         if key.is_empty() || key == title || seen.contains(&key) {
             continue;
         }
-        let label = label_key(&text);
-        let labels_next = siblings_after(nodes, i)
-            .find(|n| n.focusable)
-            .is_some_and(|n| label_key(&n.name) == label);
         let after_group = siblings_before(nodes, i).next().is_some_and(|n| n.role == Role::Group);
-        if labels_next || after_group {
+        if is_label(nodes, i) || after_group {
             continue;
         }
         seen.push(key);
         out.push(text.chars().take(VALUE_MAX).collect());
     }
     out
+}
+
+/// The label rule: node `i`'s name equals the name of the next focusable sibling, so it is that
+/// control's label (names compared as in [`dialog_text`]).
+pub(crate) fn is_label(nodes: &[DialogNode], i: usize) -> bool {
+    let label = label_key(&nodes[i].name);
+    siblings_after(nodes, i).find(|n| n.focusable).is_some_and(|n| label_key(&n.name) == label)
 }
 
 /// The nodes after `i` at the same depth, nearest first, up to the end of the parent.
@@ -137,7 +174,7 @@ fn siblings_before(nodes: &[DialogNode], i: usize) -> impl Iterator<Item = &Dial
 }
 
 /// Whitespace flattened, one `&` marker removed, case ignored.
-fn flat_key(text: &str) -> String {
+pub(crate) fn flat_key(text: &str) -> String {
     clean_name(text).split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 

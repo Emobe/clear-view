@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::events::CoreEvent;
 use crate::focus::{Control, WindowInfo};
-use crate::wording::{Verbosity, focus_utterances, read_command_utterances};
+use crate::wording::{Verbosity, focus_utterances, read_command_utterances, window_read_utterances};
 
 /// The queue holds at most this many waiting utterances; the oldest are dropped first.
 pub const QUEUE_MAX: usize = 32;
@@ -267,6 +267,9 @@ pub fn utterances_for(event: &CoreEvent, settings: &SpeechSettings) -> Vec<Utter
     match event {
         CoreEvent::FocusChanged { window, window_changed, dialog_changed, control, .. } => {
             focus_utterances(window, *window_changed, *dialog_changed, control.as_ref(), settings.verbosity)
+        }
+        CoreEvent::WindowRead { app, window, nodes, outcome, .. } => {
+            window_read_utterances(app.as_ref(), window, nodes, *outcome, settings.verbosity)
         }
         CoreEvent::CaretMoved { .. } | CoreEvent::CaretLost { .. } => Vec::new(),
     }
