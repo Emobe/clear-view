@@ -164,6 +164,14 @@ fn main() -> eframe::Result {
                     Action::ToggleSpeech => eprintln!("[keys] speech on/off"),
                     // The reading commands (roadmap 9.8a) change no state: the speech thread
                     // answers from the last focus event.
+                    // The window read (roadmap 9.8b2) asks the focus thread, which answers with a
+                    // core event the speech thread speaks.
+                    Action::ReadWindow => {
+                        eprintln!("[keys] read window");
+                        #[cfg(feature = "tts")]
+                        focus_waker.read_window();
+                        return;
+                    }
                     Action::ReadTitle | Action::RepeatFocus => {
                         let what = if action == Action::ReadTitle { "read title" } else { "repeat focus" };
                         eprintln!("[keys] {what}");

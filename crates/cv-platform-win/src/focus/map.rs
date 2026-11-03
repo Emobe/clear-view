@@ -55,6 +55,12 @@ pub(super) fn msaa_dialog_skipped(state: Option<u32>) -> bool {
     state.is_some_and(|s| s & (STATE_INVISIBLE | STATE_UNAVAILABLE) != 0)
 }
 
+/// A window read leaves out an element MSAA says is invisible; an unavailable one is kept, because
+/// "unavailable" is worth saying (ADR 0019). An unreadable state keeps the element.
+pub(super) fn msaa_window_skipped(state: Option<u32>) -> bool {
+    state.is_some_and(|s| s & STATE_INVISIBLE != 0)
+}
+
 /// Whether a dialog node's name must be emptied before it leaves the platform code: MSAA says
 /// protected, or the state could not be read ("can't tell" counts as a password).
 pub(super) fn msaa_name_withheld(state: Option<u32>) -> bool {
@@ -354,6 +360,17 @@ pub(super) fn read_plan(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_window_read_keeps_an_unavailable_msaa_element_but_not_an_invisible_one() {
+        assert!(!msaa_window_skipped(Some(STATE_UNAVAILABLE)));
+        assert!(msaa_window_skipped(Some(STATE_INVISIBLE)));
+        assert!(msaa_window_skipped(Some(STATE_INVISIBLE | STATE_UNAVAILABLE)));
+        assert!(!msaa_window_skipped(None));
+        assert!(!msaa_window_skipped(Some(0)));
+        // The dialog walk drops both.
+        assert!(msaa_dialog_skipped(Some(STATE_UNAVAILABLE)));
+    }
+
     use super::*;
     use windows::Win32::UI::Accessibility::{
         UIA_AppBarControlTypeId, UIA_ButtonControlTypeId, UIA_EditControlTypeId,

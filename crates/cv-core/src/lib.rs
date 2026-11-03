@@ -244,6 +244,10 @@ pub enum Action {
     /// Speak the focused item again (roadmap 9.8a, ADR 0014: Ctrl+Alt+Shift+F). Changes no
     /// `AppState` field: the caller sends it to the speech thread.
     RepeatFocus,
+    /// Read the whole active window or dialog (roadmap 9.8b2, ADR 0019: Ctrl+Alt+Shift+W).
+    /// Changes no `AppState` field: the caller asks the focus thread for the read, and the
+    /// answer reaches the speech thread as a `CoreEvent::WindowRead`.
+    ReadWindow,
 }
 
 impl Action {
@@ -265,7 +269,7 @@ impl AppState {
             Action::ZoomOut => self.step_zoom(-1),
             Action::Silence => {}
             Action::ToggleSpeech => self.tts_enabled = !self.tts_enabled,
-            Action::ReadTitle | Action::RepeatFocus => {}
+            Action::ReadTitle | Action::RepeatFocus | Action::ReadWindow => {}
         }
     }
 }
