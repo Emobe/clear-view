@@ -1,6 +1,6 @@
 # 0019: Read the whole active window or dialog
 
-Status: Proposed
+Status: Accepted (you, 2026-11-03, "I agree"; set by the agent on your instruction)
 Date: 2026-11-02
 
 ## Context
